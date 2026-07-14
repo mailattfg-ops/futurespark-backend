@@ -1,0 +1,16 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./client"
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  action    String
+  details   String
+  createdAt DateTime @default(now())
+}

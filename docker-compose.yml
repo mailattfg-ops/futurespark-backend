@@ -42,5 +42,15 @@ services:
     depends_on:
       - postgres
 
+  redis:
+    image: redis:7-alpine
+    container_name: futurespark-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+
 volumes:
   pgdata:
+  redisdata:

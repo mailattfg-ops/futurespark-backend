@@ -33,3 +33,7 @@ lerna-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Prisma generated clients
+**/prisma/client/
+

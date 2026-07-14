@@ -5,13 +5,12 @@ datasource db {
 
 generator client {
   provider = "prisma-client-js"
+  output   = "./client"
 }
 
-model User {
+model IntegrationConfig {
   id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
+  providerName String
+  isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
 }

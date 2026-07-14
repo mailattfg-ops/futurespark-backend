@@ -8,6 +8,13 @@
     "clean": "rimraf dist"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@futurespark/cache": "^1.0.0",
+    "@futurespark/logger": "^1.0.0",
+    "@futurespark/types": "^1.0.0",
+    "jsonwebtoken": "^9.0.3"
   }
 }
