@@ -21,7 +21,6 @@ const PAY_SERVICE_URL   = process.env.PAY_SERVICE_URL   || 'http://localhost:300
 
 // ── Core Middleware ────────────────────────────────────────────
 app.use(cors());
-app.use(express.json());
 app.use(requestId);
 
 // ── Request Logging ────────────────────────────────────────────
@@ -42,7 +41,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth', createProxyMiddleware({
   target: AUTH_SERVICE_URL,
   changeOrigin: true,
-  pathRewrite: { '^/api/auth': '/auth' },
+  pathRewrite: { '^/': '/auth/' },
   on: {
     error: (err, _req, res: any) => {
       logger.error(`[Gateway] Auth service unreachable: ${err.message}`);
@@ -62,7 +61,7 @@ app.use('/api/users',
   createProxyMiddleware({
     target: AUTH_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { '^/api/users': '/users' },
+    pathRewrite: { '^/': '/users/' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Auth service unreachable: ${err.message}`);
@@ -75,14 +74,32 @@ app.use('/api/users',
     },
   })
 );
-
+// Role management
+app.use('/api/roles',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: AUTH_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/roles/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Auth service unreachable: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Service temporarily unavailable. Please try again shortly.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
 // Learning service (future)
 app.use('/api/courses',
   asyncHandler(authenticate),
   createProxyMiddleware({
     target: LEARN_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { '^/api/courses': '/courses' },
+    pathRewrite: { '^/': '/courses/' },
     on: {
       error: (_err, _req, res: any) => {
         res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
@@ -101,7 +118,7 @@ app.use('/api/payments',
   createProxyMiddleware({
     target: PAY_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { '^/api/payments': '/payments' },
+    pathRewrite: { '^/': '/payments/' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Payment service unreachable: ${err.message}`);

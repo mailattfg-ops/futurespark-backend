@@ -88,13 +88,15 @@ export const blockToken = async (jti: string, ttlSeconds: number): Promise<void>
   await redis.set(`blacklist:${jti}`, 'blocked', 'EX', ttlSeconds);
 };
 
-/**
- * Check if a token's JTI is blocked.
- */
 export const isTokenBlocked = async (jti: string): Promise<boolean> => {
-  const redis = getRedisClient();
-  const result = await redis.exists(`blacklist:${jti}`);
-  return result === 1;
+  try {
+    const redis = getRedisClient();
+    const result = await redis.exists(`blacklist:${jti}`);
+    return result === 1;
+  } catch (err: any) {
+    console.error(`[Redis] Blocklist check failed, degrading gracefully (assuming not blocked): ${err.message}`);
+    return false;
+  }
 };
 
 // ── HMAC Internal Trust ────────────────────────────────────────

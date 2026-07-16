@@ -36,4 +36,14 @@ export const userController = {
     logger.info(`[User] Deleted: ${user.id}`);
     return res.status(HTTP_STATUS.OK).json(successResponse(user, 'User deleted successfully'));
   },
+
+  async resetPassword(req: Request, res: Response) {
+    const { password } = req.body;
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'Password is required and must be at least 8 characters' });
+    }
+    const user = await userService.resetUserPassword(req.params.id, password);
+    logger.info(`[User] Reset Password: ${user.id}`);
+    return res.status(HTTP_STATUS.OK).json(successResponse(user, 'Password reset successfully'));
+  },
 };

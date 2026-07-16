@@ -11,20 +11,29 @@ export const createRedisClient = (url?: string): Redis => {
 
   const connectionUrl = url || process.env.REDIS_URL || 'redis://localhost:6379';
   redisClient = new Redis(connectionUrl, {
-    maxRetriesPerRequest: 3,
+    maxRetriesPerRequest: 0,       // Fail immediately instead of 3-retry blocking backoff
+    enableOfflineQueue: false,     // Don't queue commands when disconnected — fail fast
     retryStrategy(times: number) {
-      const delay = Math.min(times * 200, 2000);
+      // Back off more aggressively: 2s, 4s, 8s... capped at 30s
+      const delay = Math.min(2000 * Math.pow(2, times - 1), 30000);
       return delay;
     },
-    enableReadyCheck: true,
-    lazyConnect: false,
+    enableReadyCheck: false,       // Skip ready check to connect faster
+    lazyConnect: true,             // Don't block startup on Redis connection
   });
 
+  // Throttle error logs to once every 30s to prevent log spam
+  let lastRedisErrLog = 0;
   redisClient.on('error', (err) => {
-    console.error('[Redis] Connection error:', err.message);
+    const now = Date.now();
+    if (now - lastRedisErrLog > 30_000) {
+      console.warn('[Redis] Unavailable, requests will degrade gracefully:', (err as any).code || err.message);
+      lastRedisErrLog = now;
+    }
   });
 
   redisClient.on('connect', () => {
+    lastRedisErrLog = 0;
     console.log('[Redis] Connected successfully');
   });
 

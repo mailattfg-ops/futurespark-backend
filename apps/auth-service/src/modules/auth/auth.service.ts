@@ -25,7 +25,8 @@ const buildAuthResponse = (user: any, tokens: TokenPair, jti: string): AuthRespo
     email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
-    role: user.role,
+    role: user.role?.name || user.role || 'STUDENT',
+    requiresFtlReset: user.requiresFtlReset,
   },
   tokens,
 });
@@ -45,20 +46,24 @@ export const authService = {
 
     // Hash password and create user
     const passwordHash = hashPassword(input.password);
+    const defaultRole = await db.role.findUnique({ where: { name: 'STUDENT' } });
     const user = await db.user.create({
       data: {
         email: input.email,
         passwordHash,
         firstName: input.firstName,
         lastName: input.lastName,
+        roleId: defaultRole?.id,
       },
+      include: { role: true },
     });
 
     // Generate tokens
     const { tokens, jti } = generateTokenPair({
       userId: user.id,
       email: user.email,
-      role: user.role,
+      role: user.role?.name || 'STUDENT',
+      requiresFtlReset: user.requiresFtlReset,
     });
 
     // Store refresh token in DB
@@ -80,7 +85,10 @@ export const authService = {
    * Authenticate a user by email and password. Returns a token pair.
    */
   async login(input: LoginInput): Promise<AuthResponse> {
-    const user = await db.user.findUnique({ where: { email: input.email } });
+    const user = await db.user.findUnique({
+      where: { email: input.email },
+      include: { role: true },
+    });
     if (!user) {
       throw new AppError('Invalid email or password', HTTP_STATUS.UNAUTHORIZED);
     }
@@ -98,7 +106,8 @@ export const authService = {
     const { tokens, jti } = generateTokenPair({
       userId: user.id,
       email: user.email,
-      role: user.role,
+      role: user.role?.name || 'STUDENT',
+      requiresFtlReset: user.requiresFtlReset,
     });
 
     // Store refresh token and update last login
@@ -128,7 +137,11 @@ export const authService = {
     // Find the stored refresh token
     const storedToken = await db.refreshToken.findUnique({
       where: { token: refreshToken },
-      include: { user: true },
+      include: {
+        user: {
+          include: { role: true },
+        },
+      },
     });
 
     if (!storedToken) {
@@ -152,7 +165,8 @@ export const authService = {
     const { tokens, jti } = generateTokenPair({
       userId: storedToken.user.id,
       email: storedToken.user.email,
-      role: storedToken.user.role,
+      role: storedToken.user.role?.name || 'STUDENT',
+      requiresFtlReset: storedToken.user.requiresFtlReset,
     });
 
     // Store the new refresh token
@@ -168,6 +182,70 @@ export const authService = {
     });
 
     return buildAuthResponse(storedToken.user, tokens, jti);
+  },
+
+  /**
+   * Complete the first-time login flow by forcing a password change.
+   */
+  async completeFtl(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+    firstName?: string,
+    lastName?: string
+  ): Promise<AuthResponse> {
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      include: { role: true },
+    });
+    if (!user) {
+      throw new AppError('User not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    if (!user.isActive) {
+      throw new AppError('Account is deactivated', HTTP_STATUS.FORBIDDEN);
+    }
+
+    if (!user.requiresFtlReset) {
+      throw new AppError('First-time login setup is not required for this account', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    const isPasswordValid = verifyPassword(currentPassword, user.passwordHash);
+    if (!isPasswordValid) {
+      throw new AppError('Invalid current password', HTTP_STATUS.UNAUTHORIZED);
+    }
+
+    const newPasswordHash = hashPassword(newPassword);
+    const updatedUser = await db.user.update({
+      where: { id: userId },
+      data: {
+        passwordHash: newPasswordHash,
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        requiresFtlReset: false,
+      },
+      include: { role: true },
+    });
+
+    const { tokens, jti } = generateTokenPair({
+      userId: updatedUser.id,
+      email: updatedUser.email,
+      role: updatedUser.role?.name || 'STUDENT',
+      requiresFtlReset: false,
+    });
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + REFRESH_TOKEN_EXPIRY_DAYS);
+
+    await db.refreshToken.create({
+      data: {
+        token: tokens.refreshToken,
+        userId: updatedUser.id,
+        expiresAt,
+      },
+    });
+
+    return buildAuthResponse(updatedUser, tokens, jti);
   },
 
   /**

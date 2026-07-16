@@ -6,6 +6,7 @@ export interface JwtPayload {
   email: string;
   role: string;
   jti: string; // Unique token identifier for blocklist
+  requiresFtlReset?: boolean;
 }
 
 /**
@@ -45,6 +46,7 @@ export interface AuthResponse {
     firstName: string | null;
     lastName: string | null;
     role: string;
+    requiresFtlReset: boolean;
   };
   tokens: TokenPair;
 }

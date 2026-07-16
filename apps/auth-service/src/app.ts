@@ -6,6 +6,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { errorHandler, requestId } from '@futurespark/middleware';
 import { authRoutes } from './modules/auth';
 import { userRoutes } from './modules/user';
+import { roleRoutes } from './modules/role/role.routes';
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.use((req, _res, next) => {
 // ── Routes ─────────────────────────────────────────────────────
 app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
+app.use('/roles', roleRoutes);
 
 // ── Health Check ───────────────────────────────────────────────
 app.get('/health', (_req, res) => {

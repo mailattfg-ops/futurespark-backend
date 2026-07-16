@@ -8,8 +8,83 @@ generator client {
   output   = "./client"
 }
 
-model Course {
-  id        String   @id @default(uuid())
-  title     String
-  createdAt DateTime @default(now())
+enum PlanType {
+  FULL
+  INSTALLMENT
+}
+
+model Program {
+  id           String        @id @default(uuid())
+  title        String
+  description  String?
+  level        String        @default("Beginner")
+  levelColor   String        @default("purple")
+  image        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  sessions     Session[]
+  paymentPlans PaymentPlan[]
+  leads        Lead[]
+}
+
+model PaymentPlan {
+  id           String        @id @default(uuid())
+  type         PlanType
+  price        Float         @default(0.0)
+  description  String?
+  programId    String
+  program      Program       @relation(fields: [programId], references: [id], onDelete: Cascade)
+  installments Installment[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([programId, type])
+}
+
+model Installment {
+  id            String      @id @default(uuid())
+  name          String
+  amount        Float
+  order         Int
+  paymentPlanId String
+  paymentPlan   PaymentPlan @relation(fields: [paymentPlanId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  title        String
+  order        Int
+  durationMin  Int       @default(60)
+  slidesUrl    String?
+  guideUrl     String?
+  worksheetUrl String?
+  programId    String?
+  program      Program?  @relation(fields: [programId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  INTERESTED
+  ENROLLED
+  LOST
+}
+
+model Lead {
+  id          String     @id @default(uuid())
+  firstName   String
+  lastName    String
+  email       String
+  phone       String?
+  source      String     @default("Website")
+  status      LeadStatus @default(NEW)
+  programId   String?
+  program     Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
+  notes       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 }

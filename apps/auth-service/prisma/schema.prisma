@@ -8,24 +8,31 @@ generator client {
   output   = "./client"
 }
 
-enum UserRole {
-  STUDENT
-  INSTRUCTOR
-  ADMIN
+model User {
+  id                String         @id @default(uuid())
+  email             String         @unique
+  passwordHash      String
+  firstName         String?
+  lastName          String?
+  roleId            String?
+  role              Role?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  isActive          Boolean        @default(true)
+  requiresFtlReset  Boolean        @default(false)
+  lastLoginAt       DateTime?
+  qualifiedPrograms String[]       @default([]) // Program IDs qualified to teach
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  refreshTokens     RefreshToken[]
 }
 
-model User {
-  id            String         @id @default(uuid())
-  email         String         @unique
-  passwordHash  String
-  firstName     String?
-  lastName      String?
-  role          UserRole       @default(STUDENT)
-  isActive      Boolean        @default(true)
-  lastLoginAt   DateTime?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  refreshTokens RefreshToken[]
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g. "ADMIN", "TEACHER", etc.
+  description String?
+  permissions String[] @default([]) // Checked permission keys list
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model RefreshToken {

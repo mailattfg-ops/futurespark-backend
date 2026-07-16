@@ -102,3 +102,45 @@ export const validateLogout = (data: any): LogoutInput => {
   }
   return { refreshToken: data.refreshToken };
 };
+
+// ── Complete FTL Schema ────────────────────────────────────────
+
+export interface CompleteFtlInput {
+  currentPassword: string;
+  newPassword: string;
+  firstName?: string;
+  lastName?: string;
+}
+
+export const validateCompleteFtl = (data: any): CompleteFtlInput => {
+  const errors: string[] = [];
+
+  if (!data.currentPassword || typeof data.currentPassword !== 'string') {
+    errors.push('Current password is required');
+  }
+
+  if (!data.newPassword || typeof data.newPassword !== 'string') {
+    errors.push('New password is required');
+  } else if (data.newPassword.length < 8) {
+    errors.push('New password must be at least 8 characters long');
+  }
+
+  if (data.firstName !== undefined && typeof data.firstName !== 'string') {
+    errors.push('First name must be a string');
+  }
+
+  if (data.lastName !== undefined && typeof data.lastName !== 'string') {
+    errors.push('Last name must be a string');
+  }
+
+  if (errors.length > 0) {
+    throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
+  }
+
+  return {
+    currentPassword: data.currentPassword,
+    newPassword: data.newPassword,
+    firstName: data.firstName?.trim(),
+    lastName: data.lastName?.trim(),
+  };
+};

@@ -10,7 +10,11 @@ export interface CreateUserInput {
   password: string;
   firstName?: string;
   lastName?: string;
+  roleId?: string;
+  qualifiedPrograms?: string[];
 }
+
+const VALID_ROLES = ['STUDENT', 'ADMIN', 'TEACHER', 'QA_AUDITOR', 'SCHEDULER', 'WAREHOUSE_ADMIN', 'FINANCE_ADMIN'];
 
 export const validateCreateUser = (data: any): CreateUserInput => {
   const errors: string[] = [];
@@ -33,6 +37,12 @@ export const validateCreateUser = (data: any): CreateUserInput => {
   if (data.lastName !== undefined && typeof data.lastName !== 'string') {
     errors.push('Last name must be a string');
   }
+  if (data.roleId !== undefined && typeof data.roleId !== 'string') {
+    errors.push('Role ID must be a string');
+  }
+  if (data.qualifiedPrograms !== undefined && !Array.isArray(data.qualifiedPrograms)) {
+    errors.push('Qualified programs must be an array of strings');
+  }
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
@@ -41,6 +51,8 @@ export const validateCreateUser = (data: any): CreateUserInput => {
     password: data.password,
     firstName: data.firstName?.trim(),
     lastName: data.lastName?.trim(),
+    roleId: data.roleId,
+    qualifiedPrograms: data.qualifiedPrograms,
   };
 };
 
@@ -51,6 +63,8 @@ export interface UpdateUserInput {
   firstName?: string;
   lastName?: string;
   isActive?: boolean;
+  roleId?: string;
+  qualifiedPrograms?: string[];
 }
 
 export const validateUpdateUser = (data: any): UpdateUserInput => {
@@ -70,6 +84,12 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
   if (data.isActive !== undefined && typeof data.isActive !== 'boolean') {
     errors.push('isActive must be a boolean');
   }
+  if (data.roleId !== undefined && typeof data.roleId !== 'string') {
+    errors.push('Role ID must be a string');
+  }
+  if (data.qualifiedPrograms !== undefined && !Array.isArray(data.qualifiedPrograms)) {
+    errors.push('Qualified programs must be an array of strings');
+  }
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
@@ -78,18 +98,22 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
     firstName: data.firstName?.trim(),
     lastName: data.lastName?.trim(),
     isActive: data.isActive,
+    roleId: data.roleId,
+    qualifiedPrograms: data.qualifiedPrograms,
   };
 };
-
-// ── List Users (Pagination) ────────────────────────────────────
 
 export interface ListUsersQuery {
   page: number;
   limit: number;
+  role?: string;
+  isNotRole?: string;
 }
 
 export const validateListUsers = (query: any): ListUsersQuery => {
   const page = parseInt(query.page, 10) || 1;
-  const limit = Math.min(parseInt(query.limit, 10) || 20, 100);
-  return { page: Math.max(page, 1), limit };
+  const limit = Math.min(parseInt(query.limit, 10) || 100, 100);
+  const role = typeof query.role === 'string' && VALID_ROLES.includes(query.role) ? query.role : undefined;
+  const isNotRole = typeof query.isNotRole === 'string' && VALID_ROLES.includes(query.isNotRole) ? query.isNotRole : undefined;
+  return { page: Math.max(page, 1), limit, role, isNotRole };
 };

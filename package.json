@@ -13,8 +13,11 @@
     "dev": "npm run dev --workspaces --if-present"
   },
   "devDependencies": {
-    "typescript": "^5.3.3",
     "@types/node": "^20.11.24",
-    "rimraf": "^5.0.5"
+    "rimraf": "^5.0.5",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "multer": "^2.2.0"
   }
 }

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, isTokenBlocked, signInternalHeaders } from '@futurespark/authentication';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
+import logger from '@futurespark/logger';
 
 /**
  * JWT verification middleware for the gateway.
@@ -20,7 +21,8 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
 
     try {
       payload = verifyAccessToken(token);
-    } catch {
+    } catch (err: any) {
+      logger.error(`[Gateway Auth] JWT verification failed: ${err.message}. Token: ${token.slice(0, 20)}...`);
       return next(new AppError('Invalid or expired access token', HTTP_STATUS.UNAUTHORIZED));
     }
 
@@ -28,6 +30,11 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     const blocked = await isTokenBlocked(payload.jti);
     if (blocked) {
       return next(new AppError('Token has been revoked', HTTP_STATUS.UNAUTHORIZED));
+    }
+
+    // Enforce First-Time Login (FTL) constraint
+    if (payload.requiresFtlReset) {
+      return next(new AppError('First-time login password change required', HTTP_STATUS.FORBIDDEN));
     }
 
     // Sign and inject internal HMAC headers for downstream services
