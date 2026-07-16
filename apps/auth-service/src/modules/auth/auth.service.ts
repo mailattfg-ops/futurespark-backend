@@ -85,49 +85,90 @@ export const authService = {
    * Authenticate a user by email and password. Returns a token pair.
    */
   async login(input: LoginInput): Promise<AuthResponse> {
+    // 1. Try finding in User table
     const user = await db.user.findUnique({
       where: { email: input.email },
       include: { role: true },
     });
-    if (!user) {
+
+    let account: any = null;
+    let role = '';
+    let type: 'user' | 'parent' | 'student' = 'user';
+
+    if (user) {
+      account = user;
+      role = user.role?.name || 'STUDENT';
+      type = 'user';
+    } else {
+      // 2. Try finding in ParentAccount table
+      const parent = await db.parentAccount.findUnique({
+        where: { email: input.email },
+        include: { profiles: true },
+      });
+      if (parent) {
+        account = parent;
+        const firstProfile = parent.profiles[0];
+        account.firstName = firstProfile?.firstName || 'Parent';
+        account.lastName = firstProfile?.lastName || 'Account';
+        role = 'PARENT';
+        type = 'parent';
+      } else {
+        // 3. Try finding in Student table
+        const student = await db.student.findUnique({
+          where: { email: input.email },
+        });
+        if (student) {
+          account = student;
+          role = 'STUDENT';
+          type = 'student';
+        }
+      }
+    }
+
+    if (!account) {
       throw new AppError('Invalid email or password', HTTP_STATUS.UNAUTHORIZED);
     }
 
-    if (!user.isActive) {
+    if (!account.isActive) {
       throw new AppError('Account is deactivated', HTTP_STATUS.FORBIDDEN);
     }
 
-    const isPasswordValid = verifyPassword(input.password, user.passwordHash);
+    const isPasswordValid = verifyPassword(input.password, account.passwordHash);
     if (!isPasswordValid) {
       throw new AppError('Invalid email or password', HTTP_STATUS.UNAUTHORIZED);
     }
 
     // Generate tokens
     const { tokens, jti } = generateTokenPair({
-      userId: user.id,
-      email: user.email,
-      role: user.role?.name || 'STUDENT',
-      requiresFtlReset: user.requiresFtlReset,
+      userId: account.id,
+      email: account.email,
+      role: role,
+      requiresFtlReset: account.requiresFtlReset,
     });
 
-    // Store refresh token and update last login
+    // Store refresh token
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + REFRESH_TOKEN_EXPIRY_DAYS);
 
     await db.refreshToken.create({
       data: {
         token: tokens.refreshToken,
-        userId: user.id,
+        userId: type === 'user' ? account.id : undefined,
+        parentAccountId: type === 'parent' ? account.id : undefined,
+        studentId: type === 'student' ? account.id : undefined,
         expiresAt,
       },
     });
 
-    await db.user.update({
-      where: { id: user.id },
-      data: { lastLoginAt: new Date() },
-    });
+    // Update lastLoginAt if User
+    if (type === 'user') {
+      await db.user.update({
+        where: { id: account.id },
+        data: { lastLoginAt: new Date() },
+      });
+    }
 
-    return buildAuthResponse(user, tokens, jti);
+    return buildAuthResponse({ ...account, role }, tokens, jti);
   },
 
   /**
@@ -138,9 +179,9 @@ export const authService = {
     const storedToken = await db.refreshToken.findUnique({
       where: { token: refreshToken },
       include: {
-        user: {
-          include: { role: true },
-        },
+        user: { include: { role: true } },
+        parentAccount: { include: { profiles: true } },
+        student: true,
       },
     });
 
@@ -154,7 +195,32 @@ export const authService = {
       throw new AppError('Refresh token has expired', HTTP_STATUS.UNAUTHORIZED);
     }
 
-    if (!storedToken.user.isActive) {
+    let account: any = null;
+    let role = '';
+    let type: 'user' | 'parent' | 'student' = 'user';
+
+    if (storedToken.user) {
+      account = storedToken.user;
+      role = storedToken.user.role?.name || 'STUDENT';
+      type = 'user';
+    } else if (storedToken.parentAccount) {
+      account = storedToken.parentAccount;
+      const firstProfile = storedToken.parentAccount.profiles[0];
+      account.firstName = firstProfile?.firstName || 'Parent';
+      account.lastName = firstProfile?.lastName || 'Account';
+      role = 'PARENT';
+      type = 'parent';
+    } else if (storedToken.student) {
+      account = storedToken.student;
+      role = 'STUDENT';
+      type = 'student';
+    }
+
+    if (!account) {
+      throw new AppError('Associated account not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    if (!account.isActive) {
       throw new AppError('Account is deactivated', HTTP_STATUS.FORBIDDEN);
     }
 
@@ -163,10 +229,10 @@ export const authService = {
 
     // Generate a new token pair
     const { tokens, jti } = generateTokenPair({
-      userId: storedToken.user.id,
-      email: storedToken.user.email,
-      role: storedToken.user.role?.name || 'STUDENT',
-      requiresFtlReset: storedToken.user.requiresFtlReset,
+      userId: account.id,
+      email: account.email,
+      role: role,
+      requiresFtlReset: account.requiresFtlReset,
     });
 
     // Store the new refresh token
@@ -176,12 +242,14 @@ export const authService = {
     await db.refreshToken.create({
       data: {
         token: tokens.refreshToken,
-        userId: storedToken.user.id,
+        userId: type === 'user' ? account.id : undefined,
+        parentAccountId: type === 'parent' ? account.id : undefined,
+        studentId: type === 'student' ? account.id : undefined,
         expiresAt,
       },
     });
 
-    return buildAuthResponse(storedToken.user, tokens, jti);
+    return buildAuthResponse({ ...account, role }, tokens, jti);
   },
 
   /**
@@ -194,43 +262,100 @@ export const authService = {
     firstName?: string,
     lastName?: string
   ): Promise<AuthResponse> {
+    let account: any = null;
+    let type: 'user' | 'parent' | 'student' = 'user';
+    let role = '';
+
     const user = await db.user.findUnique({
       where: { id: userId },
       include: { role: true },
     });
-    if (!user) {
+    if (user) {
+      account = user;
+      type = 'user';
+      role = user.role?.name || 'STUDENT';
+    } else {
+      const parent = await db.parentAccount.findUnique({
+        where: { id: userId },
+        include: { profiles: true },
+      });
+      if (parent) {
+        account = parent;
+        type = 'parent';
+        role = 'PARENT';
+      } else {
+        const student = await db.student.findUnique({
+          where: { id: userId },
+        });
+        if (student) {
+          account = student;
+          type = 'student';
+          role = 'STUDENT';
+        }
+      }
+    }
+
+    if (!account) {
       throw new AppError('User not found', HTTP_STATUS.NOT_FOUND);
     }
 
-    if (!user.isActive) {
+    if (!account.isActive) {
       throw new AppError('Account is deactivated', HTTP_STATUS.FORBIDDEN);
     }
 
-    if (!user.requiresFtlReset) {
+    if (!account.requiresFtlReset) {
       throw new AppError('First-time login setup is not required for this account', HTTP_STATUS.BAD_REQUEST);
     }
 
-    const isPasswordValid = verifyPassword(currentPassword, user.passwordHash);
+    const isPasswordValid = verifyPassword(currentPassword, account.passwordHash);
     if (!isPasswordValid) {
       throw new AppError('Invalid current password', HTTP_STATUS.UNAUTHORIZED);
     }
 
     const newPasswordHash = hashPassword(newPassword);
-    const updatedUser = await db.user.update({
-      where: { id: userId },
-      data: {
-        passwordHash: newPasswordHash,
-        firstName: firstName || user.firstName,
-        lastName: lastName || user.lastName,
-        requiresFtlReset: false,
-      },
-      include: { role: true },
-    });
+
+    let updatedAccount: any = null;
+    if (type === 'user') {
+      updatedAccount = await db.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash: newPasswordHash,
+          firstName: firstName || account.firstName,
+          lastName: lastName || account.lastName,
+          requiresFtlReset: false,
+        },
+        include: { role: true },
+      });
+    } else if (type === 'parent') {
+      updatedAccount = await db.parentAccount.update({
+        where: { id: userId },
+        data: {
+          passwordHash: newPasswordHash,
+          requiresFtlReset: false,
+        },
+        include: { profiles: true },
+      });
+      const firstProfile = updatedAccount.profiles[0];
+      updatedAccount.firstName = firstProfile?.firstName || 'Parent';
+      updatedAccount.lastName = firstProfile?.lastName || 'Account';
+      updatedAccount.role = 'PARENT';
+    } else if (type === 'student') {
+      updatedAccount = await db.student.update({
+        where: { id: userId },
+        data: {
+          passwordHash: newPasswordHash,
+          firstName: firstName || account.firstName,
+          lastName: lastName || account.lastName,
+          requiresFtlReset: false,
+        },
+      });
+      updatedAccount.role = 'STUDENT';
+    }
 
     const { tokens, jti } = generateTokenPair({
-      userId: updatedUser.id,
-      email: updatedUser.email,
-      role: updatedUser.role?.name || 'STUDENT',
+      userId: updatedAccount.id,
+      email: updatedAccount.email,
+      role: updatedAccount.role?.name || updatedAccount.role || 'STUDENT',
       requiresFtlReset: false,
     });
 
@@ -240,12 +365,14 @@ export const authService = {
     await db.refreshToken.create({
       data: {
         token: tokens.refreshToken,
-        userId: updatedUser.id,
+        userId: type === 'user' ? updatedAccount.id : undefined,
+        parentAccountId: type === 'parent' ? updatedAccount.id : undefined,
+        studentId: type === 'student' ? updatedAccount.id : undefined,
         expiresAt,
       },
     });
 
-    return buildAuthResponse(updatedUser, tokens, jti);
+    return buildAuthResponse({ ...updatedAccount, role: role || updatedAccount.role }, tokens, jti);
   },
 
   /**

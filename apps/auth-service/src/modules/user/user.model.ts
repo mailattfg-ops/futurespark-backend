@@ -11,5 +11,6 @@ export interface PublicUser {
   role: string | null;
   isActive: boolean;
   qualifiedPrograms: string[];
+  mentorTypes: string[];
   createdAt: Date;
 }

@@ -11,6 +11,7 @@ export const userRepository = {
         lastName: data.lastName,
         roleId: data.roleId,
         qualifiedPrograms: data.qualifiedPrograms || [],
+        mentorTypes: data.mentorTypes || ['REGULAR'],
         requiresFtlReset: data.requiresFtlReset ?? false,
       },
       include: { role: true },
@@ -41,6 +42,7 @@ export const userRepository = {
         isActive: data.isActive,
         qualifiedPrograms: data.qualifiedPrograms,
         roleId: data.roleId,
+        mentorTypes: data.mentorTypes,
       },
       include: { role: true },
     });

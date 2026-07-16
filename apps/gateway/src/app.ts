@@ -93,6 +93,25 @@ app.use('/api/roles',
     },
   })
 );
+// Schedule management
+app.use('/api/schedules',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: AUTH_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/schedules/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Auth service unreachable: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Service temporarily unavailable. Please try again shortly.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
 // Learning service (future)
 app.use('/api/courses',
   asyncHandler(authenticate),

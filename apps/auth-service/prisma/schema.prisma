@@ -9,20 +9,35 @@ generator client {
 }
 
 model User {
-  id                String         @id @default(uuid())
-  email             String         @unique
+  id                String            @id @default(uuid())
+  email             String            @unique
   passwordHash      String
   firstName         String?
   lastName          String?
   roleId            String?
-  role              Role?          @relation(fields: [roleId], references: [id], onDelete: SetNull)
-  isActive          Boolean        @default(true)
-  requiresFtlReset  Boolean        @default(false)
+  role              Role?             @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  isActive          Boolean           @default(true)
+  requiresFtlReset  Boolean           @default(false)
   lastLoginAt       DateTime?
-  qualifiedPrograms String[]       @default([]) // Program IDs qualified to teach
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  refreshTokens     RefreshToken[]
+  qualifiedPrograms String[]          @default([]) // Program IDs qualified to teach
+  mentorTypes       String[]          @default(["REGULAR"]) // "REGULAR", "DEMO"
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  refreshTokens         RefreshToken[]
+  mentorSchedules       MentorSchedule[]
+  scheduledClasses      ScheduledClass[]  @relation("MentorClasses")
+  scheduledByClasses    ScheduledClass[]  @relation("ScheduledByUser")
+}
+
+model MentorSchedule {
+  id        String   @id @default(uuid())
+  mentorId  String
+  mentor    User     @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  weekday   Int      // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+  startTime String   // "HH:MM" 24-hr format
+  endTime   String   // auto-calculated: startTime + 90 min
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Role {
@@ -36,10 +51,72 @@ model Role {
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
+  id               String         @id @default(uuid())
+  token            String         @unique
+  userId           String?
+  user             User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentAccountId  String?
+  parentAccount    ParentAccount? @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  studentId        String?
+  student          Student?       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  expiresAt        DateTime
+  createdAt        DateTime       @default(now())
+}
+
+model ParentAccount {
+  id               String          @id @default(uuid())
+  email            String          @unique
+  passwordHash     String
+  isActive         Boolean         @default(true)
+  requiresFtlReset Boolean         @default(false)
+  profiles         ParentProfile[]
+  students         Student[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  refreshTokens    RefreshToken[]
+}
+
+model ParentProfile {
+  id              String        @id @default(uuid())
+  parentAccountId String
+  parentAccount   ParentAccount @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  firstName       String
+  lastName        String
+  phone           String?
+  relationship    String?       // e.g. "Mother", "Father", "Guardian"
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model Student {
+  id               String           @id @default(uuid())
+  parentAccountId  String
+  parentAccount    ParentAccount    @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  email            String           @unique
+  passwordHash     String
+  firstName        String
+  lastName         String
+  isActive         Boolean          @default(true)
+  requiresFtlReset Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  refreshTokens    RefreshToken[]
+  scheduledClasses ScheduledClass[]
+}
+
+model ScheduledClass {
+  id              String    @id @default(uuid())
+  studentId       String
+  student         Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  mentorId        String
+  mentor          User      @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: Cascade)
+  scheduledById   String?   // Staff User ID who created this booking
+  scheduledBy     User?     @relation("ScheduledByUser", fields: [scheduledById], references: [id], onDelete: SetNull)
+  programId       String    // Program UUID from learning service
+  sessionId       String    // Session UUID from learning service
+  startTime       DateTime
+  endTime         DateTime
+  status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
