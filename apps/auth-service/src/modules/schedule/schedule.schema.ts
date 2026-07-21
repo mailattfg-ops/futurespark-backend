@@ -9,6 +9,7 @@ export interface CreateScheduleInput {
   sessions?: { id: string; order: number }[];
   classType?: string;
   leadId?: string;
+  meetingLink?: string;
 }
 
 export const validateCreateSchedule = (data: any): CreateScheduleInput => {
@@ -62,6 +63,7 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
     startTime: data.startTime.trim(),
     classType,
     leadId: data.leadId ? data.leadId.trim() : undefined,
+    meetingLink: typeof data.meetingLink === 'string' && data.meetingLink.trim() !== '' ? data.meetingLink.trim() : undefined,
     sessions: data.sessions
       ? data.sessions.map((s: any) => ({
           id: s.id.trim(),
@@ -75,6 +77,8 @@ export interface UpdateScheduleInput {
   status?: string;
   startTime?: string;
   mentorId?: string;
+  meetingLink?: string | null;
+  updateAll?: boolean;
   rescheduleReason?: string | null;
   rescheduleMessage?: string | null;
 }
@@ -108,6 +112,8 @@ export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
     status: data.status,
     startTime: data.startTime,
     mentorId: data.mentorId?.trim(),
+    meetingLink: data.meetingLink === null ? null : (typeof data.meetingLink === 'string' ? data.meetingLink.trim() : undefined),
+    updateAll: typeof data.updateAll === 'boolean' ? data.updateAll : undefined,
     rescheduleReason: data.rescheduleReason === null ? null : (typeof data.rescheduleReason === 'string' ? data.rescheduleReason.trim() : undefined),
     rescheduleMessage: data.rescheduleMessage === null ? null : (typeof data.rescheduleMessage === 'string' ? data.rescheduleMessage.trim() : undefined),
   };

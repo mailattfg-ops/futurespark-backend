@@ -164,6 +164,7 @@ export const scheduleService = {
           endTime: classEndTime,
           status: 'SCHEDULED',
           classType: 'DEMO',
+          meetingLink: input.meetingLink || null,
         },
       });
     }
@@ -222,6 +223,7 @@ export const scheduleService = {
         endTime: classEndTime,
         status: 'SCHEDULED',
         classType: 'REGULAR',
+        meetingLink: input.meetingLink || null,
       });
     }
 
@@ -309,6 +311,30 @@ export const scheduleService = {
       }
     }
 
+    if (input.meetingLink !== undefined && input.updateAll !== false) {
+      if (classSession.studentId) {
+        await db.scheduledClass.updateMany({
+          where: {
+            studentId: classSession.studentId,
+            programId: classSession.programId,
+          },
+          data: {
+            meetingLink: input.meetingLink,
+          },
+        });
+      } else if (classSession.leadId) {
+        await db.scheduledClass.updateMany({
+          where: {
+            leadId: classSession.leadId,
+            programId: classSession.programId,
+          },
+          data: {
+            meetingLink: input.meetingLink,
+          },
+        });
+      }
+    }
+
     return db.scheduledClass.update({
       where: { id },
       data: {
@@ -316,6 +342,7 @@ export const scheduleService = {
         endTime,
         status,
         mentorId: effectiveMentorId,
+        meetingLink: input.meetingLink !== undefined ? input.meetingLink : undefined,
         rescheduleReason: input.rescheduleReason !== undefined ? input.rescheduleReason : undefined,
         rescheduleMessage: input.rescheduleMessage !== undefined ? input.rescheduleMessage : undefined,
       },

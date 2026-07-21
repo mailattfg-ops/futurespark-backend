@@ -85,9 +85,9 @@ export const authService = {
    * Authenticate a user by email and password. Returns a token pair.
    */
   async login(input: LoginInput): Promise<AuthResponse> {
-    // 1. Try finding in User table
-    const user = await db.user.findUnique({
-      where: { email: input.email },
+    // 1. Try finding in User table (case-insensitive)
+    const user = await db.user.findFirst({
+      where: { email: { equals: input.email, mode: 'insensitive' } },
       include: { role: true },
     });
 
@@ -100,9 +100,9 @@ export const authService = {
       role = user.role?.name || 'STUDENT';
       type = 'user';
     } else {
-      // 2. Try finding in ParentAccount table
-      const parent = await db.parentAccount.findUnique({
-        where: { email: input.email },
+      // 2. Try finding in ParentAccount table (case-insensitive)
+      const parent = await db.parentAccount.findFirst({
+        where: { email: { equals: input.email, mode: 'insensitive' } },
         include: { profiles: true },
       });
       if (parent) {
@@ -113,9 +113,9 @@ export const authService = {
         role = 'PARENT';
         type = 'parent';
       } else {
-        // 3. Try finding in Student table
-        const student = await db.student.findUnique({
-          where: { email: input.email },
+        // 3. Try finding in Student table (case-insensitive)
+        const student = await db.student.findFirst({
+          where: { email: { equals: input.email, mode: 'insensitive' } },
         });
         if (student) {
           account = student;

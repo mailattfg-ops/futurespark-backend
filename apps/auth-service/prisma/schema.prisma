@@ -140,6 +140,7 @@ model ScheduledClass {
   status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
   classType       String    @default("REGULAR")   // "REGULAR", "DEMO"
   leadId            String?   // Lead UUID if classType is DEMO
+  meetingLink       String?   // Optional Google Meet / Zoom / video call URL
   rescheduleReason  String?
   rescheduleMessage String?
   createdAt         DateTime  @default(now())

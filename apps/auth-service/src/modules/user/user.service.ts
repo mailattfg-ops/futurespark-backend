@@ -180,10 +180,11 @@ export const userService = {
     }
 
     const passwordHash = hashPassword(input.password);
+    const normalizedEmail = input.email.toLowerCase().trim();
     const student = await db.student.create({
       data: {
         parentAccountId: parentId,
-        email: input.email,
+        email: normalizedEmail,
         passwordHash,
         firstName: input.firstName,
         lastName: input.lastName,
