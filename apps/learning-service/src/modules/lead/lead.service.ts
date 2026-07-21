@@ -46,6 +46,7 @@ export const leadService = {
         status: input.status as any,
         programId: input.programId,
         notes: input.notes,
+        demoClass: input.demoClass,
       },
       include: {
         program: {
@@ -71,6 +72,7 @@ export const leadService = {
         status: input.status !== undefined ? (input.status as any) : undefined,
         programId: input.programId !== undefined ? input.programId : undefined,
         notes: input.notes !== undefined ? input.notes : undefined,
+        demoClass: input.demoClass !== undefined ? input.demoClass : undefined,
       },
       include: {
         program: {

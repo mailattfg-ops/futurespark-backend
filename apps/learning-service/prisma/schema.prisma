@@ -85,6 +85,7 @@ model Lead {
   programId   String?
   program     Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
   notes       String?
+  demoClass   Boolean    @default(false)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 }

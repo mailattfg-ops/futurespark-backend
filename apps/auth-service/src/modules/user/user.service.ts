@@ -131,6 +131,7 @@ export const userService = {
       data: {
         email: input.email,
         passwordHash,
+        programId: input.programId || null,
         profiles: {
           createMany: {
             data: input.profiles || [],
@@ -260,7 +261,8 @@ export const userService = {
       where: { id: parentId },
       data: {
         email: input.email || undefined,
-        isActive: input.isActive !== undefined ? input.isActive : undefined
+        isActive: input.isActive !== undefined ? input.isActive : undefined,
+        programId: input.programId !== undefined ? input.programId : undefined
       }
     });
   },
@@ -323,11 +325,14 @@ export const userService = {
     });
   },
 
-  async addMentorSchedule(mentorId: string, input: { weekday: number; startTime: string }) {
+  async addMentorSchedule(mentorId: string, input: { weekday: number; startTime: string; scheduleType?: string }) {
     const mentor = await db.user.findUnique({ where: { id: mentorId } });
     if (!mentor) throw new AppError('Mentor not found', HTTP_STATUS.NOT_FOUND);
 
-    const { weekday, startTime } = input;
+    const { weekday, startTime, scheduleType = 'REGULAR' } = input;
+    if (!['REGULAR', 'DEMO'].includes(scheduleType)) {
+      throw new AppError('Invalid scheduleType. Must be REGULAR or DEMO', HTTP_STATUS.BAD_REQUEST);
+    }
 
     // Parse startTime "HH:MM" and compute endTime (+90 min)
     const [startHH, startMM] = startTime.split(':').map(Number);
@@ -354,15 +359,16 @@ export const userService = {
 
       // Overlap if new start < existEnd AND new end > existStart
       if (startMinutes < existEnd && endMinutes > existStart) {
+        const typeStr = slot.scheduleType.toLowerCase();
         throw new AppError(
-          `Conflict: overlaps existing slot ${slot.startTime}–${slot.endTime} on this day`,
+          `Conflict: overlaps existing ${typeStr} slot ${slot.startTime}–${slot.endTime} on this day`,
           HTTP_STATUS.CONFLICT,
         );
       }
     }
 
     return db.mentorSchedule.create({
-      data: { mentorId, weekday, startTime, endTime },
+      data: { mentorId, weekday, startTime, endTime, scheduleType },
     });
   },
 

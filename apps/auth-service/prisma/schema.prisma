@@ -1,11 +1,13 @@
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["auth", "learning"]
 }
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "./client"
+  provider        = "prisma-client-js"
+  output          = "./client"
+  previewFeatures = ["multiSchema"]
 }
 
 model User {
@@ -23,21 +25,26 @@ model User {
   mentorTypes       String[]          @default(["REGULAR"]) // "REGULAR", "DEMO"
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
-  refreshTokens         RefreshToken[]
-  mentorSchedules       MentorSchedule[]
-  scheduledClasses      ScheduledClass[]  @relation("MentorClasses")
-  scheduledByClasses    ScheduledClass[]  @relation("ScheduledByUser")
+  refreshTokens     RefreshToken[]
+  mentorSchedules   MentorSchedule[]
+  scheduledClasses  ScheduledClass[]  @relation("MentorClasses")
+  scheduledByClasses ScheduledClass[]  @relation("ScheduledByUser")
+
+  @@schema("auth")
 }
 
 model MentorSchedule {
-  id        String   @id @default(uuid())
-  mentorId  String
-  mentor    User     @relation(fields: [mentorId], references: [id], onDelete: Cascade)
-  weekday   Int      // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
-  startTime String   // "HH:MM" 24-hr format
-  endTime   String   // auto-calculated: startTime + 90 min
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(uuid())
+  mentorId     String
+  mentor       User     @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  weekday      Int      // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+  startTime    String   // "HH:MM" 24-hr format
+  endTime      String   // auto-calculated: startTime + 90 min
+  scheduleType String   @default("REGULAR")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@schema("auth")
 }
 
 model Role {
@@ -48,6 +55,8 @@ model Role {
   users       User[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@schema("auth")
 }
 
 model RefreshToken {
@@ -61,6 +70,8 @@ model RefreshToken {
   student          Student?       @relation(fields: [studentId], references: [id], onDelete: Cascade)
   expiresAt        DateTime
   createdAt        DateTime       @default(now())
+
+  @@schema("auth")
 }
 
 model ParentAccount {
@@ -74,6 +85,10 @@ model ParentAccount {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   refreshTokens    RefreshToken[]
+  programId        String?
+  program          Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+
+  @@schema("auth")
 }
 
 model ParentProfile {
@@ -86,6 +101,8 @@ model ParentProfile {
   relationship    String?       // e.g. "Mother", "Father", "Guardian"
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+
+  @@schema("auth")
 }
 
 model Student {
@@ -102,21 +119,125 @@ model Student {
   updatedAt        DateTime         @updatedAt
   refreshTokens    RefreshToken[]
   scheduledClasses ScheduledClass[]
+
+  @@schema("auth")
 }
 
 model ScheduledClass {
   id              String    @id @default(uuid())
-  studentId       String
-  student         Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId       String?
+  student         Student?  @relation(fields: [studentId], references: [id], onDelete: Cascade)
   mentorId        String
   mentor          User      @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: Cascade)
   scheduledById   String?   // Staff User ID who created this booking
   scheduledBy     User?     @relation("ScheduledByUser", fields: [scheduledById], references: [id], onDelete: SetNull)
   programId       String    // Program UUID from learning service
-  sessionId       String    // Session UUID from learning service
+  sessionId       String?   // Session UUID from learning service
   startTime       DateTime
   endTime         DateTime
   status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  classType       String    @default("REGULAR")   // "REGULAR", "DEMO"
+  leadId            String?   // Lead UUID if classType is DEMO
+  rescheduleReason  String?
+  rescheduleMessage String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@schema("auth")
+}
+
+// ── Models from learning schema (read-only in auth context but mapped for relation consistency) ──
+
+enum PlanType {
+  FULL
+  INSTALLMENT
+  @@schema("learning")
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  INTERESTED
+  ENROLLED
+  LOST
+  @@schema("learning")
+}
+
+model Program {
+  id             String          @id @default(uuid())
+  title          String
+  description    String?
+  level          String          @default("Beginner")
+  levelColor     String          @default("purple")
+  image          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  sessions       Session[]
+  paymentPlans   PaymentPlan[]
+  leads          Lead[]
+  parentAccounts ParentAccount[]
+
+  @@schema("learning")
+}
+
+model PaymentPlan {
+  id           String        @id @default(uuid())
+  type         PlanType
+  price        Float         @default(0.0)
+  description  String?
+  programId    String
+  program      Program       @relation(fields: [programId], references: [id], onDelete: Cascade)
+  installments Installment[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([programId, type])
+  @@schema("learning")
+}
+
+model Installment {
+  id            String      @id @default(uuid())
+  name          String
+  amount        Float
+  order         Int
+  paymentPlanId String
+  paymentPlan   PaymentPlan @relation(fields: [paymentPlanId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@schema("learning")
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  title        String
+  order        Int
+  durationMin  Int       @default(60)
+  slidesUrl    String?
+  guideUrl     String?
+  worksheetUrl String?
+  programId    String?
+  program      Program?  @relation(fields: [programId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@schema("learning")
+}
+
+model Lead {
+  id          String     @id @default(uuid())
+  firstName   String
+  lastName    String
+  email       String
+  phone       String?
+  source      String     @default("Website")
+  status      LeadStatus @default(NEW)
+  programId   String?
+  program     Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
+  notes       String?
+  demoClass   Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@schema("learning")
 }

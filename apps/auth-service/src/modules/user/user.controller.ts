@@ -58,11 +58,11 @@ export const userController = {
   },
 
   async createCustomer(req: Request, res: Response) {
-    const { email, password, profiles } = req.body;
+    const { email, password, programId, profiles } = req.body;
     if (!email || !password || !Array.isArray(profiles) || profiles.length === 0) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'Email, password, and profiles are required' });
     }
-    const result = await userService.createCustomer({ email, password, profiles });
+    const result = await userService.createCustomer({ email, password, programId, profiles });
     logger.info(`[Customer] Created: ${result.email}`);
     return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Customer created successfully'));
   },
@@ -159,12 +159,12 @@ export const userController = {
 
   async addMentorSchedule(req: Request, res: Response) {
     const { id } = req.params;
-    const { weekday, startTime } = req.body;
+    const { weekday, startTime, scheduleType } = req.body;
     if (weekday === undefined || weekday === null || !startTime) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'weekday and startTime are required' });
     }
-    const slot = await userService.addMentorSchedule(id, { weekday: Number(weekday), startTime });
-    logger.info(`[Mentor Schedule] Added slot for mentorId: ${id} weekday=${weekday} start=${startTime}`);
+    const slot = await userService.addMentorSchedule(id, { weekday: Number(weekday), startTime, scheduleType });
+    logger.info(`[Mentor Schedule] Added slot for mentorId: ${id} weekday=${weekday} start=${startTime} type=${scheduleType || 'REGULAR'}`);
     return res.status(HTTP_STATUS.CREATED).json(successResponse(slot, 'Schedule slot added'));
   },
 

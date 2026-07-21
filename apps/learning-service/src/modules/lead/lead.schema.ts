@@ -10,6 +10,7 @@ export interface CreateLeadInput {
   status?: string;
   programId?: string;
   notes?: string;
+  demoClass?: boolean;
 }
 
 const VALID_STATUSES = ['NEW', 'CONTACTED', 'INTERESTED', 'ENROLLED', 'LOST'];
@@ -45,6 +46,9 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
   if (data.notes !== undefined && typeof data.notes !== 'string') {
     errors.push('Notes must be a string');
   }
+  if (data.demoClass !== undefined && typeof data.demoClass !== 'boolean') {
+    errors.push('demoClass must be a boolean');
+  }
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
@@ -57,6 +61,7 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
     status: data.status || 'NEW',
     programId: data.programId || undefined,
     notes: data.notes?.trim() || undefined,
+    demoClass: data.demoClass !== undefined ? data.demoClass : false,
   };
 };
 
@@ -69,6 +74,7 @@ export interface UpdateLeadInput {
   status?: string;
   programId?: string;
   notes?: string;
+  demoClass?: boolean;
 }
 
 export const validateUpdateLead = (data: any): UpdateLeadInput => {
@@ -87,6 +93,7 @@ export const validateUpdateLead = (data: any): UpdateLeadInput => {
   }
   if (data.programId !== undefined && typeof data.programId !== 'string') errors.push('Program ID must be a string');
   if (data.notes !== undefined && typeof data.notes !== 'string') errors.push('Notes must be a string');
+  if (data.demoClass !== undefined && typeof data.demoClass !== 'boolean') errors.push('demoClass must be a boolean');
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
@@ -99,5 +106,6 @@ export const validateUpdateLead = (data: any): UpdateLeadInput => {
     status: data.status,
     programId: data.programId,
     notes: data.notes?.trim(),
+    demoClass: data.demoClass,
   };
 };

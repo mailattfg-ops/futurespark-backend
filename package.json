@@ -10,10 +10,11 @@
   "scripts": {
     "build": "npm run build --workspace=@futurespark/constants --workspace=@futurespark/enums --workspace=@futurespark/logger --workspace=@futurespark/response --workspace=@futurespark/authentication --workspace=@futurespark/database --workspace=@futurespark/middleware --workspace=@futurespark/validators --workspace=@futurespark/cache --workspace=@futurespark/queue --workspace=@futurespark/events --workspace=@futurespark/utils && npm run build --workspace=@futurespark/gateway --workspace=@futurespark/auth-service --workspace=@futurespark/learning-service --workspace=@futurespark/communication-service --workspace=@futurespark/payment-service --workspace=@futurespark/analytics-service --workspace=@futurespark/integration-service",
     "test": "npm run test --workspaces --if-present",
-    "dev": "npm run dev --workspaces --if-present"
+    "dev": "concurrently -n \"analytics,auth,comm,gateway,integration,learning,payment\" -c \"blue,green,magenta,cyan,yellow,white,red\" \"npm run dev -w @futurespark/analytics-service\" \"npm run dev -w @futurespark/auth-service\" \"npm run dev -w @futurespark/communication-service\" \"npm run dev -w @futurespark/gateway\" \"npm run dev -w @futurespark/integration-service\" \"npm run dev -w @futurespark/learning-service\" \"npm run dev -w @futurespark/payment-service\""
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
+    "concurrently": "^10.0.3",
     "rimraf": "^5.0.5",
     "typescript": "^5.3.3"
   },
