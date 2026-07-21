@@ -87,6 +87,7 @@ model ParentAccount {
   refreshTokens    RefreshToken[]
   programId        String?
   program          Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+  paymentApproved  Boolean         @default(false)
 
   @@schema("auth")
 }

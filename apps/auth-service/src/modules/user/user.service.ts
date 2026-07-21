@@ -257,13 +257,21 @@ export const userService = {
       if (existing) throw new AppError('Email already in use by another parent account', HTTP_STATUS.CONFLICT);
     }
 
+    const dataToUpdate: any = {
+      email: input.email || undefined,
+      isActive: input.isActive !== undefined ? input.isActive : undefined,
+      programId: input.programId !== undefined ? input.programId : undefined,
+      paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
+    };
+
+    // If programId is changed and not explicitly setting paymentApproved, reset it to false
+    if (input.programId !== undefined && input.programId !== parent.programId && input.paymentApproved === undefined) {
+      dataToUpdate.paymentApproved = false;
+    }
+
     return await db.parentAccount.update({
       where: { id: parentId },
-      data: {
-        email: input.email || undefined,
-        isActive: input.isActive !== undefined ? input.isActive : undefined,
-        programId: input.programId !== undefined ? input.programId : undefined
-      }
+      data: dataToUpdate
     });
   },
 
