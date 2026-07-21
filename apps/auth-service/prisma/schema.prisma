@@ -1,7 +1,8 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  schemas  = ["auth", "learning"]
+  provider          = "postgresql"
+  url               = env("AUTH_DATABASE_URL")
+  directUrl         = env("AUTH_DATABASE_URL")
+  schemas           = ["auth", "learning"]
 }
 
 generator client {
