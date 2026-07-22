@@ -40,7 +40,10 @@ export const courseService = {
         sessions: { orderBy: { order: 'asc' } },
         paymentPlans: {
           include: {
-            installments: { orderBy: { order: 'asc' } },
+            installments: {
+              orderBy: { order: 'asc' },
+              include: { sessions: true },
+            },
           },
         },
       },
@@ -84,21 +87,33 @@ export const courseService = {
         });
 
         if (input.installments.length > 0) {
-          await tx.installment.createMany({
-            data: input.installments.map(inst => ({
-              name: inst.name,
-              amount: inst.amount,
-              order: inst.order,
-              paymentPlanId: plan.id,
-            })),
-          });
+          for (const inst of input.installments) {
+            const created = await tx.installment.create({
+              data: {
+                name: inst.name,
+                amount: inst.amount,
+                order: inst.order,
+                paymentPlanId: plan.id,
+              },
+            });
+
+            if (inst.sessionIds && inst.sessionIds.length > 0) {
+              await tx.session.updateMany({
+                where: { id: { in: inst.sessionIds } },
+                data: { installmentId: created.id },
+              });
+            }
+          }
         }
       }
 
       return tx.paymentPlan.findUnique({
         where: { id: plan.id },
         include: {
-          installments: { orderBy: { order: 'asc' } },
+          installments: {
+            orderBy: { order: 'asc' },
+            include: { sessions: true },
+          },
         },
       });
     });

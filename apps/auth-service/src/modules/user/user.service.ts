@@ -197,8 +197,13 @@ export const userService = {
     const students = await db.student.findMany({
       include: {
         parentAccount: {
-          include: {
-            profiles: true,
+          select: {
+            id: true,
+            email: true,
+            programId: true,
+            paymentApproved: true,
+            selectedPlanType: true,
+            paidInstallmentIds: true,
           },
         },
       },
@@ -263,6 +268,8 @@ export const userService = {
       isActive: input.isActive !== undefined ? input.isActive : undefined,
       programId: input.programId !== undefined ? input.programId : undefined,
       paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
+      selectedPlanType: input.selectedPlanType !== undefined ? input.selectedPlanType : undefined,
+      paidInstallmentIds: input.paidInstallmentIds !== undefined ? input.paidInstallmentIds : undefined,
     };
 
     // If programId is changed and not explicitly setting paymentApproved, reset it to false

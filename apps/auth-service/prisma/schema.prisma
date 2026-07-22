@@ -76,19 +76,21 @@ model RefreshToken {
 }
 
 model ParentAccount {
-  id               String          @id @default(uuid())
-  email            String          @unique
-  passwordHash     String
-  isActive         Boolean         @default(true)
-  requiresFtlReset Boolean         @default(false)
-  profiles         ParentProfile[]
-  students         Student[]
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
-  refreshTokens    RefreshToken[]
-  programId        String?
-  program          Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
-  paymentApproved  Boolean         @default(false)
+  id                   String          @id @default(uuid())
+  email                String          @unique
+  passwordHash         String
+  isActive             Boolean         @default(true)
+  requiresFtlReset     Boolean         @default(false)
+  profiles             ParentProfile[]
+  students             Student[]
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  refreshTokens        RefreshToken[]
+  programId            String?
+  program              Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+  paymentApproved      Boolean         @default(false)
+  selectedPlanType     String?         // "FULL" or "INSTALLMENT"
+  paidInstallmentIds   String[]        @default([]) // IDs of paid installments
 
   @@schema("auth")
 }
@@ -205,6 +207,7 @@ model Installment {
   order         Int
   paymentPlanId String
   paymentPlan   PaymentPlan @relation(fields: [paymentPlanId], references: [id], onDelete: Cascade)
+  sessions      Session[]
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -212,17 +215,19 @@ model Installment {
 }
 
 model Session {
-  id           String    @id @default(uuid())
-  title        String
-  order        Int
-  durationMin  Int       @default(60)
-  slidesUrl    String?
-  guideUrl     String?
-  worksheetUrl String?
-  programId    String?
-  program      Program?  @relation(fields: [programId], references: [id], onDelete: SetNull)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id            String       @id @default(uuid())
+  title         String
+  order         Int
+  durationMin   Int          @default(60)
+  slidesUrl     String?
+  guideUrl      String?
+  worksheetUrl  String?
+  programId     String?
+  program       Program?     @relation(fields: [programId], references: [id], onDelete: SetNull)
+  installmentId String?
+  installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   @@schema("learning")
 }

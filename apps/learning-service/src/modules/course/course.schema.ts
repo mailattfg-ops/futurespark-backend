@@ -38,6 +38,7 @@ export interface UpsertPaymentPlanInput {
     name: string;
     amount: number;
     order: number;
+    sessionIds?: string[];
   }[];
 }
 
@@ -67,6 +68,7 @@ export const validateUpsertPaymentPlan = (data: any): UpsertPaymentPlanInput => 
           name: inst.name.trim(),
           amount: inst.amount,
           order: typeof inst.order === 'number' ? inst.order : idx + 1,
+          sessionIds: Array.isArray(inst.sessionIds) ? inst.sessionIds : [],
         };
       })
     : undefined;
