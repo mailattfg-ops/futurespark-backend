@@ -14,3 +14,50 @@ model IntegrationConfig {
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
 }
+
+model GoogleAccount {
+  id             String    @id @default(uuid())
+  workspaceEmail String    @unique
+  accessToken    String
+  refreshToken   String
+  tokenExpiry    DateTime
+  connected      Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Meeting {
+  id                 String             @id @default(uuid())
+  calendarEventId    String             @unique
+  conferenceId       String?
+  meetUrl            String
+  title              String
+  description        String?
+  organizerEmail     String
+  teacherId          String
+  studentId          String
+  programId          String
+  sessionId          String
+  startTime          DateTime
+  endTime            DateTime
+  timezone           String
+  status             String             @default("SCHEDULED") // "SCHEDULED", "ACTIVE", "COMPLETED", "CANCELLED"
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  recordings         MeetingRecording[]
+}
+
+model MeetingRecording {
+  id                   String   @id @default(uuid())
+  meetingId            String
+  meeting              Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  driveFileId          String   @unique
+  fileName             String
+  fileSize             Int
+  duration             Int?     // Duration in seconds
+  videoPath            String?  // Local/storage path for download
+  audioPath            String?  // Local/storage path for extracted audio
+  downloadStatus       String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  extractedAudioStatus String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  createdAt            DateTime @default(now())
+}
