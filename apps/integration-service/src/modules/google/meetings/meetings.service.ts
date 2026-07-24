@@ -191,4 +191,46 @@ export class GoogleMeetingsService {
     logger.info(`Meeting ${id} cancelled and soft-deleted in local database.`);
     return { id: cancelledMeeting.id, status: 'CANCELLED' };
   }
+
+  static async syncManualClass(input: {
+    meetingLink: string;
+    title: string;
+    description?: string;
+    startTime: string;
+    endTime: string;
+    organizerEmail: string;
+    teacherId: string;
+    studentId: string;
+    programId: string;
+    sessionId: string;
+  }) {
+    let meeting = await db.meeting.findFirst({
+      where: { meetUrl: input.meetingLink },
+    });
+
+    if (!meeting) {
+      const start = new Date(input.startTime);
+      const end = new Date(input.endTime);
+
+      meeting = await db.meeting.create({
+        data: {
+          calendarEventId: `manual_${Math.random().toString(36).substring(7)}`,
+          meetUrl: input.meetingLink,
+          title: input.title,
+          description: input.description || null,
+          organizerEmail: input.organizerEmail,
+          teacherId: input.teacherId,
+          studentId: input.studentId,
+          programId: input.programId,
+          sessionId: input.sessionId,
+          startTime: start,
+          endTime: end,
+          timezone: 'UTC',
+          status: 'COMPLETED',
+        },
+      });
+    }
+
+    return meeting;
+  }
 }

@@ -94,4 +94,34 @@ export class GoogleMeetingsController {
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to delete meeting'));
     }
   }
+
+  static async syncManual(req: Request, res: Response) {
+    try {
+      const { meetingLink, title, description, startTime, endTime, organizerEmail, teacherId, studentId, programId, sessionId } = req.body;
+      
+      if (!meetingLink || !title || !startTime || !endTime || !organizerEmail || !teacherId || !studentId || !programId || !sessionId) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json(
+          errorResponse('Missing required parameters for manual sync.')
+        );
+      }
+
+      const result = await GoogleMeetingsService.syncManualClass({
+        meetingLink,
+        title,
+        description,
+        startTime,
+        endTime,
+        organizerEmail,
+        teacherId,
+        studentId,
+        programId,
+        sessionId,
+      });
+
+      return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Manual meeting synced successfully.'));
+    } catch (err: any) {
+      logger.error(`Error syncing manual meeting: ${err.message}`);
+      return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(err.message || 'Failed to sync manual meeting'));
+    }
+  }
 }

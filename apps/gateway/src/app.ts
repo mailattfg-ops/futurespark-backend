@@ -152,13 +152,32 @@ app.use('/api/payments',
   })
 );
 
+// Public Callback for Google OAuth (does NOT require JWT auth)
+app.use('/api/google/callback',
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/google/auth/callback' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable on callback: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // Google Integration service
 app.use('/api/google',
   asyncHandler(authenticate),
   createProxyMiddleware({
     target: INTEGRATION_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { '^/api/google': '/google/' },
+    pathRewrite: { '^/': '/google/' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable: ${err.message}`);

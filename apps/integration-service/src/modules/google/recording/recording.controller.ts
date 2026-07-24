@@ -65,36 +65,45 @@ export class GoogleRecordingController {
     try {
       const { id } = req.params;
       const recording = await GoogleRecordingService.getRecordingById(id);
+      if (!recording) {
+        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Recording not found.'));
+      }
       
-      if (!recording || !recording.videoPath || !fs.existsSync(recording.videoPath)) {
-        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Recording video file not downloaded locally yet.'));
+      const isAudio = req.query.type === 'audio';
+      const filePath = (isAudio && recording.audioPath) ? recording.audioPath : recording.videoPath;
+
+      if (!filePath || !fs.existsSync(filePath)) {
+        return res.status(HTTP_STATUS.NOT_FOUND).json(
+          errorResponse(isAudio ? 'Recording audio file not extracted yet.' : 'Recording video file not downloaded locally yet.')
+        );
       }
 
-      const stat = fs.statSync(recording.videoPath);
+      const stat = fs.statSync(filePath);
       const fileSize = stat.size;
       const range = req.headers.range;
+      const contentType = isAudio ? 'audio/mpeg' : 'video/mp4';
 
       if (range) {
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
         const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
         const chunksize = (end - start) + 1;
-        const file = fs.createReadStream(recording.videoPath, { start, end });
+        const file = fs.createReadStream(filePath, { start, end });
         const head = {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Accept-Ranges': 'bytes',
           'Content-Length': chunksize,
-          'Content-Type': 'video/mp4',
+          'Content-Type': contentType,
         };
         res.writeHead(206, head);
         file.pipe(res);
       } else {
         const head = {
           'Content-Length': fileSize,
-          'Content-Type': 'video/mp4',
+          'Content-Type': contentType,
         };
         res.writeHead(HTTP_STATUS.OK, head);
-        fs.createReadStream(recording.videoPath).pipe(res);
+        fs.createReadStream(filePath).pipe(res);
       }
     } catch (err: any) {
       logger.error(`Error streaming recording: ${err.message}`);
@@ -114,6 +123,27 @@ export class GoogleRecordingController {
     } catch (err: any) {
       logger.error(`Error extracting audio: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Audio extraction failed'));
+    }
+  }
+
+  static async getTranscriptContent(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const recording = await GoogleRecordingService.getRecordingById(id);
+      
+      if (!recording) {
+        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Transcript not found.'));
+      }
+
+      if (!recording.videoPath || !fs.existsSync(recording.videoPath)) {
+        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Transcript file not downloaded yet.'));
+      }
+
+      const content = fs.readFileSync(recording.videoPath, 'utf-8');
+      return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript loaded successfully.'));
+    } catch (err: any) {
+      logger.error(`Error loading transcript text: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to read transcript file'));
     }
   }
 }
