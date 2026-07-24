@@ -6,9 +6,13 @@ dist/
 .next/
 out/
 
-# Environment files (explicitly tracked per project setup)
-!.env
-!.env.*
+# Environment files (ignored)
+.env
+.env.local
+.env.*
+
+# Local downloaded media recordings cache
+downloads/
 
 # Logs
 npm-debug.log*

@@ -36,38 +36,39 @@ export class GoogleRecordingService {
       throw new Error(`Meeting with ID ${meetingId} not found in database.`);
     }
 
-    logger.info(`Searching Google Drive for recording matching meeting: ${meeting.title}`);
-    // Search by title prefix or generic keywords
-    const files = await GoogleDriveService.searchMeetRecordings(
+    logger.info(`Searching Google Drive for files matching meeting: ${meeting.title}`);
+    const files = await GoogleDriveService.searchMeetFiles(
       meeting.organizerEmail,
       meeting.title
     );
 
     if (files.length === 0) {
-      logger.warn(`No recordings found on Google Drive for meeting title: ${meeting.title}`);
+      logger.warn(`No recordings/transcripts found on Google Drive for meeting title: ${meeting.title}`);
       return null;
     }
 
-    // Map the most recent matching recording
-    const driveFile = files[0];
+    const synced = [];
+    for (const file of files) {
+      const isDoc = file.mimeType === 'application/vnd.google-apps.document';
+      const recording = await db.meetingRecording.upsert({
+        where: { driveFileId: file.id },
+        update: {
+          fileName: file.name,
+          fileSize: file.size,
+        },
+        create: {
+          meetingId: meeting.id,
+          driveFileId: file.id,
+          fileName: file.name,
+          fileSize: file.size,
+          downloadStatus: 'PENDING',
+          extractedAudioStatus: isDoc ? 'COMPLETED' : 'PENDING',
+        },
+      });
+      synced.push(recording);
+    }
 
-    const recording = await db.meetingRecording.upsert({
-      where: { driveFileId: driveFile.id },
-      update: {
-        fileName: driveFile.name,
-        fileSize: driveFile.size,
-      },
-      create: {
-        meetingId: meeting.id,
-        driveFileId: driveFile.id,
-        fileName: driveFile.name,
-        fileSize: driveFile.size,
-        downloadStatus: 'PENDING',
-        extractedAudioStatus: 'PENDING',
-      },
-    });
-
-    return recording;
+    return synced[0];
   }
 
   static async downloadRecordingFile(recordingId: string) {
@@ -80,16 +81,35 @@ export class GoogleRecordingService {
       throw new Error(`Recording metadata with ID ${recordingId} not found.`);
     }
 
-    const videoFileName = `${recording.id}_${recording.fileName}`;
+    const isTranscript = recording.fileName.toLowerCase().includes('transcript');
+    const ext = isTranscript ? '.txt' : '.mp4';
+    const videoFileName = `${recording.id}_${recording.fileName.replace(/[^a-zA-Z0-9_\-.]/g, '_')}${ext}`;
     const destinationPath = path.join(VIDEO_DIR, videoFileName);
 
-    logger.info(`Starting download of recording file ID ${recording.driveFileId} to ${destinationPath}`);
+    logger.info(`Starting download/export of file ID ${recording.driveFileId} to ${destinationPath}`);
 
     try {
-      const stream = await GoogleDriveService.downloadFileStream(
-        recording.meeting.organizerEmail,
-        recording.driveFileId
-      );
+      let stream;
+      if (isTranscript) {
+        try {
+          stream = await GoogleDriveService.exportGoogleDocStream(
+            recording.meeting.organizerEmail,
+            recording.driveFileId,
+            'text/plain'
+          );
+        } catch (err: any) {
+          logger.warn(`Doc export failed: ${err.message}. Retrying media stream download.`);
+          stream = await GoogleDriveService.downloadFileStream(
+            recording.meeting.organizerEmail,
+            recording.driveFileId
+          );
+        }
+      } else {
+        stream = await GoogleDriveService.downloadFileStream(
+          recording.meeting.organizerEmail,
+          recording.driveFileId
+        );
+      }
 
       const writeStream = fs.createWriteStream(destinationPath);
       stream.pipe(writeStream);
@@ -108,10 +128,10 @@ export class GoogleRecordingService {
         },
       });
 
-      logger.info(`Successfully downloaded recording for meeting: ${recording.meeting.title}`);
+      logger.info(`Successfully completed file processing for: ${recording.fileName}`);
       return destinationPath;
     } catch (err: any) {
-      logger.error(`Failed to download recording file: ${err.message}`);
+      logger.error(`Failed to process recording/transcript file: ${err.message}`);
       await db.meetingRecording.update({
         where: { id: recordingId },
         data: { downloadStatus: 'FAILED' },
@@ -126,11 +146,15 @@ export class GoogleRecordingService {
     });
 
     if (!recording || !recording.videoPath) {
-      throw new Error(`Recording video file must be downloaded before extracting audio.`);
+      throw new Error(`Recording file must be downloaded before extracting audio.`);
+    }
+
+    if (recording.fileName.toLowerCase().includes('transcript')) {
+      throw new Error('Cannot extract audio from a transcript text file.');
     }
 
     if (!fs.existsSync(recording.videoPath)) {
-      throw new Error(`Local video file is missing from path: ${recording.videoPath}`);
+      throw new Error(`Local file is missing from path: ${recording.videoPath}`);
     }
 
     const audioFileName = `${path.basename(recording.videoPath, '.mp4')}.${format}`;
@@ -139,11 +163,6 @@ export class GoogleRecordingService {
     logger.info(`Extracting audio in ${format.toUpperCase()} format to ${destinationPath}`);
 
     return new Promise<string>((resolve, reject) => {
-      // ffmpeg parameters:
-      // -y: overwrite output file
-      // -i: input file
-      // -q:a 0 (for MP3 variable bitrate) or simple copy
-      // -map a: extract audio streams only
       const command = `ffmpeg -y -i "${recording.videoPath}" -q:a 0 -map a "${destinationPath}"`;
 
       exec(command, async (error, stdout, stderr) => {
