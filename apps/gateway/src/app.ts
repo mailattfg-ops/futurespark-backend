@@ -18,6 +18,7 @@ createRedisClient(process.env.REDIS_URL);
 const AUTH_SERVICE_URL  = process.env.AUTH_SERVICE_URL  || 'http://localhost:3001';
 const LEARN_SERVICE_URL = process.env.LEARN_SERVICE_URL || 'http://localhost:3002';
 const PAY_SERVICE_URL   = process.env.PAY_SERVICE_URL   || 'http://localhost:3004';
+const INTEGRATION_SERVICE_URL = process.env.INTEGRATION_SERVICE_URL || 'http://localhost:3006';
 
 // ── Core Middleware ────────────────────────────────────────────
 app.use(cors());
@@ -144,6 +145,26 @@ app.use('/api/payments',
         res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
           success: false,
           message: 'Payment service is temporarily unavailable. Please try your checkout again shortly.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+// Google Integration service
+app.use('/api/google',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/api/google': '/google/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
           timestamp: new Date().toISOString(),
         });
       },
