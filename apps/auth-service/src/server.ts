@@ -8,7 +8,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 // Load service-specific .env (PORT, NODE_ENV) — overrides root if keys clash
 dotenv.config();
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.AUTH_SERVICE_PORT || 3001;
 
 app.listen(PORT, () => {
   logger.info(`Auth Service server listening on port ${PORT}`);
