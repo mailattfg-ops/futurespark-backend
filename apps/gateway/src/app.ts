@@ -18,6 +18,7 @@ createRedisClient(process.env.REDIS_URL);
 const AUTH_SERVICE_URL  = process.env.AUTH_SERVICE_URL  || 'http://localhost:3001';
 const LEARN_SERVICE_URL = process.env.LEARN_SERVICE_URL || 'http://localhost:3002';
 const PAY_SERVICE_URL   = process.env.PAY_SERVICE_URL   || 'http://localhost:3004';
+const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://localhost:3003';
 const INTEGRATION_SERVICE_URL = process.env.INTEGRATION_SERVICE_URL || 'http://localhost:3006';
 
 // ── Core Middleware ────────────────────────────────────────────
@@ -184,6 +185,26 @@ app.use('/api/google',
         res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
           success: false,
           message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+// Notification service
+app.use('/api/notifications',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/notifications/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Communication service unreachable: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Notification service is temporarily unavailable.',
           timestamp: new Date().toISOString(),
         });
       },

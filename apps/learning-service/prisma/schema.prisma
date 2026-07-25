@@ -65,6 +65,7 @@ model Session {
   program       Program?     @relation(fields: [programId], references: [id], onDelete: SetNull)
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  credits       Int          @default(10)
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 }

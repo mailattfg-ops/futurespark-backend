@@ -6,6 +6,7 @@ import { userRepository } from './user.repository';
 import { CreateUserInput, UpdateUserInput, ListUsersQuery } from './user.schema';
 import { UserWithoutPassword, PublicUser } from './user.model';
 import type { PaginatedResponse } from '@futurespark/types';
+import { sendNotification } from '../notification-helper';
 
 const sanitize = (user: any): UserWithoutPassword => {
   const { passwordHash, ...rest } = user;
@@ -132,6 +133,7 @@ export const userService = {
         email: input.email,
         passwordHash,
         programId: input.programId || null,
+        requiresFtlReset: true,
         profiles: {
           createMany: {
             data: input.profiles || [],
@@ -181,6 +183,15 @@ export const userService = {
 
     const passwordHash = hashPassword(input.password);
     const normalizedEmail = input.email.toLowerCase().trim();
+
+    // Check if this is the first student profile for this parent
+    const studentCount = await db.student.count({
+      where: { parentAccountId: parentId }
+    });
+
+    const isFirstStudent = studentCount === 0;
+    const isParentPaid = !!parent.paymentApproved;
+
     const student = await db.student.create({
       data: {
         parentAccountId: parentId,
@@ -188,6 +199,8 @@ export const userService = {
         passwordHash,
         firstName: input.firstName,
         lastName: input.lastName,
+        paymentApproved: isParentPaid && isFirstStudent,
+        requiresFtlReset: true,
       },
     });
     return student;
@@ -324,7 +337,9 @@ export const userService = {
         firstName: input.firstName || undefined,
         lastName: input.lastName || undefined,
         email: input.email || undefined,
-        isActive: input.isActive !== undefined ? input.isActive : undefined
+        isActive: input.isActive !== undefined ? input.isActive : undefined,
+        paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
+        credits: input.credits !== undefined ? Number(input.credits) : undefined
       }
     });
   },
@@ -393,5 +408,173 @@ export const userService = {
     if (!slot) throw new AppError('Schedule slot not found', HTTP_STATUS.NOT_FOUND);
     await db.mentorSchedule.delete({ where: { id: scheduleId } });
     return { id: scheduleId };
+  },
+
+  async warnUser(targetId: string, targetRole: string, reason: string) {
+    const logEntry = `[Warning] ${new Date().toISOString()}: ${reason}`;
+    await sendNotification(targetId, 'Formal Disciplinary Warning', `A formal warning has been logged against your account: "${reason}"`, 'HIGH');
+
+    if (targetRole === 'TEACHER' || targetRole === 'ADMIN' || targetRole === 'MENTOR') {
+      const user = await db.user.findUnique({ where: { id: targetId } });
+      if (!user) throw new AppError('Mentor/User not found', HTTP_STATUS.NOT_FOUND);
+      return db.user.update({
+        where: { id: targetId },
+        data: {
+          warningCount: { increment: 1 },
+          warnings: { push: logEntry },
+        },
+      });
+    } else if (targetRole === 'PARENT') {
+      const parent = await db.parentAccount.findUnique({ where: { id: targetId } });
+      if (!parent) throw new AppError('Parent account not found', HTTP_STATUS.NOT_FOUND);
+      return db.parentAccount.update({
+        where: { id: targetId },
+        data: {
+          warningCount: { increment: 1 },
+          warnings: { push: logEntry },
+        },
+      });
+    } else if (targetRole === 'STUDENT') {
+      const student = await db.student.findUnique({ where: { id: targetId } });
+      if (!student) throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
+      return db.student.update({
+        where: { id: targetId },
+        data: {
+          warningCount: { increment: 1 },
+          warnings: { push: logEntry },
+        },
+      });
+    } else {
+      throw new AppError('Invalid target role', HTTP_STATUS.BAD_REQUEST);
+    }
+  },
+
+  async blacklistUser(targetId: string, targetRole: string, reason: string) {
+    const logEntry = `[Blacklisted] ${new Date().toISOString()}: ${reason}`;
+    await sendNotification(targetId, 'Account Deactivated', `Your account has been deactivated: "${reason}"`, 'HIGH');
+
+    if (targetRole === 'TEACHER' || targetRole === 'ADMIN' || targetRole === 'MENTOR') {
+      const user = await db.user.findUnique({ where: { id: targetId } });
+      if (!user) throw new AppError('Mentor/User not found', HTTP_STATUS.NOT_FOUND);
+      
+      // Revoke refresh tokens
+      await db.refreshToken.deleteMany({ where: { userId: targetId } });
+      
+      return db.user.update({
+        where: { id: targetId },
+        data: {
+          isActive: false,
+          warnings: { push: logEntry },
+        },
+      });
+    } else if (targetRole === 'PARENT') {
+      const parent = await db.parentAccount.findUnique({ where: { id: targetId } });
+      if (!parent) throw new AppError('Parent account not found', HTTP_STATUS.NOT_FOUND);
+      
+      // Revoke refresh tokens
+      await db.refreshToken.deleteMany({ where: { parentAccountId: targetId } });
+      
+      return db.parentAccount.update({
+        where: { id: targetId },
+        data: {
+          isActive: false,
+          warnings: { push: logEntry },
+        },
+      });
+    } else if (targetRole === 'STUDENT') {
+      const student = await db.student.findUnique({ where: { id: targetId } });
+      if (!student) throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
+      
+      // Revoke refresh tokens
+      await db.refreshToken.deleteMany({ where: { studentId: targetId } });
+      
+      return db.student.update({
+        where: { id: targetId },
+        data: {
+          isActive: false,
+          warnings: { push: logEntry },
+        },
+      });
+    } else {
+      throw new AppError('Invalid target role', HTTP_STATUS.BAD_REQUEST);
+    }
+  },
+
+  async unblacklistUser(targetId: string, targetRole: string) {
+    const logEntry = `[Unblacklisted] ${new Date().toISOString()}`;
+    await sendNotification(targetId, 'Account Reactivated', 'Your account access has been fully reinstated by the QA Auditor.', 'HIGH');
+
+    if (targetRole === 'TEACHER' || targetRole === 'ADMIN' || targetRole === 'MENTOR') {
+      const user = await db.user.findUnique({ where: { id: targetId } });
+      if (!user) throw new AppError('Mentor/User not found', HTTP_STATUS.NOT_FOUND);
+      return db.user.update({
+        where: { id: targetId },
+        data: {
+          isActive: true,
+          warnings: { push: logEntry },
+        },
+      });
+    } else if (targetRole === 'PARENT') {
+      const parent = await db.parentAccount.findUnique({ where: { id: targetId } });
+      if (!parent) throw new AppError('Parent account not found', HTTP_STATUS.NOT_FOUND);
+      return db.parentAccount.update({
+        where: { id: targetId },
+        data: {
+          isActive: true,
+          warnings: { push: logEntry },
+        },
+      });
+    } else if (targetRole === 'STUDENT') {
+      const student = await db.student.findUnique({ where: { id: targetId } });
+      if (!student) throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
+      return db.student.update({
+        where: { id: targetId },
+        data: {
+          isActive: true,
+          warnings: { push: logEntry },
+        },
+      });
+    } else {
+      throw new AppError('Invalid target role', HTTP_STATUS.BAD_REQUEST);
+    }
+  },
+
+  async getUserQAInfo(targetId: string, targetRole: string) {
+    if (targetRole === 'TEACHER' || targetRole === 'ADMIN' || targetRole === 'MENTOR') {
+      const user = await db.user.findUnique({ where: { id: targetId } });
+      if (!user) return null;
+      return {
+        id: user.id,
+        isActive: user.isActive,
+        warningCount: user.warningCount,
+        warnings: user.warnings,
+      };
+    } else if (targetRole === 'PARENT') {
+      const parent = await db.parentAccount.findUnique({
+        where: { id: targetId },
+        include: { profiles: true }
+      });
+      if (!parent) return null;
+      const name = parent.profiles[0] 
+        ? `${parent.profiles[0].firstName} ${parent.profiles[0].lastName}` 
+        : parent.email;
+      return {
+        id: parent.id,
+        isActive: parent.isActive,
+        warningCount: parent.warningCount,
+        warnings: parent.warnings,
+        name,
+      };
+    } else if (targetRole === 'STUDENT') {
+      const student = await db.student.findUnique({ where: { id: targetId } });
+      if (!student) return null;
+      return {
+        id: student.id,
+        isActive: student.isActive,
+        warningCount: student.warningCount,
+        warnings: student.warnings,
+      };
+    }
+    return null;
   },
 };

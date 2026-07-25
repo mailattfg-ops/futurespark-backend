@@ -6,7 +6,7 @@ export interface CreateScheduleInput {
   mentorId: string;
   programId: string;
   startTime: string;
-  sessions?: { id: string; order: number }[];
+  sessions?: { id: string; order: number; meetingLink?: string | null }[];
   classType?: string;
   leadId?: string;
   meetingLink?: string;
@@ -68,6 +68,7 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
       ? data.sessions.map((s: any) => ({
           id: s.id.trim(),
           order: s.order,
+          meetingLink: typeof s.meetingLink === 'string' && s.meetingLink.trim() !== '' ? s.meetingLink.trim() : undefined,
         }))
       : undefined,
   };
@@ -81,6 +82,9 @@ export interface UpdateScheduleInput {
   updateAll?: boolean;
   rescheduleReason?: string | null;
   rescheduleMessage?: string | null;
+  qaStatus?: string;
+  qaFeedback?: string | null;
+  creditsAwarded?: number;
 }
 
 export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
@@ -104,6 +108,16 @@ export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
     }
   }
 
+  if (data.qaStatus !== undefined) {
+    if (typeof data.qaStatus !== 'string' || !['PENDING', 'PASSED', 'FAILED', 'FLAGGED'].includes(data.qaStatus)) {
+      errors.push('qaStatus must be PENDING, PASSED, FAILED, or FLAGGED');
+    }
+  }
+
+  if (data.creditsAwarded !== undefined && typeof data.creditsAwarded !== 'number') {
+    errors.push('creditsAwarded must be a number');
+  }
+
   if (errors.length > 0) {
     throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
   }
@@ -116,5 +130,8 @@ export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
     updateAll: typeof data.updateAll === 'boolean' ? data.updateAll : undefined,
     rescheduleReason: data.rescheduleReason === null ? null : (typeof data.rescheduleReason === 'string' ? data.rescheduleReason.trim() : undefined),
     rescheduleMessage: data.rescheduleMessage === null ? null : (typeof data.rescheduleMessage === 'string' ? data.rescheduleMessage.trim() : undefined),
+    qaStatus: typeof data.qaStatus === 'string' ? data.qaStatus.trim() : undefined,
+    qaFeedback: data.qaFeedback === null ? null : (typeof data.qaFeedback === 'string' ? data.qaFeedback.trim() : undefined),
+    creditsAwarded: typeof data.creditsAwarded === 'number' ? data.creditsAwarded : undefined,
   };
 };

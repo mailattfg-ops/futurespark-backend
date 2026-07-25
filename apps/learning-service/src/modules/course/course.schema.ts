@@ -91,6 +91,7 @@ export interface CreateSessionInput {
   guideUrl?: string | null;
   worksheetUrl?: string | null;
   programId?: string | null;
+  credits?: number;
 }
 
 export const validateCreateSession = (data: any): CreateSessionInput => {
@@ -104,6 +105,9 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
   if (data.durationMin !== undefined && typeof data.durationMin !== 'number') {
     errors.push('Duration must be a number');
   }
+  if (data.credits !== undefined && typeof data.credits !== 'number') {
+    errors.push('Credits must be a number');
+  }
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
   return {
     title: data.title.trim(),
@@ -113,5 +117,6 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
     guideUrl: data.guideUrl?.trim() || null,
     worksheetUrl: data.worksheetUrl?.trim() || null,
     programId: data.programId?.trim() || null,
+    credits: typeof data.credits === 'number' ? data.credits : undefined,
   };
 };

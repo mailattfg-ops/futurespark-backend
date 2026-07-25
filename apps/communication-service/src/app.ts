@@ -4,6 +4,8 @@ import { logger } from '@futurespark/logger';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 
+import { notificationRoutes } from './modules/notification/notification.routes';
+
 const app = express();
 
 app.use(cors());
@@ -17,6 +19,8 @@ app.use((req, res, next) => {
 app.get('/health', (req, res) => {
   res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'communication-service is healthy'));
 });
+
+app.use('/notifications', notificationRoutes);
 
 app.use((req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Route not found'));

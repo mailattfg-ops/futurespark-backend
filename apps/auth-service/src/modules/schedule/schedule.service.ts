@@ -2,6 +2,7 @@ import { db } from '../../database/datasource';
 import { CreateScheduleInput, UpdateScheduleInput } from './schedule.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
+import { sendNotification } from '../notification-helper';
 
 export const scheduleService = {
   async getMentorsWithSchedules() {
@@ -32,7 +33,7 @@ export const scheduleService = {
   },
 
   async listSchedules(filters: { studentId?: string; mentorId?: string; status?: string }) {
-    return db.scheduledClass.findMany({
+    const schedules = await db.scheduledClass.findMany({
       where: {
         studentId: filters.studentId || undefined,
         mentorId: filters.mentorId || undefined,
@@ -66,6 +67,17 @@ export const scheduleService = {
       },
       orderBy: { startTime: 'asc' },
     });
+
+    const sessionIds = [...new Set(schedules.map((s) => s.sessionId).filter(Boolean))] as string[];
+    const sessions = await db.session.findMany({
+      where: { id: { in: sessionIds } },
+      select: { id: true, title: true, credits: true },
+    });
+
+    return schedules.map((s) => ({
+      ...s,
+      session: sessions.find((sess) => sess.id === s.sessionId) || null,
+    }));
   },
 
   async getScheduleById(id: string) {
@@ -89,7 +101,17 @@ export const scheduleService = {
       throw new AppError('Scheduled class not found', HTTP_STATUS.NOT_FOUND);
     }
 
-    return classSession;
+    let session = null;
+    if (classSession.sessionId) {
+      session = await db.session.findUnique({
+        where: { id: classSession.sessionId },
+      });
+    }
+
+    return {
+      ...classSession,
+      session,
+    };
   },
 
   async createSchedule(input: CreateScheduleInput, scheduledById?: string) {
@@ -223,7 +245,7 @@ export const scheduleService = {
         endTime: classEndTime,
         status: 'SCHEDULED',
         classType: 'REGULAR',
-        meetingLink: input.meetingLink || null,
+        meetingLink: session.meetingLink || input.meetingLink || null,
       });
     }
 
@@ -241,6 +263,9 @@ export const scheduleService = {
     let startTime = classSession.startTime;
     let endTime = classSession.endTime;
     const status = input.status !== undefined ? input.status : classSession.status;
+    if (status === 'COMPLETED' && new Date(startTime) > new Date()) {
+      throw new AppError('Cannot complete or award points to a future class session', HTTP_STATUS.BAD_REQUEST);
+    }
     // Use the new mentorId if provided, else keep existing
     const effectiveMentorId = input.mentorId || classSession.mentorId;
 
@@ -335,7 +360,14 @@ export const scheduleService = {
       }
     }
 
-    return db.scheduledClass.update({
+    let creditsDiff = 0;
+    if (input.creditsAwarded !== undefined && classSession.status === 'COMPLETED') {
+      const oldCredits = classSession.creditsAwarded || 0;
+      const newCredits = Number(input.creditsAwarded);
+      creditsDiff = newCredits - oldCredits;
+    }
+
+    const updatedClass = await db.scheduledClass.update({
       where: { id },
       data: {
         startTime,
@@ -345,10 +377,13 @@ export const scheduleService = {
         meetingLink: input.meetingLink !== undefined ? input.meetingLink : undefined,
         rescheduleReason: input.rescheduleReason !== undefined ? input.rescheduleReason : undefined,
         rescheduleMessage: input.rescheduleMessage !== undefined ? input.rescheduleMessage : undefined,
+        qaStatus: input.qaStatus !== undefined ? input.qaStatus : undefined,
+        qaFeedback: input.qaFeedback !== undefined ? input.qaFeedback : undefined,
+        creditsAwarded: input.creditsAwarded !== undefined ? Number(input.creditsAwarded) : undefined,
       },
       include: {
         student: {
-          select: { firstName: true, lastName: true },
+          select: { id: true, firstName: true, lastName: true },
         },
         mentor: {
           select: { firstName: true, lastName: true },
@@ -358,10 +393,232 @@ export const scheduleService = {
         },
       },
     });
+
+    let session = null;
+    if (updatedClass.sessionId) {
+      session = await db.session.findUnique({
+        where: { id: updatedClass.sessionId },
+      });
+    }
+
+    if (creditsDiff !== 0 && updatedClass.studentId) {
+      await db.student.update({
+        where: { id: updatedClass.studentId },
+        data: {
+          credits: { increment: creditsDiff },
+        },
+      });
+
+      await sendNotification(
+        updatedClass.studentId,
+        'Credits Adjusted',
+        `Admin adjusted points for session "${session?.title || 'Class'}": ${creditsDiff > 0 ? '+' : ''}${creditsDiff} pts.`,
+        'LOW'
+      );
+    }
+
+    return {
+      ...updatedClass,
+      session,
+    };
   },
 
-  async deleteSchedule(id: string) {
+  async deleteSchedule(id: string, deleteAll = false) {
     const classSession = await this.getScheduleById(id);
+
+    if (deleteAll) {
+      if (classSession.classType === 'REGULAR' && classSession.studentId) {
+        return db.scheduledClass.deleteMany({
+          where: {
+            studentId: classSession.studentId,
+            programId: classSession.programId,
+            status: 'SCHEDULED',
+          },
+        });
+      } else if (classSession.classType === 'DEMO' && classSession.leadId) {
+        return db.scheduledClass.deleteMany({
+          where: {
+            leadId: classSession.leadId,
+            programId: classSession.programId,
+            status: 'SCHEDULED',
+          },
+        });
+      }
+    }
+
     return db.scheduledClass.delete({ where: { id: classSession.id } });
+  },
+
+  async createReport(input: { classId: string; reporterId: string; reporterRole: string; issueType: string; description: string }) {
+    const classSession = await this.getScheduleById(input.classId);
+    if (!classSession) {
+      throw new AppError('Scheduled class not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    let reporterName = 'Unknown User';
+    if (input.reporterRole === 'TEACHER' || input.reporterRole === 'ADMIN') {
+      const user = await db.user.findUnique({ where: { id: input.reporterId } });
+      if (user) {
+        reporterName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+      }
+    } else if (input.reporterRole === 'PARENT') {
+      const parent = await db.parentAccount.findUnique({
+        where: { id: input.reporterId },
+        include: { profiles: true },
+      });
+      if (parent && parent.profiles.length > 0) {
+        reporterName = `${parent.profiles[0].firstName} ${parent.profiles[0].lastName}`;
+      } else if (parent) {
+        reporterName = parent.email;
+      }
+    } else if (input.reporterRole === 'STUDENT') {
+      const student = await db.student.findUnique({ where: { id: input.reporterId } });
+      if (student) {
+        reporterName = `${student.firstName} ${student.lastName}`;
+      }
+    }
+
+    return db.sessionReport.create({
+      data: {
+        classId: input.classId,
+        reporterId: input.reporterId,
+        reporterRole: input.reporterRole,
+        reporterName,
+        issueType: input.issueType,
+        description: input.description,
+      },
+      include: {
+        class: {
+          include: {
+            student: true,
+            mentor: true,
+          },
+        },
+      },
+    });
+  },
+
+  async listReports(reporterId?: string) {
+    return db.sessionReport.findMany({
+      where: reporterId ? { reporterId } : undefined,
+      include: {
+        class: {
+          include: {
+            student: true,
+            mentor: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  },
+
+  async updateReport(reportId: string, input: { status?: string; qaFeedback?: string }) {
+    const report = await db.sessionReport.findUnique({ where: { id: reportId } });
+    if (!report) {
+      throw new AppError('Session report not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    const updatedReport = await db.sessionReport.update({
+      where: { id: reportId },
+      data: {
+        status: input.status !== undefined ? input.status : undefined,
+        qaFeedback: input.qaFeedback !== undefined ? input.qaFeedback : undefined,
+      },
+      include: {
+        class: {
+          include: {
+            student: true,
+            mentor: true,
+          },
+        },
+      },
+    });
+
+    // Notify the reporter
+    if (input.status !== undefined) {
+      const displayStatus = input.status === 'RESOLVED' ? 'Resolved' : input.status === 'INVESTIGATING' ? 'Under Investigation' : 'Open';
+      const feedbackNote = input.qaFeedback ? ` Comments: "${input.qaFeedback}"` : '';
+      await sendNotification(
+        updatedReport.reporterId,
+        `Report Status: ${displayStatus}`,
+        `Your reported issue against the class session is now ${displayStatus.toLowerCase()}.${feedbackNote}`,
+        'MEDIUM'
+      );
+    }
+
+    return updatedReport;
+  },
+
+  async completeClass(classId: string, credits: number) {
+    const classSession = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      include: {
+        student: true,
+        mentor: true,
+      },
+    });
+    if (!classSession) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    if (classSession.status === 'COMPLETED') {
+      throw new AppError('Class session has already been completed', HTTP_STATUS.BAD_REQUEST);
+    }
+    if (new Date(classSession.startTime) > new Date()) {
+      throw new AppError('Cannot complete or award points to a future class session', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    let session = null;
+    if (classSession.sessionId) {
+      session = await db.session.findUnique({
+        where: { id: classSession.sessionId },
+      });
+    }
+
+    return db.$transaction(async (tx) => {
+      const updatedClass = await tx.scheduledClass.update({
+        where: { id: classId },
+        data: {
+          status: 'COMPLETED',
+          creditsAwarded: credits,
+        },
+        include: {
+          student: true,
+          mentor: true,
+        },
+      });
+
+      if (updatedClass.studentId) {
+        await tx.student.update({
+          where: { id: updatedClass.studentId },
+          data: {
+            credits: { increment: credits },
+          },
+        });
+
+        // 1. Notify Student
+        await sendNotification(
+          updatedClass.studentId,
+          'Class Completed & Credits Awarded!',
+          `You earned +${credits} credit points for completing "${session?.title || 'Session'}"!`,
+          'MEDIUM'
+        );
+
+        // 2. Notify Parent
+        if (updatedClass.student?.parentAccountId) {
+          await sendNotification(
+            updatedClass.student.parentAccountId,
+            'Student Completed Session',
+            `${updatedClass.student.firstName} completed the session "${session?.title || 'Session'}" and was awarded +${credits} credit points.`,
+            'LOW'
+          );
+        }
+      }
+
+      return {
+        ...updatedClass,
+        session,
+      };
+    });
   },
 };
