@@ -30,6 +30,12 @@ router.get('/mentors/:id/schedules',              asyncHandler(userController.ge
 router.post('/mentors/:id/schedules',             asyncHandler(userController.addMentorSchedule));
 router.delete('/mentors/schedules/:scheduleId',   asyncHandler(userController.deleteMentorSchedule));
 
+// QA Disciplinary Actions
+router.get('/qa-action/info',        asyncHandler(userController.getUserQAInfo));
+router.post('/qa-action/warn',        asyncHandler(userController.warnUser));
+router.post('/qa-action/blacklist',   asyncHandler(userController.blacklistUser));
+router.post('/qa-action/unblacklist', asyncHandler(userController.unblacklistUser));
+
 // Standard User Management
 router.get('/',       asyncHandler(userController.list));
 router.post('/',      asyncHandler(userController.create));

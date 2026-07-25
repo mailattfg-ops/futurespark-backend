@@ -9,8 +9,11 @@ generator client {
 }
 
 model Notification {
-  id        String   @id @default(uuid())
-  recipient String
-  message   String
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  recipientId String
+  title       String
+  message     String
+  priority    String   @default("LOW") // "LOW", "MEDIUM", "HIGH"
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
 }

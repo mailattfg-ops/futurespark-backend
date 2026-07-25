@@ -14,8 +14,8 @@ import type { AuthResponse, TokenPair } from '@futurespark/types';
 
 // ── Token Expiry Config ────────────────────────────────────────
 
-const REFRESH_TOKEN_EXPIRY_DAYS = 7;
-const ACCESS_TOKEN_TTL_SECONDS = 900; // 15 minutes
+const REFRESH_TOKEN_EXPIRY_DAYS = parseInt(process.env.JWT_REFRESH_TTL_DAYS || '90', 10);
+const ACCESS_TOKEN_TTL_SECONDS = parseInt(process.env.JWT_ACCESS_TTL_SECONDS || '2592000', 10); // 30 days default
 
 // ── Helpers ────────────────────────────────────────────────────
 

@@ -39,7 +39,49 @@ export const scheduleController = {
   },
 
   async delete(req: Request, res: Response) {
-    await scheduleService.deleteSchedule(req.params.id);
+    const { deleteAll } = req.query;
+    await scheduleService.deleteSchedule(req.params.id, deleteAll === 'true');
     return res.status(HTTP_STATUS.OK).json(successResponse(null, 'Schedule deleted successfully'));
+  },
+
+  async createReport(req: Request, res: Response) {
+    const { classId, issueType, description } = req.body;
+    const reporterId = req.headers['x-user-id'] as string;
+    const reporterRole = req.headers['x-user-role'] as string;
+
+    if (!classId || !issueType || !description) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: 'Missing required parameters: classId, issueType, and description are required.',
+      });
+    }
+
+    const report = await scheduleService.createReport({
+      classId,
+      reporterId,
+      reporterRole,
+      issueType,
+      description,
+    });
+
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(report, 'Issue report submitted successfully'));
+  },
+
+  async listReports(req: Request, res: Response) {
+    const reporterId = typeof req.query.reporterId === 'string' ? req.query.reporterId : undefined;
+    const reports = await scheduleService.listReports(reporterId);
+    return res.status(HTTP_STATUS.OK).json(successResponse(reports, 'Session reports fetched successfully'));
+  },
+
+  async updateReport(req: Request, res: Response) {
+    const { status, qaFeedback } = req.body;
+    const report = await scheduleService.updateReport(req.params.id, { status, qaFeedback });
+    return res.status(HTTP_STATUS.OK).json(successResponse(report, 'Session report updated successfully'));
+  },
+
+  async completeClass(req: Request, res: Response) {
+    const { credits } = req.body;
+    const classSession = await scheduleService.completeClass(req.params.id, Number(credits || 0));
+    return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class session completed and credits awarded successfully'));
   },
 };

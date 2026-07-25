@@ -30,6 +30,8 @@ model User {
   mentorSchedules   MentorSchedule[]
   scheduledClasses  ScheduledClass[]  @relation("MentorClasses")
   scheduledByClasses ScheduledClass[]  @relation("ScheduledByUser")
+  warningCount      Int               @default(0)
+  warnings          String[]          @default([])
 
   @@schema("auth")
 }
@@ -91,6 +93,8 @@ model ParentAccount {
   paymentApproved      Boolean         @default(false)
   selectedPlanType     String?         // "FULL" or "INSTALLMENT"
   paidInstallmentIds   String[]        @default([]) // IDs of paid installments
+  warningCount         Int             @default(0)
+  warnings             String[]        @default([])
 
   @@schema("auth")
 }
@@ -123,6 +127,10 @@ model Student {
   updatedAt        DateTime         @updatedAt
   refreshTokens    RefreshToken[]
   scheduledClasses ScheduledClass[]
+  paymentApproved  Boolean          @default(false)
+  warningCount     Int              @default(0)
+  warnings         String[]         @default([])
+  credits          Int              @default(0)
 
   @@schema("auth")
 }
@@ -145,8 +153,29 @@ model ScheduledClass {
   meetingLink       String?   // Optional Google Meet / Zoom / video call URL
   rescheduleReason  String?
   rescheduleMessage String?
+  qaStatus          String    @default("PENDING")   // "PENDING", "PASSED", "FAILED", "FLAGGED"
+  qaFeedback        String?
+  reports           SessionReport[]
+  creditsAwarded    Int?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+
+  @@schema("auth")
+}
+
+model SessionReport {
+  id           String         @id @default(uuid())
+  classId      String
+  class        ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  reporterId   String
+  reporterRole String
+  reporterName String
+  issueType    String
+  description  String
+  status       String         @default("OPEN") // "OPEN", "INVESTIGATING", "RESOLVED"
+  qaFeedback   String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   @@schema("auth")
 }
@@ -226,6 +255,7 @@ model Session {
   program       Program?     @relation(fields: [programId], references: [id], onDelete: SetNull)
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  credits       Int          @default(10)
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 

@@ -174,4 +174,46 @@ export const userController = {
     logger.info(`[Mentor Schedule] Deleted scheduleId: ${scheduleId}`);
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Schedule slot deleted'));
   },
+
+  async warnUser(req: Request, res: Response) {
+    const { targetId, targetRole, reason } = req.body;
+    if (!targetId || !targetRole || !reason) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'targetId, targetRole, and reason are required' });
+    }
+    const result = await userService.warnUser(targetId, targetRole, reason);
+    logger.info(`[QA Action] Warned user: ${targetId} (role: ${targetRole})`);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Warning issued successfully'));
+  },
+
+  async blacklistUser(req: Request, res: Response) {
+    const { targetId, targetRole, reason } = req.body;
+    if (!targetId || !targetRole || !reason) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'targetId, targetRole, and reason are required' });
+    }
+    const result = await userService.blacklistUser(targetId, targetRole, reason);
+    logger.info(`[QA Action] Blacklisted user: ${targetId} (role: ${targetRole})`);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'User blacklisted successfully'));
+  },
+
+  async unblacklistUser(req: Request, res: Response) {
+    const { targetId, targetRole } = req.body;
+    if (!targetId || !targetRole) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'targetId and targetRole are required' });
+    }
+    const result = await userService.unblacklistUser(targetId, targetRole);
+    logger.info(`[QA Action] Unblacklisted user: ${targetId} (role: ${targetRole})`);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'User unblacklisted successfully'));
+  },
+
+  async getUserQAInfo(req: Request, res: Response) {
+    const { targetId, targetRole } = req.query;
+    if (!targetId || !targetRole) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'targetId and targetRole queries are required' });
+    }
+    const result = await userService.getUserQAInfo(targetId as string, targetRole as string);
+    if (!result) {
+      return res.status(HTTP_STATUS.NOT_FOUND).json({ success: false, message: 'User not found' });
+    }
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'User QA details fetched successfully'));
+  },
 };

@@ -233,4 +233,15 @@ export class GoogleMeetingsService {
 
     return meeting;
   }
+
+  static async deleteByLink(meetUrl: string) {
+    const meeting = await db.meeting.findFirst({
+      where: { meetUrl, status: { not: 'CANCELLED' } },
+    });
+    if (!meeting) {
+      logger.warn(`No active meeting found in database for URL: ${meetUrl}`);
+      return null;
+    }
+    return this.delete(meeting.id);
+  }
 }

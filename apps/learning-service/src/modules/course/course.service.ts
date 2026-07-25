@@ -143,6 +143,7 @@ export const courseService = {
         guideUrl: input.guideUrl ?? null,
         worksheetUrl: input.worksheetUrl ?? null,
         programId: resolvedProgramId ?? null,
+        credits: input.credits ?? 10,
       },
     });
   },

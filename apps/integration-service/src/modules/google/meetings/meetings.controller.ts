@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { db } from '../../../database/datasource';
 import { GoogleMeetingsService } from './meetings.service';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -15,13 +16,31 @@ export class GoogleMeetingsController {
         );
       }
 
+      // Query ADMIN and QA_AUDITOR emails from the auth schema to inject as attendees (co-admins/trusted guests)
+      let adminAndQaEmails: string[] = [];
+      try {
+        const adminAndQaUsers = await db.$queryRaw<{ email: string }[]>`
+          SELECT email FROM "auth"."User" u
+          JOIN "auth"."Role" r ON u."roleId" = r.id
+          WHERE r.name IN ('ADMIN', 'QA_AUDITOR') AND u."isActive" = true
+        `;
+        adminAndQaEmails = adminAndQaUsers.map(u => u.email).filter(Boolean);
+      } catch (err: any) {
+        logger.warn(`Failed to retrieve Admin/QA emails for co-admin injection: ${err.message}`);
+      }
+
+      const mergedAttendees = Array.from(new Set([
+        ...(attendees || []),
+        ...adminAndQaEmails
+      ])).filter(email => email !== workspaceEmail);
+
       const result = await GoogleMeetingsService.create(workspaceEmail, {
         title,
         description,
         startTime,
         endTime,
         timezone,
-        attendees: attendees || [],
+        attendees: mergedAttendees,
         teacherId,
         studentId,
         programId,
@@ -122,6 +141,20 @@ export class GoogleMeetingsController {
     } catch (err: any) {
       logger.error(`Error syncing manual meeting: ${err.message}`);
       return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(err.message || 'Failed to sync manual meeting'));
+    }
+  }
+
+  static async deleteByLink(req: Request, res: Response) {
+    try {
+      const { meetUrl } = req.query;
+      if (typeof meetUrl !== 'string') {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('meetUrl query parameter is required.'));
+      }
+      const result = await GoogleMeetingsService.deleteByLink(meetUrl);
+      return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Meeting deleted successfully.'));
+    } catch (err: any) {
+      logger.error(`Error deleting meeting by link: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to delete meeting'));
     }
   }
 }
