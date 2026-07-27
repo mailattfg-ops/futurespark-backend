@@ -115,6 +115,7 @@ model ParentProfile {
 
 model Student {
   id               String           @id @default(uuid())
+  studentCode      String?          @unique
   parentAccountId  String
   parentAccount    ParentAccount    @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
   email            String           @unique

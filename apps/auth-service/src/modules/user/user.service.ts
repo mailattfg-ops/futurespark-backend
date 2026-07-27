@@ -192,9 +192,19 @@ export const userService = {
     const isFirstStudent = studentCount === 0;
     const isParentPaid = !!parent.paymentApproved;
 
+    // Generate unique 4-digit student code (e.g. STU-0001)
+    const totalCount = await db.student.count();
+    let nextNum = totalCount + 1;
+    let studentCode = `STU-${String(nextNum).padStart(4, '0')}`;
+    while (await db.student.findUnique({ where: { studentCode } })) {
+      nextNum++;
+      studentCode = `STU-${String(nextNum).padStart(4, '0')}`;
+    }
+
     const student = await db.student.create({
       data: {
         parentAccountId: parentId,
+        studentCode,
         email: normalizedEmail,
         passwordHash,
         firstName: input.firstName,
@@ -207,7 +217,7 @@ export const userService = {
   },
 
   async listAllStudents() {
-    const students = await db.student.findMany({
+    let students = await db.student.findMany({
       include: {
         parentAccount: {
           select: {
@@ -220,9 +230,38 @@ export const userService = {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: 'asc' },
     });
-    return students;
+
+    // Auto-assign studentCode to existing students who don't have one yet
+    for (let i = 0; i < students.length; i++) {
+      if (!students[i].studentCode) {
+        const assignedCode = `STU-${String(i + 1).padStart(4, '0')}`;
+        try {
+          const updated = await db.student.update({
+            where: { id: students[i].id },
+            data: { studentCode: assignedCode },
+          });
+          students[i].studentCode = updated.studentCode;
+        } catch {
+          // If collision occurs, find next available number
+          let num = i + 1;
+          let candidate = `STU-${String(num).padStart(4, '0')}`;
+          while (await db.student.findUnique({ where: { studentCode: candidate } })) {
+            num++;
+            candidate = `STU-${String(num).padStart(4, '0')}`;
+          }
+          const updated = await db.student.update({
+            where: { id: students[i].id },
+            data: { studentCode: candidate },
+          });
+          students[i].studentCode = updated.studentCode;
+        }
+      }
+    }
+
+    // Sort descending by createdAt for display
+    return students.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   },
 
   async deleteStudent(id: string) {
