@@ -263,6 +263,7 @@ export const scheduleService = {
         status: 'SCHEDULED',
         classType: 'REGULAR',
         meetingLink: session.meetingLink || input.meetingLink || null,
+        autoRecording: input.autoRecording !== undefined ? input.autoRecording : true,
       });
     }
 
@@ -636,6 +637,20 @@ export const scheduleService = {
         ...updatedClass,
         session,
       };
+    });
+  },
+
+  async rateClass(id: string, rating: number, feedback?: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({ where: { id } });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    return db.scheduledClass.update({
+      where: { id },
+      data: {
+        studentRating: rating,
+        studentFeedback: feedback || undefined,
+      },
     });
   },
 };

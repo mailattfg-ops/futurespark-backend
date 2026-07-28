@@ -86,4 +86,16 @@ export const scheduleController = {
     const classSession = await scheduleService.completeClass(req.params.id, Number(credits || 0));
     return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class session completed and credits awarded successfully'));
   },
+
+  async rateClass(req: Request, res: Response) {
+    const { rating, feedback } = req.body;
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: 'Rating must be a number between 1 and 5.',
+      });
+    }
+    const classSession = await scheduleService.rateClass(req.params.id, Number(rating), feedback);
+    return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class rating submitted successfully'));
+  },
 };

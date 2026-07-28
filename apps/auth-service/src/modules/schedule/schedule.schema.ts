@@ -10,6 +10,8 @@ export interface CreateScheduleInput {
   classType?: string;
   leadId?: string;
   meetingLink?: string;
+  autoRecording?: boolean;
+  recordingUrl?: string;
 }
 
 export const validateCreateSchedule = (data: any): CreateScheduleInput => {

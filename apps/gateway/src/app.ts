@@ -15,11 +15,11 @@ const app = express();
 createRedisClient(process.env.REDIS_URL);
 
 // ── Service URLs ───────────────────────────────────────────────
-const AUTH_SERVICE_URL  = process.env.AUTH_SERVICE_URL  || 'http://localhost:3001';
-const LEARN_SERVICE_URL = process.env.LEARN_SERVICE_URL || 'http://localhost:3002';
-const PAY_SERVICE_URL   = process.env.PAY_SERVICE_URL   || 'http://localhost:3004';
-const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://localhost:3003';
-const INTEGRATION_SERVICE_URL = process.env.INTEGRATION_SERVICE_URL || 'http://localhost:3006';
+const AUTH_SERVICE_URL  = process.env.AUTH_SERVICE_URL  || 'http://127.0.0.1:3001';
+const LEARN_SERVICE_URL = process.env.LEARN_SERVICE_URL || 'http://127.0.0.1:3002';
+const PAY_SERVICE_URL   = process.env.PAY_SERVICE_URL   || 'http://127.0.0.1:3004';
+const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
+const INTEGRATION_SERVICE_URL = process.env.INTEGRATION_SERVICE_URL || 'http://127.0.0.1:3006';
 
 // ── Core Middleware ────────────────────────────────────────────
 app.use(cors());

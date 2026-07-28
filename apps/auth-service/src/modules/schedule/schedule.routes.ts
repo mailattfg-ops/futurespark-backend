@@ -11,6 +11,7 @@ router.put('/reports/:id', asyncHandler(scheduleController.updateReport));
 router.get('/',       asyncHandler(scheduleController.list));
 router.post('/',      asyncHandler(scheduleController.create));
 router.put('/:id/complete', asyncHandler(scheduleController.completeClass));
+router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
 router.get('/:id',    asyncHandler(scheduleController.getById));
 router.put('/:id',    asyncHandler(scheduleController.update));
 router.delete('/:id', asyncHandler(scheduleController.delete));
