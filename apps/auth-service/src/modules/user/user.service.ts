@@ -23,6 +23,11 @@ const sanitizePublic = (user: any): PublicUser => {
     isActive: user.isActive,
     qualifiedPrograms: user.qualifiedPrograms || [],
     mentorTypes: user.mentorTypes || [],
+    qualifications: user.qualifications || null,
+    experience: user.experience || null,
+    state: user.state || null,
+    country: user.country || null,
+    timezone: user.timezone || 'Asia/Kolkata',
     createdAt: user.createdAt,
   };
 };

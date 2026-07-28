@@ -24,6 +24,11 @@ model User {
   lastLoginAt       DateTime?
   qualifiedPrograms String[]          @default([]) // Program IDs qualified to teach
   mentorTypes       String[]          @default(["REGULAR"]) // "REGULAR", "DEMO"
+  qualifications    String?
+  experience        String?
+  state             String?
+  country           String?
+  timezone          String            @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   refreshTokens     RefreshToken[]
@@ -32,6 +37,9 @@ model User {
   scheduledByClasses ScheduledClass[]  @relation("ScheduledByUser")
   warningCount      Int               @default(0)
   warnings          String[]          @default([])
+  schedulerGroupId  String?
+  schedulerGroup    SchedulerGroup?   @relation("GroupMentors", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
+  managedGroups     SchedulerGroup[]  @relation("AssignedScheduler")
 
   @@schema("auth")
 }
@@ -132,6 +140,25 @@ model Student {
   warningCount     Int              @default(0)
   warnings         String[]         @default([])
   credits          Int              @default(0)
+  timezone         String           @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
+  schedulerGroupId String?
+  schedulerGroup   SchedulerGroup?  @relation("GroupStudents", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
+
+  @@schema("auth")
+}
+
+model SchedulerGroup {
+  id           String    @id @default(uuid())
+  name         String    @unique
+  description  String?
+  maxMentors   Int       @default(50)
+  maxStudents  Int       @default(100)
+  schedulerId  String?
+  scheduler    User?     @relation("AssignedScheduler", fields: [schedulerId], references: [id], onDelete: SetNull)
+  mentors      User[]    @relation("GroupMentors")
+  students     Student[] @relation("GroupStudents")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@schema("auth")
 }

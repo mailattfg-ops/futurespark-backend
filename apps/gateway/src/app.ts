@@ -114,6 +114,25 @@ app.use('/api/schedules',
     },
   })
 );
+// Scheduler Group management
+app.use('/api/scheduler-groups',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: AUTH_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/scheduler-groups/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Auth service unreachable: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Service temporarily unavailable. Please try again shortly.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
 // Learning service (future)
 app.use('/api/courses',
   asyncHandler(authenticate),

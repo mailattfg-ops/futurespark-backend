@@ -8,6 +8,7 @@ import { authRoutes } from './modules/auth';
 import { userRoutes } from './modules/user';
 import { roleRoutes } from './modules/role/role.routes';
 import { scheduleRoutes } from './modules/schedule/schedule.routes';
+import { schedulerGroupRoutes } from './modules/scheduler-group/scheduler-group.routes';
 
 const app = express();
 
@@ -27,6 +28,7 @@ app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
 app.use('/roles', roleRoutes);
 app.use('/schedules', scheduleRoutes);
+app.use('/scheduler-groups', schedulerGroupRoutes);
 
 // ── Health Check ───────────────────────────────────────────────
 app.get('/health', (_req, res) => {

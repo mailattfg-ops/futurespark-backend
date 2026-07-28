@@ -13,6 +13,11 @@ export const userRepository = {
         qualifiedPrograms: data.qualifiedPrograms || [],
         mentorTypes: data.mentorTypes || ['REGULAR'],
         requiresFtlReset: data.requiresFtlReset ?? false,
+        qualifications: data.qualifications,
+        experience: data.experience,
+        state: data.state,
+        country: data.country,
+        timezone: data.timezone ?? 'Asia/Kolkata',
       },
       include: { role: true },
     });
@@ -43,6 +48,11 @@ export const userRepository = {
         qualifiedPrograms: data.qualifiedPrograms,
         roleId: data.roleId,
         mentorTypes: data.mentorTypes,
+        qualifications: data.qualifications,
+        experience: data.experience,
+        state: data.state,
+        country: data.country,
+        timezone: data.timezone,
       },
       include: { role: true },
     });

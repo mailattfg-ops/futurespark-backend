@@ -5,12 +5,17 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { sendNotification } from '../notification-helper';
 
 export const scheduleService = {
-  async getMentorsWithSchedules() {
+  async getMentorsWithSchedules(groupId?: string) {
+    const where: any = {
+      role: { name: 'TEACHER' },
+      isActive: true,
+    };
+    if (groupId) {
+      where.schedulerGroupId = groupId;
+    }
+
     return db.user.findMany({
-      where: {
-        role: { name: 'TEACHER' },
-        isActive: true,
-      },
+      where,
       select: {
         id: true,
         firstName: true,
@@ -18,6 +23,7 @@ export const scheduleService = {
         email: true,
         qualifiedPrograms: true,
         mentorTypes: true,
+        schedulerGroupId: true,
         mentorSchedules: {
           select: {
             id: true,
@@ -32,13 +38,22 @@ export const scheduleService = {
     });
   },
 
-  async listSchedules(filters: { studentId?: string; mentorId?: string; status?: string }) {
+  async listSchedules(filters: { studentId?: string; mentorId?: string; status?: string; groupId?: string }) {
+    const where: any = {
+      studentId: filters.studentId || undefined,
+      mentorId: filters.mentorId || undefined,
+      status: filters.status || undefined,
+    };
+
+    if (filters.groupId) {
+      where.OR = [
+        { student: { schedulerGroupId: filters.groupId } },
+        { mentor: { schedulerGroupId: filters.groupId } },
+      ];
+    }
+
     const schedules = await db.scheduledClass.findMany({
-      where: {
-        studentId: filters.studentId || undefined,
-        mentorId: filters.mentorId || undefined,
-        status: filters.status || undefined,
-      },
+      where,
       include: {
         student: {
           select: {
@@ -46,6 +61,7 @@ export const scheduleService = {
             firstName: true,
             lastName: true,
             email: true,
+            schedulerGroupId: true,
           },
         },
         mentor: {
@@ -54,6 +70,7 @@ export const scheduleService = {
             firstName: true,
             lastName: true,
             email: true,
+            schedulerGroupId: true,
           },
         },
         scheduledBy: {

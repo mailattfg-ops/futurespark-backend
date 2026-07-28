@@ -13,6 +13,11 @@ export interface CreateUserInput {
   roleId?: string;
   qualifiedPrograms?: string[];
   mentorTypes?: string[];
+  qualifications?: string;
+  experience?: string;
+  state?: string;
+  country?: string;
+  timezone?: string;
 }
 
 const VALID_ROLES = ['STUDENT', 'ADMIN', 'TEACHER', 'QA_AUDITOR', 'SCHEDULER', 'WAREHOUSE_ADMIN', 'FINANCE_ADMIN'];
@@ -53,6 +58,24 @@ export const validateCreateUser = (data: any): CreateUserInput => {
     }
   }
 
+  if (data.qualifications !== undefined && typeof data.qualifications !== 'string') {
+    errors.push('Qualifications must be a string');
+  }
+  if (data.experience !== undefined && typeof data.experience !== 'string') {
+    errors.push('Experience must be a string');
+  }
+  if (data.state !== undefined && typeof data.state !== 'string') {
+    errors.push('State must be a string');
+  }
+  if (data.country !== undefined && typeof data.country !== 'string') {
+    errors.push('Country must be a string');
+  }
+  if (data.timezone !== undefined) {
+    if (typeof data.timezone !== 'string' || !data.timezone.includes('/')) {
+      errors.push('Timezone must be a valid IANA timezone string (e.g. "America/New_York")');
+    }
+  }
+
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
   return {
@@ -63,6 +86,11 @@ export const validateCreateUser = (data: any): CreateUserInput => {
     roleId: data.roleId,
     qualifiedPrograms: data.qualifiedPrograms,
     mentorTypes: data.mentorTypes,
+    qualifications: data.qualifications?.trim(),
+    experience: data.experience?.trim(),
+    state: data.state?.trim(),
+    country: data.country?.trim(),
+    timezone: data.timezone?.trim(),
   };
 };
 
@@ -76,6 +104,11 @@ export interface UpdateUserInput {
   roleId?: string;
   qualifiedPrograms?: string[];
   mentorTypes?: string[];
+  qualifications?: string;
+  experience?: string;
+  state?: string;
+  country?: string;
+  timezone?: string;
 }
 
 export const validateUpdateUser = (data: any): UpdateUserInput => {
@@ -109,6 +142,24 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
     }
   }
 
+  if (data.qualifications !== undefined && typeof data.qualifications !== 'string') {
+    errors.push('Qualifications must be a string');
+  }
+  if (data.experience !== undefined && typeof data.experience !== 'string') {
+    errors.push('Experience must be a string');
+  }
+  if (data.state !== undefined && typeof data.state !== 'string') {
+    errors.push('State must be a string');
+  }
+  if (data.country !== undefined && typeof data.country !== 'string') {
+    errors.push('Country must be a string');
+  }
+  if (data.timezone !== undefined) {
+    if (typeof data.timezone !== 'string' || !data.timezone.includes('/')) {
+      errors.push('Timezone must be a valid IANA timezone string (e.g. "America/New_York")');
+    }
+  }
+
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
   return {
@@ -119,6 +170,11 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
     roleId: data.roleId,
     qualifiedPrograms: data.qualifiedPrograms,
     mentorTypes: data.mentorTypes,
+    qualifications: data.qualifications?.trim(),
+    experience: data.experience?.trim(),
+    state: data.state?.trim(),
+    country: data.country?.trim(),
+    timezone: data.timezone?.trim(),
   };
 };
 

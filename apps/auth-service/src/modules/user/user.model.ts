@@ -12,5 +12,10 @@ export interface PublicUser {
   isActive: boolean;
   qualifiedPrograms: string[];
   mentorTypes: string[];
+  qualifications: string | null;
+  experience: string | null;
+  state: string | null;
+  country: string | null;
+  timezone: string;
   createdAt: Date;
 }

@@ -6,16 +6,18 @@ import { validateCreateSchedule, validateUpdateSchedule } from './schedule.schem
 
 export const scheduleController = {
   async listMentors(req: Request, res: Response) {
-    const list = await scheduleService.getMentorsWithSchedules();
+    const { groupId } = req.query;
+    const list = await scheduleService.getMentorsWithSchedules(typeof groupId === 'string' ? groupId : undefined);
     return res.status(HTTP_STATUS.OK).json(successResponse(list, 'Mentors availability fetched successfully'));
   },
 
   async list(req: Request, res: Response) {
-    const { studentId, mentorId, status } = req.query;
+    const { studentId, mentorId, status, groupId } = req.query;
     const list = await scheduleService.listSchedules({
       studentId: typeof studentId === 'string' ? studentId : undefined,
       mentorId: typeof mentorId === 'string' ? mentorId : undefined,
       status: typeof status === 'string' ? status : undefined,
+      groupId: typeof groupId === 'string' ? groupId : undefined,
     });
     return res.status(HTTP_STATUS.OK).json(successResponse(list, 'Schedules fetched successfully'));
   },
