@@ -231,6 +231,27 @@ app.use('/api/notifications',
   })
 );
 
+// ── WhatsApp Webhook (Public — Meta Cloud API calls this) ───────
+// GET: Webhook verification handshake from Meta
+// POST: Incoming messages and status updates
+app.use('/api/whatsapp/webhook',
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/api/whatsapp/webhook': '/whatsapp/webhook' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Communication service unreachable for WhatsApp webhook: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'WhatsApp webhook handler unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // ── 404 Handler ────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json({ success: false, message: 'Route not found' });

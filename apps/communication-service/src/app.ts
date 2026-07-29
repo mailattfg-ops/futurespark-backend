@@ -5,6 +5,7 @@ import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 
 import { notificationRoutes } from './modules/notification/notification.routes';
+import { whatsappWebhookRoutes } from './modules/whatsapp/whatsapp.routes';
 
 const app = express();
 
@@ -21,6 +22,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/notifications', notificationRoutes);
+app.use('/whatsapp/webhook', whatsappWebhookRoutes);
 
 app.use((req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Route not found'));
