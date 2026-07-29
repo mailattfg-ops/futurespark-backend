@@ -38,7 +38,8 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     }
 
     // Sign and inject internal HMAC headers for downstream services
-    const userId = payload.userId || payload.id || payload.sub;
+    const p = payload as any;
+    const userId = p.userId || p.id || p.sub;
     const internalHeaders = signInternalHeaders(userId, payload.role || 'USER');
     Object.entries(internalHeaders).forEach(([key, value]) => {
       req.headers[key] = value;
