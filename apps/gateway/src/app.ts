@@ -38,6 +38,34 @@ app.get('/health', (_req, res) => {
   );
 });
 
+// ── WhatsApp Webhook Verification (Handled Directly in Gateway) ───
+// Meta calls GET /api/whatsapp/webhook to verify the callback URL
+app.get('/api/whatsapp/webhook', (req, res) => {
+  const mode = req.query['hub.mode'] as string;
+  const token = req.query['hub.verify_token'] as string;
+  const challenge = req.query['hub.challenge'] as string;
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'futurespark-webhook-secret';
+
+  logger.info(`[WhatsApp Webhook] Verify request — mode: ${mode}, token: ${token}`);
+
+  if (mode === 'subscribe' && token === verifyToken) {
+    logger.info('[WhatsApp Webhook] ✅ Verified by Meta');
+    return res.status(200).send(challenge);
+  }
+  logger.error('[WhatsApp Webhook] ❌ Verification failed — token mismatch');
+  return res.status(403).json({ error: 'Forbidden' });
+});
+
+// Meta sends incoming message events via POST
+app.post('/api/whatsapp/webhook', express.json(), (req, res) => {
+  const body = req.body;
+  if (body?.object === 'whatsapp_business_account') {
+    logger.info(`[WhatsApp Webhook] Incoming event received`);
+    return res.sendStatus(200);
+  }
+  return res.sendStatus(404);
+});
+
 // ── Public Routes (No Auth Required) ──────────────────────────
 // Auth flows: register, login, refresh are public
 app.use('/api/auth', createProxyMiddleware({
