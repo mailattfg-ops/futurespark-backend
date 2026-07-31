@@ -224,7 +224,7 @@ app.use('/api/google/recordings/:id/stream',
   createProxyMiddleware({
     target: INTEGRATION_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: (path, req) => req.originalUrl.replace('/api/google/recordings/', '/google/recordings/'),
+    pathRewrite: (path, req) => (req as express.Request).originalUrl.replace('/api/google/recordings/', '/google/recordings/'),
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable on stream: ${err.message}`);
