@@ -1,16 +1,20 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("LEARN_DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("LEARN_DATABASE_URL")
+  schemas           = ["auth", "learning"]
 }
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "./client"
+  provider        = "prisma-client-js"
+  output          = "./client"
+  previewFeatures = ["multiSchema"]
 }
 
 enum PlanType {
   FULL
   INSTALLMENT
+
+  @@schema("learning")
 }
 
 model Program {
@@ -25,6 +29,8 @@ model Program {
   sessions     Session[]
   paymentPlans PaymentPlan[]
   leads        Lead[]
+
+  @@schema("learning")
 }
 
 model PaymentPlan {
@@ -39,6 +45,7 @@ model PaymentPlan {
   updatedAt    DateTime      @updatedAt
 
   @@unique([programId, type])
+  @@schema("learning")
 }
 
 model Installment {
@@ -51,6 +58,8 @@ model Installment {
   sessions      Session[]
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
+
+  @@schema("learning")
 }
 
 model Session {
@@ -68,6 +77,8 @@ model Session {
   credits       Int          @default(10)
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
+
+  @@schema("learning")
 }
 
 enum LeadStatus {
@@ -76,6 +87,8 @@ enum LeadStatus {
   INTERESTED
   ENROLLED
   LOST
+
+  @@schema("learning")
 }
 
 model Lead {
@@ -92,4 +105,17 @@ model Lead {
   demoClass   Boolean    @default(false)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
+
+  @@schema("learning")
+}
+
+model ScheduledClass {
+  id                  String   @id @default(uuid())
+  meetingLink         String?
+  transcript          String?  @db.Text
+  classSummary        String?  @db.Text
+  interactionMetrics  Json?
+  transcriptionStatus String   @default("NOT_STARTED")
+
+  @@schema("auth")
 }

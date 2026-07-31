@@ -10,6 +10,7 @@
     "db:push": "prisma db push"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@futurespark/authentication": "^1.0.0",
     "@futurespark/cache": "^1.0.0",
     "@futurespark/constants": "*",
@@ -19,9 +20,12 @@
     "@futurespark/response": "*",
     "@futurespark/types": "^1.0.0",
     "@prisma/client": "^5.10.2",
+    "axios": "^1.19.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.18.3"
+    "express": "^4.18.3",
+    "ffmpeg-static": "^5.3.0",
+    "form-data": "^4.0.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

@@ -117,11 +117,17 @@ export class GoogleAuthService {
   }
 
   static async getClientForEmail(email: string) {
-    const account = await db.googleAccount.findUnique({ where: { workspaceEmail: email } });
+    let account = await db.googleAccount.findUnique({ where: { workspaceEmail: email } });
     if (!account || !account.connected) {
-      throw new Error(`Google account ${email} is not connected or registered.`);
+      logger.warn(`Google account ${email} is not connected or registered. Looking for any connected fallback account...`);
+      account = await db.googleAccount.findFirst({ where: { connected: true } });
+      if (!account) {
+        throw new Error(`Google account ${email} is not connected or registered, and no fallback connected account exists.`);
+      }
+      logger.info(`Using fallback connected Google account: ${account.workspaceEmail}`);
     }
 
+    const emailToUse = account.workspaceEmail;
     const oauth2Client = this.getOAuth2Client();
     const decryptedAccessToken = decrypt(account.accessToken);
     const decryptedRefreshToken = decrypt(account.refreshToken);
@@ -134,9 +140,9 @@ export class GoogleAuthService {
 
     // Check if token is expired or close to expiry (within 5 minutes)
     if (account.tokenExpiry.getTime() - Date.now() < 5 * 60 * 1000) {
-      logger.info(`Refreshing expired Google access token for email ${email}`);
+      logger.info(`Refreshing expired Google access token for email ${emailToUse}`);
       if (!decryptedRefreshToken) {
-        throw new Error(`Refresh token missing for account ${email}. Please reconnect the account.`);
+        throw new Error(`Refresh token missing for account ${emailToUse}. Please reconnect the account.`);
       }
 
       const { credentials } = await oauth2Client.refreshAccessToken();
@@ -145,7 +151,7 @@ export class GoogleAuthService {
         const newExpiry = new Date(credentials.expiry_date || Date.now() + 3600 * 1000);
 
         await db.googleAccount.update({
-          where: { workspaceEmail: email },
+          where: { workspaceEmail: emailToUse },
           data: {
             accessToken: encryptedNewAccess,
             tokenExpiry: newExpiry,

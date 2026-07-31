@@ -219,6 +219,25 @@ app.use('/api/google/callback',
   })
 );
 
+// Public Stream Route for Google Recordings (No JWT authentication required for browser media players)
+app.use('/api/google/recordings/:id/stream',
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: (path, req) => req.originalUrl.replace('/api/google/recordings/', '/google/recordings/'),
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable on stream: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // Google Integration service
 app.use('/api/google',
   asyncHandler(authenticate),

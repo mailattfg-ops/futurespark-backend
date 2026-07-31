@@ -5,6 +5,7 @@ import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { errorHandler } from '@futurespark/middleware';
 import { courseRoutes } from './modules/course';
+import { transcriptionRoutes } from './modules/transcription/transcription.routes';
 
 const app = express();
 
@@ -18,6 +19,7 @@ app.use((req, res, next) => {
 
 // Mount curriculum routes
 app.use('/courses', courseRoutes);
+app.use('/transcription', transcriptionRoutes);
 
 app.get('/health', (req, res) => {
   res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'learning-service is healthy'));

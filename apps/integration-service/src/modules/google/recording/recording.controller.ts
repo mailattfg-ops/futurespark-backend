@@ -1,19 +1,29 @@
 import { Request, Response } from 'express';
 import { GoogleRecordingService } from './recording.service';
-import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
+import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
-import fs from 'fs';
-import path from 'path';
+import * as fs from 'fs';
 
 export class GoogleRecordingController {
   static async list(req: Request, res: Response) {
     try {
       const recordings = await GoogleRecordingService.listRecordings();
-      return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Recordings listed successfully.'));
+      return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Recordings retrieved successfully.'));
     } catch (err: any) {
       logger.error(`Error listing recordings: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to list recordings'));
+    }
+  }
+
+  static async sync(req: Request, res: Response) {
+    try {
+      const { meetingId } = req.body;
+      const recordings = await GoogleRecordingService.syncMeetingRecording(meetingId);
+      return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Meeting recordings synced successfully.'));
+    } catch (err: any) {
+      logger.error(`Error syncing recording: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Sync failed'));
     }
   }
 
@@ -26,27 +36,8 @@ export class GoogleRecordingController {
       }
       return res.status(HTTP_STATUS.OK).json(successResponse(recording, 'Recording retrieved successfully.'));
     } catch (err: any) {
-      logger.error(`Error retrieving recording: ${err.message}`);
-      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to retrieve recording'));
-    }
-  }
-
-  static async sync(req: Request, res: Response) {
-    try {
-      const { meetingId } = req.body;
-      if (!meetingId) {
-        return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('Parameter "meetingId" is required.'));
-      }
-
-      const result = await GoogleRecordingService.syncMeetingRecording(meetingId);
-      if (!result) {
-        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('No recording found on Drive for this meeting yet.'));
-      }
-
-      return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Meeting recording metadata synchronized successfully.'));
-    } catch (err: any) {
-      logger.error(`Error synchronizing recording: ${err.message}`);
-      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Sync failed'));
+      logger.error(`Error fetching recording: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to fetch recording'));
     }
   }
 
@@ -89,20 +80,21 @@ export class GoogleRecordingController {
         const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
         const chunksize = (end - start) + 1;
         const file = fs.createReadStream(filePath, { start, end });
-        const head = {
+        
+        res.status(206);
+        res.set({
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Accept-Ranges': 'bytes',
-          'Content-Length': chunksize,
+          'Content-Length': chunksize.toString(),
           'Content-Type': contentType,
-        };
-        res.writeHead(206, head);
+        });
         file.pipe(res);
       } else {
-        const head = {
-          'Content-Length': fileSize,
+        res.status(200);
+        res.set({
+          'Content-Length': fileSize.toString(),
           'Content-Type': contentType,
-        };
-        res.writeHead(HTTP_STATUS.OK, head);
+        });
         fs.createReadStream(filePath).pipe(res);
       }
     } catch (err: any) {
@@ -117,9 +109,9 @@ export class GoogleRecordingController {
       const { format } = req.body; // 'mp3' or 'wav'
       
       const audioFormat = format === 'wav' ? 'wav' : 'mp3';
-      const path = await GoogleRecordingService.extractAudioFromRecording(id, audioFormat);
+      const audioPath = await GoogleRecordingService.extractAudioFromRecording(id, audioFormat);
 
-      return res.status(HTTP_STATUS.OK).json(successResponse({ audioPath: path }, 'Audio extraction completed successfully.'));
+      return res.status(HTTP_STATUS.OK).json(successResponse({ audioPath }, 'Audio extraction completed successfully.'));
     } catch (err: any) {
       logger.error(`Error extracting audio: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Audio extraction failed'));
@@ -135,15 +127,70 @@ export class GoogleRecordingController {
         return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Transcript not found.'));
       }
 
-      if (!recording.videoPath || !fs.existsSync(recording.videoPath)) {
-        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Transcript file not downloaded yet.'));
+      let transcriptPath = recording.videoPath;
+      if (recording.videoPath && !recording.fileName.toLowerCase().includes('transcript')) {
+        // Custom transcript text is saved alongside the video file
+        transcriptPath = recording.videoPath + '.transcript.txt';
       }
 
-      const content = fs.readFileSync(recording.videoPath, 'utf-8');
-      return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript loaded successfully.'));
+      // 1. Check if transcript file exists on disk
+      if (transcriptPath && fs.existsSync(transcriptPath)) {
+        const content = fs.readFileSync(transcriptPath, 'utf-8');
+        return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript loaded successfully.'));
+      }
+
+      // 2. Fallback: Query ScheduledClass from auth-service
+      if (recording.meeting) {
+        const authDbUrl = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+        try {
+          const meetCode = recording.meeting.meetUrl.split('/').pop() || '';
+          const classRes = await fetch(`${authDbUrl}/schedules?programId=${recording.meeting.programId}`);
+          if (classRes.ok) {
+            const classData = await classRes.json() as any;
+            const schedules = classData?.data || [];
+            const matchedClass = schedules.find((s: any) => s.meetingLink && s.meetingLink.includes(meetCode));
+            if (matchedClass && matchedClass.transcript) {
+              if (transcriptPath) {
+                try { fs.writeFileSync(transcriptPath, matchedClass.transcript, 'utf-8'); } catch (_) {}
+              }
+              return res.status(HTTP_STATUS.OK).json(successResponse({ content: matchedClass.transcript }, 'Transcript loaded successfully.'));
+            }
+          }
+        } catch (e: any) {
+          logger.warn(`Failed to fetch transcript from auth service: ${e.message}`);
+        }
+      }
+
+      // 3. Fallback: If video file exists on disk, generate transcription on-the-fly!
+      if (recording.videoPath && fs.existsSync(recording.videoPath)) {
+        logger.info(`[GoogleRecordingController] Generating transcript on-the-fly for file: ${recording.fileName}...`);
+        const learningUrl = process.env.LEARNING_SERVICE_URL || 'http://localhost:3003';
+        const transRes = await fetch(`${learningUrl}/transcription/transcribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            audioFilePath: recording.videoPath,
+            meetUrl: recording.meeting?.meetUrl,
+            studentId: recording.meeting?.studentId,
+            teacherId: recording.meeting?.teacherId,
+          })
+        });
+        if (transRes.ok) {
+          const transData = await transRes.json() as any;
+          const content = transData?.data?.transcript;
+          if (content) {
+            if (transcriptPath) {
+              try { fs.writeFileSync(transcriptPath, content, 'utf-8'); } catch (_) {}
+            }
+            return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript generated and loaded successfully.'));
+          }
+        }
+      }
+
+      return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Transcript file not generated yet.'));
     } catch (err: any) {
-      logger.error(`Error loading transcript text: ${err.message}`);
-      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to read transcript file'));
+      logger.error(`Error retrieving transcript content: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to retrieve transcript content'));
     }
   }
 }

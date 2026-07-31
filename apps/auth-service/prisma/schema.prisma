@@ -187,10 +187,14 @@ model ScheduledClass {
   creditsAwarded    Int?
   studentRating     Int?
   studentFeedback   String?
-  autoRecording     Boolean   @default(true)
-  recordingUrl      String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  autoRecording       Boolean   @default(true)
+  recordingUrl        String?
+  transcript          String?   @db.Text
+  classSummary        String?   @db.Text
+  interactionMetrics  Json?
+  transcriptionStatus String    @default("NOT_STARTED")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@schema("auth")
 }

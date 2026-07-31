@@ -17,3 +17,19 @@ model Notification {
   read        Boolean  @default(false)
   createdAt   DateTime @default(now())
 }
+
+model WhatsAppMessage {
+  id          String   @id @default(uuid())
+  messageId   String?  @unique // Meta message ID (for status tracking)
+  recipientId String?  // System user id if linked
+  from        String   // From phone number
+  to          String   // To phone number
+  direction   String   // "INBOUND" or "OUTBOUND"
+  type        String   // "text" | "button" | "template"
+  body        String   // Message body/content or button payload
+  status      String   // "sent", "delivered", "read", "received", "failed"
+  error       String?  // Error message if failed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
