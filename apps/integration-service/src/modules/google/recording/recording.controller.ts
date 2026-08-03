@@ -4,6 +4,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
 import * as fs from 'fs';
+import { S3Storage, getS3KeyForRecording } from '@futurespark/storage';
 
 export class GoogleRecordingController {
   static async list(req: Request, res: Response) {
@@ -62,6 +63,12 @@ export class GoogleRecordingController {
       
       const isAudio = req.query.type === 'audio';
       const filePath = (isAudio && recording.audioPath) ? recording.audioPath : recording.videoPath;
+
+      if (S3Storage.isS3Enabled() && filePath && !fs.existsSync(filePath)) {
+        const presignedUrl = await S3Storage.getPresignedUrl(filePath, 3600);
+        logger.info(`[GoogleRecordingController] Redirecting stream request to S3 presigned URL: ${presignedUrl}`);
+        return res.redirect(presignedUrl);
+      }
 
       if (!filePath || !fs.existsSync(filePath)) {
         return res.status(HTTP_STATUS.NOT_FOUND).json(
@@ -133,7 +140,19 @@ export class GoogleRecordingController {
         transcriptPath = recording.videoPath + '.transcript.txt';
       }
 
-      // 1. Check if transcript file exists on disk
+      // 1. Check if S3 is enabled and file is not local, then fetch from S3
+      if (S3Storage.isS3Enabled() && transcriptPath && !fs.existsSync(transcriptPath)) {
+        try {
+          const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'transcript');
+          logger.info(`[GoogleRecordingController] Fetching transcript from S3 key: ${s3Key}`);
+          const content = await S3Storage.downloadBuffer(s3Key);
+          return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript loaded successfully.'));
+        } catch (s3Err: any) {
+          logger.warn(`[GoogleRecordingController] S3 transcript fetch failed: ${s3Err.message}`);
+        }
+      }
+
+      // Check if transcript file exists on disk
       if (transcriptPath && fs.existsSync(transcriptPath)) {
         const content = fs.readFileSync(transcriptPath, 'utf-8');
         return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript loaded successfully.'));

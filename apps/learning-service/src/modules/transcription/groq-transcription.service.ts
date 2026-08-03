@@ -1,6 +1,8 @@
 import axios from 'axios';
 const FormData = require('form-data');
 import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 
@@ -13,8 +15,35 @@ export class GroqTranscriptionService {
   async processClassAudio(audioFilePath: string) {
     logger.info(`[GroqTranscriptionService] [+] Processing file: ${audioFilePath}`);
 
+    let localFilePath = audioFilePath;
+    const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
+
+    if (isUrl) {
+      const tempDir = os.tmpdir();
+      const cleanUrl = audioFilePath.split('?')[0];
+      const ext = path.extname(cleanUrl) || '.mp3';
+      const tempFileName = `transcribe-${Date.now()}${ext}`;
+      localFilePath = path.join(tempDir, tempFileName);
+      logger.info(`[GroqTranscriptionService] Downloading S3 audio file from: ${audioFilePath} to local temp path: ${localFilePath}`);
+      
+      const response = await axios({
+        method: 'GET',
+        url: audioFilePath,
+        responseType: 'stream',
+      });
+      
+      const writer = fs.createWriteStream(localFilePath);
+      response.data.pipe(writer);
+      
+      await new Promise<void>((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+      logger.info(`[GroqTranscriptionService] Download completed.`);
+    }
+
     // Extract & compress audio if file size > 20MB or is a video file (Groq limit: 25MB)
-    const fileToTranscribe = this.compressAudioIfNeeded(audioFilePath);
+    const fileToTranscribe = this.compressAudioIfNeeded(localFilePath);
 
     // 1. Transcribe with Groq Whisper Large v3 (Malayalam & English)
     const transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
@@ -26,8 +55,13 @@ export class GroqTranscriptionService {
     const classSummary = await this.generateMasterSummary(transcript, metrics);
 
     // Clean up temporary compressed audio if created
-    if (fileToTranscribe !== audioFilePath && fs.existsSync(fileToTranscribe)) {
+    if (fileToTranscribe !== localFilePath && fs.existsSync(fileToTranscribe)) {
       try { fs.unlinkSync(fileToTranscribe); } catch (_) {}
+    }
+
+    // Clean up temporary downloaded file if downloaded
+    if (isUrl && fs.existsSync(localFilePath)) {
+      try { fs.unlinkSync(localFilePath); } catch (_) {}
     }
 
     return { transcript, classSummary, metrics };

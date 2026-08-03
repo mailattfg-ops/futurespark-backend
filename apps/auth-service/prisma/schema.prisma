@@ -17,6 +17,7 @@ model User {
   passwordHash      String
   firstName         String?
   lastName          String?
+  avatarUrl         String?
   roleId            String?
   role              Role?             @relation(fields: [roleId], references: [id], onDelete: SetNull)
   isActive          Boolean           @default(true)

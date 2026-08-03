@@ -14,6 +14,57 @@ const sanitize = (user: any): UserWithoutPassword => {
 };
 
 const sanitizePublic = (user: any): PublicUser => {
+  let rating: number | undefined;
+  let ratingCount: number | undefined;
+  let warnings: string[] | undefined;
+  let feedbacks: any[] | undefined;
+
+  if (user.role?.name === 'TEACHER' && user.scheduledClasses) {
+    const completedClasses = user.scheduledClasses.filter((c: any) => c.status === 'COMPLETED');
+    const ratedClasses = completedClasses.filter((c: any) => c.studentRating !== null && c.studentRating !== undefined);
+    
+    // Base rating defaults to 5.0 if no student rating exists yet
+    const baseRating = ratedClasses.length > 0
+      ? ratedClasses.reduce((acc: number, c: any) => acc + c.studentRating, 0) / ratedClasses.length
+      : 5.0;
+
+    // QA Audit & Report deductions
+    const qaFailures = user.scheduledClasses.filter((c: any) => c.qaStatus === 'FAILED').length;
+    const qaFlags = user.scheduledClasses.filter((c: any) => c.qaStatus === 'FLAGGED').length;
+    const totalReports = user.scheduledClasses.reduce((acc: number, c: any) => acc + (c.reports?.length || 0), 0);
+
+    const deduction = (qaFailures * 0.5) + (qaFlags * 0.25) + (totalReports * 0.2);
+    
+    // Clamp rating between 1.0 and 5.0
+    rating = Math.max(1.0, Math.min(5.0, Number((baseRating - deduction).toFixed(2))));
+    ratingCount = ratedClasses.length;
+
+    warnings = user.warnings || [];
+    feedbacks = user.scheduledClasses
+      .filter((c: any) => 
+        (c.studentRating !== null && c.studentRating !== undefined) || 
+        c.qaStatus === 'FAILED' || 
+        c.qaStatus === 'FLAGGED' || 
+        (c.reports && c.reports.length > 0)
+      )
+      .map((c: any) => ({
+        classId: c.id,
+        startTime: c.startTime,
+        studentRating: c.studentRating,
+        studentFeedback: c.studentFeedback,
+        qaStatus: c.qaStatus,
+        qaFeedback: c.qaFeedback,
+        reports: c.reports?.map((r: any) => ({
+          id: r.id,
+          reporterName: r.reporterName,
+          reporterRole: r.reporterRole,
+          issueType: r.issueType,
+          description: r.description,
+          createdAt: r.createdAt
+        })) || []
+      }));
+  }
+
   return {
     id: user.id,
     email: user.email,
@@ -29,6 +80,10 @@ const sanitizePublic = (user: any): PublicUser => {
     country: user.country || null,
     timezone: user.timezone || 'Asia/Kolkata',
     createdAt: user.createdAt,
+    rating,
+    ratingCount,
+    warnings,
+    feedbacks,
   };
 };
 
