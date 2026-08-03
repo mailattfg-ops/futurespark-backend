@@ -85,6 +85,9 @@ enum LeadStatus {
   NEW
   CONTACTED
   INTERESTED
+  DEMO_SCHEDULED
+  ADMISSION_PENDING
+  PAYMENT_SUBMITTED
   ENROLLED
   LOST
 
@@ -92,19 +95,30 @@ enum LeadStatus {
 }
 
 model Lead {
-  id          String     @id @default(uuid())
-  firstName   String
-  lastName    String
-  email       String
-  phone       String?
-  source      String     @default("Website")
-  status      LeadStatus @default(NEW)
-  programId   String?
-  program     Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
-  notes       String?
-  demoClass   Boolean    @default(false)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id                  String     @id @default(uuid())
+  firstName           String
+  lastName            String
+  email               String
+  phone               String?
+  source              String     @default("Website")
+  status              LeadStatus @default(NEW)
+  programId           String?
+  program             Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
+  notes               String?
+  demoClass           Boolean    @default(false)
+  assignedAdvisorId   String?
+  preferredDays       String[]   @default([])
+  preferredTime       String?
+  preferredTimezone   String?    @default("Asia/Kolkata")
+  paymentAmount       Float?
+  paymentTxnRef       String?
+  paymentMethod       String?
+  paymentStatus       String?    @default("NONE")
+  paymentVerifiedBy   String?
+  paymentVerifiedAt   DateTime?
+  telecallerNotes     String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
   @@schema("learning")
 }

@@ -1,5 +1,5 @@
 import { google } from 'googleapis';
-import { db } from '../../../database/datasource';
+import { db, withDbRetry } from '../../../database/datasource';
 import { logger } from '@futurespark/logger';
 import crypto from 'crypto';
 
@@ -102,29 +102,39 @@ export class GoogleAuthService {
   }
 
   static async disconnect(email: string) {
-    const account = await db.googleAccount.findUnique({ where: { workspaceEmail: email } });
+    const account = await withDbRetry(() => db.googleAccount.findUnique({ where: { workspaceEmail: email } }));
     if (!account) {
       throw new Error(`Google account with email ${email} not found.`);
     }
 
-    await db.googleAccount.update({
+    await withDbRetry(() => db.googleAccount.update({
       where: { workspaceEmail: email },
       data: { connected: false },
-    });
+    }));
 
     logger.info(`Google account disconnected successfully for Workspace: ${email}`);
     return { email, connected: false };
   }
 
-  static async getClientForEmail(email: string) {
-    let account = await db.googleAccount.findUnique({ where: { workspaceEmail: email } });
-    if (!account || !account.connected) {
-      logger.warn(`Google account ${email} is not connected or registered. Looking for any connected fallback account...`);
-      account = await db.googleAccount.findFirst({ where: { connected: true } });
-      if (!account) {
-        throw new Error(`Google account ${email} is not connected or registered, and no fallback connected account exists.`);
+  static async getClientForEmail(email: string): Promise<any> {
+    let account: any = null;
+    try {
+      account = await withDbRetry(() => db.googleAccount.findUnique({ where: { workspaceEmail: email } }));
+      if (!account || !account.connected) {
+        account = await withDbRetry(() => db.googleAccount.findFirst({ where: { connected: true } }));
       }
-      logger.info(`Using fallback connected Google account: ${account.workspaceEmail}`);
+    } catch (dbErr: any) {
+      logger.warn(`[GoogleAuthService] DB lookup failed: ${dbErr.message}`);
+    }
+
+    if (!account || !account.connected) {
+      logger.info(`[GoogleAuthService] Account ${email} not in DB or DB offline. Initializing Google OAuth client from environment/fallback...`);
+      const oauth2Client = this.getOAuth2Client();
+      const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || '';
+      if (refreshToken) {
+        oauth2Client.setCredentials({ refresh_token: refreshToken });
+      }
+      return oauth2Client;
     }
 
     const emailToUse = account.workspaceEmail;
@@ -135,30 +145,41 @@ export class GoogleAuthService {
     oauth2Client.setCredentials({
       access_token: decryptedAccessToken,
       refresh_token: decryptedRefreshToken,
-      expiry_date: account.tokenExpiry.getTime(),
+      expiry_date: account.tokenExpiry ? account.tokenExpiry.getTime() : Date.now() + 3600000,
     });
 
     // Check if token is expired or close to expiry (within 5 minutes)
     if (account.tokenExpiry.getTime() - Date.now() < 5 * 60 * 1000) {
       logger.info(`Refreshing expired Google access token for email ${emailToUse}`);
       if (!decryptedRefreshToken) {
+        if (email !== 'rec@meet.finquojunior.com') {
+          return this.getClientForEmail('rec@meet.finquojunior.com');
+        }
         throw new Error(`Refresh token missing for account ${emailToUse}. Please reconnect the account.`);
       }
 
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      if (credentials.access_token) {
-        const encryptedNewAccess = encrypt(credentials.access_token);
-        const newExpiry = new Date(credentials.expiry_date || Date.now() + 3600 * 1000);
+      try {
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        if (credentials.access_token) {
+          const encryptedNewAccess = encrypt(credentials.access_token);
+          const newExpiry = new Date(credentials.expiry_date || Date.now() + 3600 * 1000);
 
-        await db.googleAccount.update({
-          where: { workspaceEmail: emailToUse },
-          data: {
-            accessToken: encryptedNewAccess,
-            tokenExpiry: newExpiry,
-          },
-        });
+          await db.googleAccount.update({
+            where: { workspaceEmail: emailToUse },
+            data: {
+              accessToken: encryptedNewAccess,
+              tokenExpiry: newExpiry,
+            },
+          });
 
-        oauth2Client.setCredentials(credentials);
+          oauth2Client.setCredentials(credentials);
+        }
+      } catch (err: any) {
+        logger.warn(`Token refresh failed for ${emailToUse} (${err.message}). Falling back to primary account rec@meet.finquojunior.com...`);
+        if (email !== 'rec@meet.finquojunior.com') {
+          return this.getClientForEmail('rec@meet.finquojunior.com');
+        }
+        throw err;
       }
     }
 

@@ -1,4 +1,4 @@
-import { db } from '../../../database/datasource';
+import { db, withDbRetry } from '../../../database/datasource';
 import { GoogleCalendarService } from '../calendar/calendar.service';
 import { logger } from '@futurespark/logger';
 
@@ -204,34 +204,49 @@ export class GoogleMeetingsService {
     programId: string;
     sessionId: string;
   }) {
-    let meeting = await db.meeting.findFirst({
-      where: { meetUrl: input.meetingLink },
-    });
+    try {
+      let meeting = await withDbRetry(() => db.meeting.findFirst({
+        where: { meetUrl: input.meetingLink },
+      }));
 
-    if (!meeting) {
-      const start = new Date(input.startTime);
-      const end = new Date(input.endTime);
+      if (!meeting) {
+        const start = new Date(input.startTime);
+        const end = new Date(input.endTime);
 
-      meeting = await db.meeting.create({
-        data: {
-          calendarEventId: `manual_${Math.random().toString(36).substring(7)}`,
-          meetUrl: input.meetingLink,
-          title: input.title,
-          description: input.description || null,
-          organizerEmail: input.organizerEmail,
-          teacherId: input.teacherId,
-          studentId: input.studentId,
-          programId: input.programId,
-          sessionId: input.sessionId,
-          startTime: start,
-          endTime: end,
-          timezone: 'UTC',
-          status: 'COMPLETED',
-        },
-      });
+        meeting = await withDbRetry(() => db.meeting.create({
+          data: {
+            calendarEventId: `manual_${Math.random().toString(36).substring(7)}`,
+            meetUrl: input.meetingLink,
+            title: input.title,
+            description: input.description || null,
+            organizerEmail: input.organizerEmail,
+            teacherId: input.teacherId,
+            studentId: input.studentId,
+            programId: input.programId,
+            sessionId: input.sessionId,
+            startTime: start,
+            endTime: end,
+            timezone: 'UTC',
+            status: 'COMPLETED',
+          },
+        }));
+      }
+
+      return meeting;
+    } catch (err: any) {
+      logger.warn(`[GoogleMeetingsService] DB sync failed (${err.message}). Using fallback meeting metadata...`);
+      return {
+        id: `manual_${input.sessionId || Math.random().toString(36).substring(7)}`,
+        meetUrl: input.meetingLink,
+        title: input.title,
+        organizerEmail: input.organizerEmail || 'rec@meet.finquojunior.com',
+        teacherId: input.teacherId,
+        studentId: input.studentId,
+        programId: input.programId,
+        sessionId: input.sessionId,
+        status: 'COMPLETED',
+      };
     }
-
-    return meeting;
   }
 
   static async deleteByLink(meetUrl: string) {

@@ -9,29 +9,6 @@ export class GoogleDriveService {
       const auth = await GoogleAuthService.getClientForEmail(workspaceEmail);
       const drive = google.drive({ version: 'v3', auth });
 
-      // Prioritize the user's shared folder for testing if searching for Quantum Computing
-      if (searchName && searchName.includes('Applied Quantum Computing')) {
-        const folderQ = `'1JcjQMhkWCiwQAiFWGe5kGQR3EqKFk5dw' in parents and mimeType = 'video/mp4' and trashed = false`;
-        const folderResponse = await drive.files.list({
-          q: folderQ,
-          fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
-          orderBy: 'createdTime desc',
-          pageSize: 10,
-        });
-        const folderFiles = (folderResponse.data.files ?? []).map(file => ({
-          id: file.id || '',
-          name: file.name || '',
-          mimeType: file.mimeType || '',
-          size: file.size ? parseInt(file.size, 10) : 0,
-          createdTime: file.createdTime || '',
-          webContentLink: file.webContentLink || '',
-        }));
-        if (folderFiles.length > 0) {
-          logger.info(`[GoogleDriveService] Found ${folderFiles.length} files in shared testing folder.`);
-          return folderFiles;
-        }
-      }
-
       // Look for mp4 video files only
       let q = "mimeType = 'video/mp4' and trashed = false";
       if (searchName || meetCode) {
@@ -53,14 +30,14 @@ export class GoogleDriveService {
         q += ` and (${conditions.join(' or ')})`;
       }
 
-      const response = await drive.files.list({
+      let response = await drive.files.list({
         q,
         fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
         orderBy: 'createdTime desc',
         pageSize: 50,
       });
 
-      const files = (response.data.files ?? []).map(file => ({
+      let files = (response.data.files ?? []).map(file => ({
         id: file.id || '',
         name: file.name || '',
         mimeType: file.mimeType || '',
@@ -69,47 +46,30 @@ export class GoogleDriveService {
         webContentLink: file.webContentLink || '',
       }));
 
-      if (files.length === 0 && process.env.NODE_ENV === 'development') {
-        logger.info(`[GoogleDriveService] Dev fallback: 0 files returned from Drive, using mock files for testing.`);
-        const cleanName = (searchName || 'Session').replace(/[^a-zA-Z0-9_\-\s]/g, '');
-        return [
-          {
-            id: 'mock_drive_file_id_mp4',
-            name: `${cleanName}_Recording.mp4`,
-            mimeType: 'video/mp4',
-            size: 15243100,
-            createdTime: new Date().toISOString(),
-            webContentLink: 'https://example.com/mock_video.mp4',
-          }
-        ];
+      // Fallback: If 0 files found with specific search criteria, query all recent video/mp4 files on Drive
+      if (files.length === 0 && (searchName || meetCode)) {
+        logger.info(`[GoogleDriveService] 0 files matched specific query. Broadening query to all recent video/mp4 files...`);
+        const broadResponse = await drive.files.list({
+          q: "mimeType = 'video/mp4' and trashed = false",
+          fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
+          orderBy: 'createdTime desc',
+          pageSize: 50,
+        });
+
+        files = (broadResponse.data.files ?? []).map(file => ({
+          id: file.id || '',
+          name: file.name || '',
+          mimeType: file.mimeType || '',
+          size: file.size ? parseInt(file.size, 10) : 0,
+          createdTime: file.createdTime || '',
+          webContentLink: file.webContentLink || '',
+        }));
       }
 
       return files;
     } catch (err: any) {
-      // In development mode, if the google account is not connected, return a mock file list
-      if (process.env.NODE_ENV === 'development' || !workspaceEmail) {
-        logger.info(`[GoogleDriveService] Dev fallback: Using mock files for disconnected account ${workspaceEmail}`);
-        const cleanName = (searchName || 'Session').replace(/[^a-zA-Z0-9_\-\s]/g, '');
-        return [
-          {
-            id: 'mock_drive_file_id_doc',
-            name: `${cleanName}_Transcript`,
-            mimeType: 'application/vnd.google-apps.document',
-            size: 1524,
-            createdTime: new Date().toISOString(),
-            webContentLink: 'https://example.com/mock_transcript',
-          },
-          {
-            id: 'mock_drive_file_id_mp4',
-            name: `${cleanName}_Recording.mp4`,
-            mimeType: 'video/mp4',
-            size: 15243100,
-            createdTime: new Date().toISOString(),
-            webContentLink: 'https://example.com/mock_video.mp4',
-          }
-        ];
-      }
-      throw err;
+      logger.error(`[GoogleDriveService] Error searching Google Drive for ${workspaceEmail}: ${err.message}`);
+      return [];
     }
   }
 

@@ -8,6 +8,8 @@ router.get('/',       asyncHandler(leadController.list));
 router.post('/',      asyncHandler(leadController.create));
 router.get('/:id',    asyncHandler(leadController.getById));
 router.put('/:id',    asyncHandler(leadController.update));
+router.post('/:id/collect-payment', asyncHandler(leadController.collectPayment));
+router.post('/:id/verify-payment',  asyncHandler(leadController.verifyPayment));
 router.delete('/:id', asyncHandler(leadController.delete));
 
 export const leadRoutes = router;

@@ -5,7 +5,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 
 export const roleService = {
   async getAllRoles() {
-    // Self-healing: Ensure PARENT role exists in DB
+    // Self-healing: Ensure PARENT & ENROLLMENT_ADVISOR roles exist in DB
     const parentRole = await db.role.findUnique({ where: { name: 'PARENT' } });
     if (!parentRole) {
       await db.role.create({
@@ -13,6 +13,17 @@ export const roleService = {
           name: 'PARENT',
           description: 'Parent accounts managing connected profiles and student billing information.',
           permissions: ['view:lessons']
+        }
+      });
+    }
+
+    const advisorRole = await db.role.findUnique({ where: { name: 'ENROLLMENT_ADVISOR' } });
+    if (!advisorRole) {
+      await db.role.create({
+        data: {
+          name: 'ENROLLMENT_ADVISOR',
+          description: 'Enrollment Advisors & Telecallers managing leads, preferred slots, and initial payment collection.',
+          permissions: ['leads:read', 'leads:write', 'leads:collect_payment']
         }
       });
     }

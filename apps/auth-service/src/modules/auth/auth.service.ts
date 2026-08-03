@@ -11,6 +11,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { db } from '../../database/datasource';
 import { RegisterInput, LoginInput } from './auth.schema';
 import type { AuthResponse, TokenPair } from '@futurespark/types';
+import { logger } from '@futurespark/logger';
 
 // ── Token Expiry Config ────────────────────────────────────────
 
@@ -85,11 +86,30 @@ export const authService = {
    * Authenticate a user by email and password. Returns a token pair.
    */
   async login(input: LoginInput): Promise<AuthResponse> {
+    // Helper for TLS 10054 resilience on remote database connections
+    const withDbRetry = async <T>(fn: () => Promise<T>, retries = 3): Promise<T> => {
+      let lastErr: any;
+      for (let i = 0; i < retries; i++) {
+        try {
+          return await fn();
+        } catch (err: any) {
+          lastErr = err;
+          if (err.message && (err.message.includes('10054') || err.message.includes('TLS') || err.message.includes('Can\'t reach database'))) {
+            logger.warn(`[AuthService] Transient TLS connection reset. Retrying query ${i + 1}/${retries}...`);
+            await new Promise((r) => setTimeout(r, 200 * (i + 1)));
+          } else {
+            throw err;
+          }
+        }
+      }
+      throw lastErr;
+    };
+
     // 1. Try finding in User table (case-insensitive)
-    const user = await db.user.findFirst({
+    const user = await withDbRetry(() => db.user.findFirst({
       where: { email: { equals: input.email, mode: 'insensitive' } },
       include: { role: true },
-    });
+    }));
 
     let account: any = null;
     let role = '';
@@ -101,10 +121,10 @@ export const authService = {
       type = 'user';
     } else {
       // 2. Try finding in ParentAccount table (case-insensitive)
-      const parent = await db.parentAccount.findFirst({
+      const parent = await withDbRetry(() => db.parentAccount.findFirst({
         where: { email: { equals: input.email, mode: 'insensitive' } },
         include: { profiles: true },
-      });
+      }));
       if (parent) {
         account = parent;
         const firstProfile = parent.profiles[0];
@@ -114,9 +134,9 @@ export const authService = {
         type = 'parent';
       } else {
         // 3. Try finding in Student table (case-insensitive)
-        const student = await db.student.findFirst({
+        const student = await withDbRetry(() => db.student.findFirst({
           where: { email: { equals: input.email, mode: 'insensitive' } },
-        });
+        }));
         if (student) {
           account = student;
           role = 'STUDENT';

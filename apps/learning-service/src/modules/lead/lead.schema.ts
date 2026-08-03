@@ -11,9 +11,29 @@ export interface CreateLeadInput {
   programId?: string;
   notes?: string;
   demoClass?: boolean;
+  assignedAdvisorId?: string;
+  preferredDays?: string[];
+  preferredTime?: string;
+  preferredTimezone?: string;
+  paymentAmount?: number;
+  paymentTxnRef?: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+  paymentVerifiedBy?: string;
+  paymentVerifiedAt?: Date | string;
+  telecallerNotes?: string;
 }
 
-const VALID_STATUSES = ['NEW', 'CONTACTED', 'INTERESTED', 'ENROLLED', 'LOST'];
+const VALID_STATUSES = [
+  'NEW',
+  'CONTACTED',
+  'INTERESTED',
+  'DEMO_SCHEDULED',
+  'ADMISSION_PENDING',
+  'PAYMENT_SUBMITTED',
+  'ENROLLED',
+  'LOST',
+];
 const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 export const validateCreateLead = (data: any): CreateLeadInput => {
@@ -62,6 +82,15 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
     programId: data.programId || undefined,
     notes: data.notes?.trim() || undefined,
     demoClass: data.demoClass !== undefined ? data.demoClass : false,
+    assignedAdvisorId: data.assignedAdvisorId,
+    preferredDays: Array.isArray(data.preferredDays) ? data.preferredDays : [],
+    preferredTime: data.preferredTime,
+    preferredTimezone: data.preferredTimezone || 'Asia/Kolkata',
+    paymentAmount: data.paymentAmount,
+    paymentTxnRef: data.paymentTxnRef,
+    paymentMethod: data.paymentMethod,
+    paymentStatus: data.paymentStatus || 'NONE',
+    telecallerNotes: data.telecallerNotes,
   };
 };
 
@@ -75,6 +104,17 @@ export interface UpdateLeadInput {
   programId?: string;
   notes?: string;
   demoClass?: boolean;
+  assignedAdvisorId?: string;
+  preferredDays?: string[];
+  preferredTime?: string;
+  preferredTimezone?: string;
+  paymentAmount?: number;
+  paymentTxnRef?: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+  paymentVerifiedBy?: string;
+  paymentVerifiedAt?: Date | string;
+  telecallerNotes?: string;
 }
 
 export const validateUpdateLead = (data: any): UpdateLeadInput => {
@@ -107,5 +147,16 @@ export const validateUpdateLead = (data: any): UpdateLeadInput => {
     programId: data.programId,
     notes: data.notes?.trim(),
     demoClass: data.demoClass,
+    assignedAdvisorId: data.assignedAdvisorId,
+    preferredDays: Array.isArray(data.preferredDays) ? data.preferredDays : undefined,
+    preferredTime: data.preferredTime,
+    preferredTimezone: data.preferredTimezone,
+    paymentAmount: data.paymentAmount,
+    paymentTxnRef: data.paymentTxnRef,
+    paymentMethod: data.paymentMethod,
+    paymentStatus: data.paymentStatus,
+    paymentVerifiedBy: data.paymentVerifiedBy,
+    paymentVerifiedAt: data.paymentVerifiedAt,
+    telecallerNotes: data.telecallerNotes?.trim(),
   };
 };

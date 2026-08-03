@@ -27,6 +27,17 @@ export const leadController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(lead, 'Lead updated successfully'));
   },
 
+  async collectPayment(req: Request, res: Response) {
+    const lead = await leadService.collectPayment(req.params.id, req.body);
+    return res.status(HTTP_STATUS.OK).json(successResponse(lead, 'Payment details submitted successfully'));
+  },
+
+  async verifyPayment(req: Request, res: Response) {
+    const adminUserId = (req as any).user?.id || 'ADMIN';
+    const lead = await leadService.verifyPayment(req.params.id, adminUserId);
+    return res.status(HTTP_STATUS.OK).json(successResponse(lead, 'Payment verified and lead enrolled successfully'));
+  },
+
   async delete(req: Request, res: Response) {
     await leadService.deleteLead(req.params.id);
     return res.status(HTTP_STATUS.OK).json(successResponse(null, 'Lead deleted successfully'));
