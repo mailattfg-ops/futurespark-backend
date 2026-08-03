@@ -1,6 +1,8 @@
 import axios from 'axios';
 const FormData = require('form-data');
 import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 
@@ -13,30 +15,56 @@ export class GroqTranscriptionService {
   async processClassAudio(audioFilePath: string, studentName: string = 'Student', mentorName: string = 'Instructor') {
     logger.info(`[GroqTranscriptionService] [+] Processing file: ${audioFilePath} for ${studentName} & ${mentorName}`);
 
+    let localFilePath = audioFilePath;
+    const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
+
+    if (isUrl) {
+      const tempDir = os.tmpdir();
+      const cleanUrl = audioFilePath.split('?')[0];
+      const ext = path.extname(cleanUrl) || '.mp3';
+      const tempFileName = `transcribe-${Date.now()}${ext}`;
+      localFilePath = path.join(tempDir, tempFileName);
+      logger.info(`[GroqTranscriptionService] Downloading S3 audio file from: ${audioFilePath} to local temp path: ${localFilePath}`);
+
+      const response = await axios({
+        method: 'GET',
+        url: audioFilePath,
+        responseType: 'stream',
+      });
+
+      const writer = fs.createWriteStream(localFilePath);
+      response.data.pipe(writer);
+
+      await new Promise<void>((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+      logger.info(`[GroqTranscriptionService] Download completed.`);
+    }
+
+    // Extract & compress audio if file size > 20MB or is a video file (Groq limit: 25MB)
+    const fileToTranscribe = this.compressAudioIfNeeded(audioFilePath);
+
+    let transcript = '';
+    let classSummary = '';
+    let metrics: any;
+
     try {
-      // Extract & compress audio if file size > 20MB or is a video file (Groq limit: 25MB)
-      const fileToTranscribe = this.compressAudioIfNeeded(audioFilePath);
+      // 1. Transcribe with Groq Whisper Large v3
+      transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
+    } catch (err: any) {
+      logger.warn(`[GroqTranscriptionService] Groq Whisper API call failed (${err.message}). Using fallback transcription...`);
+      transcript = `[00:00:05] ${mentorName}: Welcome to today's live session. We are reviewing core concepts and project milestones.\n[00:02:15] ${studentName}: Hello teacher! Ready for today's session.\n[00:15:30] ${mentorName}: Demonstrated live exercise and reviewed student submission.\n[00:45:00] ${mentorName}: Homework exercise assigned for next session.`;
+    }
 
-      let transcript = '';
-      let classSummary = '';
-      let metrics: any;
+    metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
 
-      try {
-        // 1. Transcribe with Groq Whisper Large v3
-        transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
-      } catch (err: any) {
-        logger.warn(`[GroqTranscriptionService] Groq Whisper API call failed (${err.message}). Using fallback transcription...`);
-        transcript = `[00:00:05] ${mentorName}: Welcome to today's live session. We are reviewing core concepts and project milestones.\n[00:02:15] ${studentName}: Hello teacher! Ready for today's session.\n[00:15:30] ${mentorName}: Demonstrated live exercise and reviewed student submission.\n[00:45:00] ${mentorName}: Homework exercise assigned for next session.`;
-      }
-
-      metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
-
-      try {
-        // 3. Generate Master AI Summary with Llama 3.3 (70B)
-        classSummary = await this.generateMasterSummary(transcript, metrics, studentName, mentorName);
-      } catch (err: any) {
-        logger.warn(`[GroqTranscriptionService] Groq Llama 3.3 Summary API failed (${err.message}). Generating fallback master summary...`);
-        classSummary = `==================================================
+    try {
+      // 3. Generate Master AI Summary with Llama 3.3 (70B)
+      classSummary = await this.generateMasterSummary(transcript, metrics, studentName, mentorName);
+    } catch (err: any) {
+      logger.warn(`[GroqTranscriptionService] Groq Llama 3.3 Summary API failed (${err.message}). Generating fallback master summary...`);
+      classSummary = `==================================================
         UNIFIED MASTER CLASS SUMMARY & METRICS
 ==================================================
 
@@ -74,155 +102,155 @@ export class GroqTranscriptionService {
 5. 🎯 HOMEWORK, ASSIGNMENTS & NEXT STEPS
    - Complete assigned homework exercises.
    - Review core concepts and prepare project submission prior to the next class with Mentor ${mentorName}.`;
-      }
-
-      // Clean up temporary compressed audio if created
-      if (fileToTranscribe !== audioFilePath && fs.existsSync(fileToTranscribe)) {
-        try { fs.unlinkSync(fileToTranscribe); } catch (_) {}
-      }
-
-      return { transcript, classSummary, metrics };
-    } catch (err: any) {
-      logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
-      const fallbackMetrics = {
-        wordCount: 350,
-        sentenceCount: 25,
-        questionCount: 8,
-        mentorShareRatio: 70,
-        studentShareRatio: 30,
-        engagementRating: 'HIGH',
-      };
-      return {
-        transcript: `[00:00:05] ${mentorName}: Live session completed.\n[00:45:00] Q&A completed.`,
-        classSummary: `==================================================\n        UNIFIED MASTER CLASS SUMMARY & METRICS\n==================================================\n\n📊 CLASS METRICS\n- Student Engagement Rating: HIGH\n- Core concepts covered in live session with ${studentName}.`,
-        metrics: fallbackMetrics,
-      };
     }
+
+    // Clean up temporary compressed audio if created
+    if (fileToTranscribe !== audioFilePath && fs.existsSync(fileToTranscribe)) {
+      try { fs.unlinkSync(fileToTranscribe); } catch (_) { }
+    }
+
+    return { transcript, classSummary, metrics };
+  } catch(err: any) {
+    logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
+    const fallbackMetrics = {
+      wordCount: 350,
+      sentenceCount: 25,
+      questionCount: 8,
+      mentorShareRatio: 70,
+      studentShareRatio: 30,
+      engagementRating: 'HIGH',
+    };
+    return {
+      transcript: `[00:00:05] ${mentorName}: Live session completed.\n[00:45:00] Q&A completed.`,
+      classSummary: `==================================================\n        UNIFIED MASTER CLASS SUMMARY & METRICS\n==================================================\n\n📊 CLASS METRICS\n- Student Engagement Rating: HIGH\n- Core concepts covered in live session with ${studentName}.`,
+      metrics: fallbackMetrics,
+    };
   }
+}
 
   /**
    * Compress audio/video file locally using ffmpeg if size > 20MB or is video format
    */
   private compressAudioIfNeeded(filePath: string): string {
-    const stats = fs.statSync(filePath);
-    const fileSizeMb = stats.size / (1024 * 1024);
-    const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+  const stats = fs.statSync(filePath);
+  const fileSizeMb = stats.size / (1024 * 1024);
+  const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
 
-    if (fileSizeMb < 20.0 && ['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac'].includes(ext)) {
-      return filePath;
-    }
-
-    const tempOutput = filePath + '.compressed.mp3';
-    if (fs.existsSync(tempOutput) && fs.statSync(tempOutput).size > 1000000) {
-      logger.info(`[GroqTranscriptionService] [✓] Found existing compressed audio: ${tempOutput} - Reusing!`);
-      return tempOutput;
-    }
-
-    logger.info(`[GroqTranscriptionService] [+] File size: ${fileSizeMb.toFixed(2)}MB (${ext}). Extracting & compressing audio to MP3...`);
-
-    let ffmpegPath = 'ffmpeg';
-    try {
-      ffmpegPath = require('@ffmpeg-installer/ffmpeg').path || require('ffmpeg-static') || 'ffmpeg';
-    } catch (e) {
-      try {
-        ffmpegPath = require('ffmpeg-static') || 'ffmpeg';
-      } catch (_) {}
-    }
-
-    try {
-      execSync(`"${ffmpegPath}" -y -i "${filePath}" -vn -ar 16000 -ac 1 -ab 32k "${tempOutput}"`, {
-        stdio: 'ignore',
-      });
-      const newStats = fs.statSync(tempOutput);
-      const newSizeMb = newStats.size / (1024 * 1024);
-      logger.info(`[GroqTranscriptionService] [✓] Compressed audio: ${tempOutput} (${newSizeMb.toFixed(2)}MB) - Ready for Groq Whisper!`);
-      return tempOutput;
-    } catch (err: any) {
-      logger.warn(`[GroqTranscriptionService] ⚠️ Compression failed or ffmpeg missing: ${err.message}. Attempting direct upload...`);
-      return filePath;
-    }
+  if (fileSizeMb < 20.0 && ['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac'].includes(ext)) {
+    return filePath;
   }
+
+  const tempOutput = filePath + '.compressed.mp3';
+  if (fs.existsSync(tempOutput) && fs.statSync(tempOutput).size > 1000000) {
+    logger.info(`[GroqTranscriptionService] [✓] Found existing compressed audio: ${tempOutput} - Reusing!`);
+    return tempOutput;
+  }
+
+  logger.info(`[GroqTranscriptionService] [+] File size: ${fileSizeMb.toFixed(2)}MB (${ext}). Extracting & compressing audio to MP3...`);
+
+  let ffmpegPath = 'ffmpeg';
+  try {
+    ffmpegPath = require('@ffmpeg-installer/ffmpeg').path || require('ffmpeg-static') || 'ffmpeg';
+  } catch (e) {
+    try {
+      ffmpegPath = require('ffmpeg-static') || 'ffmpeg';
+    } catch (_) { }
+  }
+
+  try {
+    execSync(`"${ffmpegPath}" -y -i "${filePath}" -vn -ar 16000 -ac 1 -ab 32k "${tempOutput}"`, {
+      stdio: 'ignore',
+    });
+    const newStats = fs.statSync(tempOutput);
+    const newSizeMb = newStats.size / (1024 * 1024);
+    logger.info(`[GroqTranscriptionService] [✓] Compressed audio: ${tempOutput} (${newSizeMb.toFixed(2)}MB) - Ready for Groq Whisper!`);
+    return tempOutput;
+  } catch (err: any) {
+    logger.warn(`[GroqTranscriptionService] ⚠️ Compression failed or ffmpeg missing: ${err.message}. Attempting direct upload...`);
+    return filePath;
+  }
+}
 
   /**
    * 1. Groq Whisper STT API
    */
-  private async transcribeWithGroqWhisper(filePath: string): Promise<string> {
-    const formData = new FormData();
-    formData.append('model', 'whisper-large-v3-turbo');
-    formData.append('language', 'ml');
-    formData.append('file', fs.createReadStream(filePath));
+  private async transcribeWithGroqWhisper(filePath: string): Promise < string > {
+  const formData = new FormData();
+  formData.append('model', 'whisper-large-v3-turbo');
+  formData.append('language', 'ml');
+  formData.append('file', fs.createReadStream(filePath));
 
-    const response = await axios.post(
-      'https://api.groq.com/openai/v1/audio/transcriptions',
-      formData,
-      {
-        headers: {
-          Authorization: `Bearer ${this.groqApiKey}`,
-          ...formData.getHeaders(),
-        },
-        maxBodyLength: Infinity,
+  const response = await axios.post(
+    'https://api.groq.com/openai/v1/audio/transcriptions',
+    formData,
+    {
+      headers: {
+        Authorization: `Bearer ${this.groqApiKey}`,
+        ...formData.getHeaders(),
       },
-    );
+      maxBodyLength: Infinity,
+    },
+  );
 
-    return response.data.text;
-  }
+  return response.data.text;
+}
 
   /**
    * 2. Native Transcript Metrics Calculation
    */
   private calculateTranscriptMetrics(text: string, studentName: string = 'Student', mentorName: string = 'Instructor') {
-    const words = text.split(/\s+/).filter(Boolean).length;
-    const sentences = text.split(/[.!?]+/).filter(Boolean).length;
-    const questions = (text.match(/\?/g) || []).length;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const sentences = text.split(/[.!?]+/).filter(Boolean).length;
+  const questions = (text.match(/\?/g) || []).length;
 
-    let mentorWordCount = 0;
-    let studentWordCount = 0;
+  let mentorWordCount = 0;
+  let studentWordCount = 0;
 
-    const lines = text.split('\n');
-    const studentRegex = new RegExp(`${studentName}`, 'i');
-    const mentorRegex = new RegExp(`${mentorName}|mentor|instructor|teacher`, 'i');
+  const lines = text.split('\n');
+  const studentRegex = new RegExp(`${studentName}`, 'i');
+  const mentorRegex = new RegExp(`${mentorName}|mentor|instructor|teacher`, 'i');
 
-    let currentSpeaker: 'mentor' | 'student' = 'mentor';
+  let currentSpeaker: 'mentor' | 'student' = 'mentor';
 
-    for (const line of lines) {
-      if (studentRegex.test(line)) {
-        currentSpeaker = 'student';
-      } else if (mentorRegex.test(line)) {
-        currentSpeaker = 'mentor';
-      }
-
-      const lineWords = line.split(/\s+/).filter(Boolean).length;
-      if (currentSpeaker === 'mentor') {
-        mentorWordCount += lineWords;
-      } else {
-        studentWordCount += lineWords;
-      }
+  for (const line of lines) {
+    if (studentRegex.test(line)) {
+      currentSpeaker = 'student';
+    } else if (mentorRegex.test(line)) {
+      currentSpeaker = 'mentor';
     }
 
-    const totalSpeakerWords = mentorWordCount + studentWordCount;
-    let mentorShareRatio = 68;
-    let studentShareRatio = 32;
-
-    if (totalSpeakerWords > 0) {
-      mentorShareRatio = Math.round((mentorWordCount / totalSpeakerWords) * 100);
-      studentShareRatio = 100 - mentorShareRatio;
+    const lineWords = line.split(/\s+/).filter(Boolean).length;
+    if (currentSpeaker === 'mentor') {
+      mentorWordCount += lineWords;
+    } else {
+      studentWordCount += lineWords;
     }
-
-    return {
-      wordCount: words,
-      sentenceCount: Math.max(sentences, 1),
-      questionCount: questions,
-      mentorShareRatio,
-      studentShareRatio,
-      engagementRating: studentShareRatio >= 25 ? 'HIGH' : studentShareRatio >= 15 ? 'MEDIUM' : 'MODERATE',
-    };
   }
+
+  const totalSpeakerWords = mentorWordCount + studentWordCount;
+  let mentorShareRatio = 68;
+  let studentShareRatio = 32;
+
+  if (totalSpeakerWords > 0) {
+    mentorShareRatio = Math.round((mentorWordCount / totalSpeakerWords) * 100);
+    studentShareRatio = 100 - mentorShareRatio;
+  }
+
+  return {
+    wordCount: words,
+    sentenceCount: Math.max(sentences, 1),
+    questionCount: questions,
+    mentorShareRatio,
+    studentShareRatio,
+    engagementRating: studentShareRatio >= 25 ? 'HIGH' : studentShareRatio >= 15 ? 'MEDIUM' : 'MODERATE',
+  };
+}
 
   /**
    * 3. Groq Llama 3.3 (70B) Master Summary API
    */
-  private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise<string> {
-    const prompt = `You are a Lead Educational Architect and Master Banking & Financial Literacy Curriculum Specialist.
+  private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise < string > {
+  const prompt = `You are a Lead Educational Architect and Master Banking & Financial Literacy Curriculum Specialist.
 Analyze the provided transcript of a live class session between Mentor (${mentorName}) and Student (${studentName}) AS A WHOLE in ONE UNIFIED PASS. Do NOT output meta comments like 'As the Lead Educational Architect...' or section wrappers.
 
 IMPORTANT INSTRUCTION ON TOPIC PRIORITIZATION:
@@ -285,22 +313,22 @@ TRANSCRIPT:
 ${transcript.slice(0, 12000)}
 --------------------------------------------------`;
 
-    const response = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 3500,
-        temperature: 0.3,
+  const response = await axios.post(
+    'https://api.groq.com/openai/v1/chat/completions',
+    {
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 3500,
+      temperature: 0.3,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${this.groqApiKey}`,
+        'Content-Type': 'application/json',
       },
-      {
-        headers: {
-          Authorization: `Bearer ${this.groqApiKey}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
+    },
+  );
 
-    return response.data.choices[0].message.content;
-  }
+  return response.data.choices[0].message.content;
+}
 }

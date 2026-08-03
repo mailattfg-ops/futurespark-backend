@@ -100,6 +100,7 @@ export interface UpdateUserInput {
   email?: string;
   firstName?: string;
   lastName?: string;
+  avatarUrl?: string;
   isActive?: boolean;
   roleId?: string;
   qualifiedPrograms?: string[];
@@ -166,6 +167,7 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
     email: data.email?.toLowerCase().trim(),
     firstName: data.firstName?.trim(),
     lastName: data.lastName?.trim(),
+    avatarUrl: data.avatarUrl?.trim(),
     isActive: data.isActive,
     roleId: data.roleId,
     qualifiedPrograms: data.qualifiedPrograms,

@@ -280,7 +280,7 @@ export const scheduleService = {
 
     let startTime = classSession.startTime;
     let endTime = classSession.endTime;
-    const status = input.status !== undefined ? input.status : classSession.status;
+    let status = input.status !== undefined ? input.status : classSession.status;
     if (status === 'COMPLETED' && new Date(startTime) > new Date()) {
       throw new AppError('Cannot complete or award points to a future class session', HTTP_STATUS.BAD_REQUEST);
     }
@@ -290,6 +290,10 @@ export const scheduleService = {
     if (input.startTime) {
       startTime = new Date(input.startTime);
       endTime = new Date(startTime.getTime() + 90 * 60 * 1000); // 90 min duration
+
+      if (status === 'RESCHEDULE_REQUESTED') {
+        status = 'SCHEDULED';
+      }
 
       // Verify Weekly availability of the mentor (Bypassed: allow manual scheduling regardless of weekly slots)
       /*
@@ -393,8 +397,8 @@ export const scheduleService = {
         status,
         mentorId: effectiveMentorId,
         meetingLink: input.meetingLink !== undefined ? input.meetingLink : undefined,
-        rescheduleReason: input.rescheduleReason !== undefined ? input.rescheduleReason : undefined,
-        rescheduleMessage: input.rescheduleMessage !== undefined ? input.rescheduleMessage : undefined,
+        rescheduleReason: input.startTime ? null : (input.rescheduleReason !== undefined ? input.rescheduleReason : undefined),
+        rescheduleMessage: input.startTime ? null : (input.rescheduleMessage !== undefined ? input.rescheduleMessage : undefined),
         qaStatus: input.qaStatus !== undefined ? input.qaStatus : undefined,
         qaFeedback: input.qaFeedback !== undefined ? input.qaFeedback : undefined,
         creditsAwarded: input.creditsAwarded !== undefined ? Number(input.creditsAwarded) : undefined,

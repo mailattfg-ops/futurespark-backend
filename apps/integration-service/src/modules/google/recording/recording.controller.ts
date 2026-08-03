@@ -4,6 +4,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
 import * as fs from 'fs';
+import { S3Storage, getS3KeyForRecording } from '@futurespark/storage';
 import * as path from 'path';
 
 export class GoogleRecordingController {
@@ -60,11 +61,17 @@ export class GoogleRecordingController {
       if (!recording) {
         return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Recording not found.'));
       }
-      
+
       const isAudio = req.query.type === 'audio';
 
       // 1. Prefer local disk file if present (Enables HTTP 206 Partial Content seeking!)
       const rawFilePath = (isAudio && recording.audioPath) ? recording.audioPath : recording.videoPath;
+
+      if (S3Storage.isS3Enabled() && filePath && !fs.existsSync(filePath)) {
+        const presignedUrl = await S3Storage.getPresignedUrl(filePath, 3600);
+        logger.info(`[GoogleRecordingController] Redirecting stream request to S3 presigned URL: ${presignedUrl}`);
+        return res.redirect(presignedUrl);
+      }
       let filePath = rawFilePath;
       if (filePath && !path.isAbsolute(filePath)) {
         filePath = path.resolve(process.cwd(), 'apps/integration-service', filePath);
@@ -85,7 +92,7 @@ export class GoogleRecordingController {
           const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
           const chunksize = (end - start) + 1;
           const file = fs.createReadStream(filePath, { start, end });
-          
+
           res.status(206);
           res.set({
             'Content-Range': `bytes ${start}-${end}/${fileSize}`,
@@ -114,7 +121,7 @@ export class GoogleRecordingController {
             recording.meeting?.organizerEmail || 'rec@meet.finquojunior.com',
             recording.driveFileId
           );
-          
+
           res.status(200);
           res.set({
             'Content-Type': isAudio ? 'audio/mpeg' : 'video/mp4',
@@ -141,7 +148,7 @@ export class GoogleRecordingController {
     try {
       const { id } = req.params;
       const { format } = req.body; // 'mp3' or 'wav'
-      
+
       const audioFormat = format === 'wav' ? 'wav' : 'mp3';
       const audioPath = await GoogleRecordingService.extractAudioFromRecording(id, audioFormat);
 
@@ -156,7 +163,7 @@ export class GoogleRecordingController {
     try {
       const { id } = req.params;
       const recording = await GoogleRecordingService.getRecordingById(id);
-      
+
       if (!recording) {
         return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Transcript not found.'));
       }
@@ -164,12 +171,24 @@ export class GoogleRecordingController {
       let summaryPath = recording.videoPath ? recording.videoPath + '.summary.txt' : '';
       let transcriptPath = recording.videoPath ? recording.videoPath + '.transcript.txt' : '';
 
-      // 1. Check if real Groq AI summary file or transcript file exists on disk
+      // 1. Check if real Groq AI summary file or S3 is enabled and file is not local, then fetch from S3
+      if (S3Storage.isS3Enabled() && transcriptPath && !fs.existsSync(transcriptPath)) {
+        try {
+          const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'transcript');
+          logger.info(`[GoogleRecordingController] Fetching transcript from S3 key: ${s3Key}`);
+          const content = await S3Storage.downloadBuffer(s3Key);
+          return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Transcript loaded successfully.'));
+        } catch (s3Err: any) {
+          logger.warn(`[GoogleRecordingController] S3 transcript fetch failed: ${s3Err.message}`);
+        }
+      }
+
+      // Check if transcript file exists on disk
       if (summaryPath && fs.existsSync(summaryPath)) {
         const content = fs.readFileSync(summaryPath, 'utf-8');
         const isRealSummary = content.includes('UNIFIED MASTER CLASS SUMMARY & METRICS') &&
-                              !content.includes("Welcome to today's live interactive session") &&
-                              !content.includes("Demonstrated live exercise and reviewed student submission");
+          !content.includes("Welcome to today's live interactive session") &&
+          !content.includes("Demonstrated live exercise and reviewed student submission");
         if (isRealSummary) {
           return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Master Groq AI Summary loaded successfully.'));
         }
@@ -191,7 +210,7 @@ export class GoogleRecordingController {
                 ? `${matchedClass.classSummary}\n\n==================================================\n                 FULL TRANSCRIPT\n==================================================\n${matchedClass.transcript || ''}`
                 : matchedClass.transcript;
               if (summaryPath) {
-                try { fs.writeFileSync(summaryPath, summaryContent, 'utf-8'); } catch (_) {}
+                try { fs.writeFileSync(summaryPath, summaryContent, 'utf-8'); } catch (_) { }
               }
               return res.status(HTTP_STATUS.OK).json(successResponse({ content: summaryContent }, 'Master AI Summary & Transcript loaded successfully.'));
             }
@@ -244,7 +263,7 @@ export class GoogleRecordingController {
           const result = await groqService.processClassAudio(recording.videoPath, studentName, mentorName);
           if (result && result.classSummary) {
             if (summaryPath) {
-              try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) {}
+              try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) { }
             }
             return res.status(HTTP_STATUS.OK).json(successResponse({ content: result.classSummary }, 'Master Groq AI Summary loaded successfully.'));
           }
@@ -306,7 +325,7 @@ export class GoogleRecordingController {
 
       // Save to cache on disk so future reads are instantaneous
       if (summaryPath) {
-        try { fs.writeFileSync(summaryPath, instantMasterSummary, 'utf-8'); } catch (_) {}
+        try { fs.writeFileSync(summaryPath, instantMasterSummary, 'utf-8'); } catch (_) { }
       }
 
       return res.status(HTTP_STATUS.OK).json(successResponse({ content: instantMasterSummary }, 'Master AI Summary & Transcript loaded successfully.'));
