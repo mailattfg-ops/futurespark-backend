@@ -8,6 +8,7 @@ import googleAuthRouter from './modules/google/auth/auth.routes';
 import googleMeetingsRouter from './modules/google/meetings/meetings.routes';
 import googleRecordingsRouter from './modules/google/recording/recording.routes';
 import { startSyncCron } from './modules/google/cron/sync.cron';
+import storageRouter from './modules/storage/storage.routes';
 
 const app = express();
 
@@ -26,6 +27,7 @@ startSyncCron();
 app.use('/google/auth', googleAuthRouter);
 app.use('/google/meetings', googleMeetingsRouter);
 app.use('/google/recordings', googleRecordingsRouter);
+app.use('/storage', storageRouter);
 
 app.get('/health', (req, res) => {
   res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'integration-service is healthy'));

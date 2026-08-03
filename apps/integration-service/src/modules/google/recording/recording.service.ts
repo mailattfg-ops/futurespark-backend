@@ -4,6 +4,7 @@ import { exec } from 'child_process';
 import { db, withDbRetry } from '../../../database/datasource';
 import { GoogleDriveService } from '../drive/drive.service';
 import { logger } from '@futurespark/logger';
+import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
 
 const DOWNLOADS_BASE = path.resolve(__dirname, '../../../../downloads');
 const VIDEO_DIR = path.join(DOWNLOADS_BASE, 'video');
@@ -208,10 +209,26 @@ export class GoogleRecordingService {
         stream.on('error', reject);
       });
 
+      let finalVideoPath = destinationPath;
+      if (S3Storage.isS3Enabled()) {
+        const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'video');
+        logger.info(`[GoogleRecordingService] S3 is enabled. Uploading video to S3 key: ${s3Key}`);
+        await S3Storage.uploadFile(destinationPath, s3Key, getMimeType(destinationPath));
+        
+        try {
+          fs.unlinkSync(destinationPath);
+          logger.info(`[GoogleRecordingService] Cleaned up local video file: ${destinationPath}`);
+        } catch (unlinkErr: any) {
+          logger.warn(`[GoogleRecordingService] Failed to clean up local file: ${unlinkErr.message}`);
+        }
+        
+        finalVideoPath = s3Key;
+      }
+
       await db.meetingRecording.update({
         where: { id: recordingId },
         data: {
-          videoPath: destinationPath,
+          videoPath: finalVideoPath,
           downloadStatus: 'COMPLETED',
         },
       });
@@ -224,7 +241,7 @@ export class GoogleRecordingService {
         logger.error(`[GoogleRecordingService] Auto audio extraction failed for ${recordingId}: ${err.message}`);
       });
 
-      return destinationPath;
+      return finalVideoPath;
     } catch (err: any) {
       logger.error(`Failed to download recording file: ${err.message}`);
       await db.meetingRecording.update({
@@ -244,11 +261,22 @@ export class GoogleRecordingService {
       throw new Error(`Recording file must be downloaded before extracting audio.`);
     }
 
-    if (!fs.existsSync(recording.videoPath)) {
-      throw new Error(`Local file is missing from path: ${recording.videoPath}`);
+    let localVideoPath = recording.videoPath;
+    let isVideoOnS3 = false;
+
+    if (S3Storage.isS3Enabled() && !fs.existsSync(recording.videoPath)) {
+      const tempBase = path.basename(recording.videoPath);
+      localVideoPath = path.join(VIDEO_DIR, `temp-${Date.now()}-${tempBase}`);
+      logger.info(`[GoogleRecordingService] Video is on S3. Downloading S3 key ${recording.videoPath} to local temp path: ${localVideoPath}`);
+      await S3Storage.downloadFile(recording.videoPath, localVideoPath);
+      isVideoOnS3 = true;
     }
 
-    const audioFileName = `${path.basename(recording.videoPath, '.mp4')}.${format}`;
+    if (!fs.existsSync(localVideoPath)) {
+      throw new Error(`Local file is missing from path: ${localVideoPath}`);
+    }
+
+    const audioFileName = `${path.basename(localVideoPath, '.mp4')}.${format}`;
     const destinationPath = path.join(AUDIO_DIR, audioFileName);
 
     logger.info(`Extracting audio in ${format.toUpperCase()} format to ${destinationPath}`);
@@ -258,28 +286,41 @@ export class GoogleRecordingService {
       if (
         recording.id.startsWith('mock') ||
         recording.driveFileId === 'mock_drive_file_id_mp4' ||
-        (fs.existsSync(recording.videoPath!) && fs.statSync(recording.videoPath!).size < 100)
+        (fs.existsSync(localVideoPath) && fs.statSync(localVideoPath).size < 100)
       ) {
         logger.info(`[GoogleRecordingService] Dev fallback: Creating mock audio file instead of running ffmpeg.`);
         fs.writeFileSync(destinationPath, 'Mock MP3 audio content');
 
+        let finalAudioPath = destinationPath;
+        if (S3Storage.isS3Enabled()) {
+          const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'audio');
+          logger.info(`[GoogleRecordingService] Uploading mock audio to S3 key: ${s3Key}`);
+          await S3Storage.uploadFile(destinationPath, s3Key, getMimeType(destinationPath));
+          
+          try { fs.unlinkSync(destinationPath); } catch (_) {}
+          finalAudioPath = s3Key;
+        }
+
+        if (isVideoOnS3 && fs.existsSync(localVideoPath)) {
+          try { fs.unlinkSync(localVideoPath); } catch (_) {}
+        }
+
         await db.meetingRecording.update({
           where: { id: recordingId },
           data: {
-            audioPath: destinationPath,
+            audioPath: finalAudioPath,
             extractedAudioStatus: 'COMPLETED',
           },
         });
 
-        logger.info(`Successfully created mock audio track: ${destinationPath}`);
+        logger.info(`Successfully created mock audio track: ${finalAudioPath}`);
         
-        // Auto-trigger transcription!
         logger.info(`[GoogleRecordingService] Auto-triggering transcription for recording ID: ${recordingId}`);
         GoogleRecordingService.transcribeRecording(recordingId).catch(err => {
           logger.error(`[GoogleRecordingService] Auto transcription failed for ${recordingId}: ${err.message}`);
         });
 
-        return resolve(destinationPath);
+        return resolve(finalAudioPath);
       }
 
       let ffmpegPath = 'ffmpeg';
@@ -291,9 +332,13 @@ export class GoogleRecordingService {
         } catch (_) {}
       }
 
-      const command = `"${ffmpegPath}" -y -i "${recording.videoPath}" -q:a 0 -map a "${destinationPath}"`;
+      const command = `"${ffmpegPath}" -y -i "${localVideoPath}" -q:a 0 -map a "${destinationPath}"`;
 
       exec(command, async (error, stdout, stderr) => {
+        if (isVideoOnS3 && fs.existsSync(localVideoPath)) {
+          try { fs.unlinkSync(localVideoPath); } catch (_) {}
+        }
+
         if (error) {
           logger.error(`FFmpeg audio extraction failed: ${error.message}`);
           await db.meetingRecording.update({
@@ -303,23 +348,41 @@ export class GoogleRecordingService {
           return reject(new Error(`FFmpeg failed: ${error.message}`));
         }
 
+        let finalAudioPath = destinationPath;
+        if (S3Storage.isS3Enabled()) {
+          try {
+            const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'audio');
+            logger.info(`[GoogleRecordingService] Uploading audio to S3 key: ${s3Key}`);
+            await S3Storage.uploadFile(destinationPath, s3Key, getMimeType(destinationPath));
+            
+            try { fs.unlinkSync(destinationPath); } catch (_) {}
+            finalAudioPath = s3Key;
+          } catch (uploadErr: any) {
+            logger.error(`[GoogleRecordingService] Failed to upload audio to S3: ${uploadErr.message}`);
+            await db.meetingRecording.update({
+              where: { id: recordingId },
+              data: { extractedAudioStatus: 'FAILED' },
+            });
+            return reject(uploadErr);
+          }
+        }
+
         await db.meetingRecording.update({
           where: { id: recordingId },
           data: {
-            audioPath: destinationPath,
+            audioPath: finalAudioPath,
             extractedAudioStatus: 'COMPLETED',
           },
         });
 
-        logger.info(`Successfully extracted audio track: ${destinationPath}`);
+        logger.info(`Successfully extracted audio track: ${finalAudioPath}`);
 
-        // Auto-trigger transcription!
         logger.info(`[GoogleRecordingService] Auto-triggering transcription for recording ID: ${recordingId}`);
         GoogleRecordingService.transcribeRecording(recordingId).catch(err => {
           logger.error(`[GoogleRecordingService] Auto transcription failed for ${recordingId}: ${err.message}`);
         });
 
-        resolve(destinationPath);
+        resolve(finalAudioPath);
       });
     });
   }
@@ -339,11 +402,17 @@ export class GoogleRecordingService {
       
       const learnServiceUrl = process.env.LEARN_SERVICE_URL || 'http://localhost:3002';
       
+      let audioPathToSend = recording.audioPath;
+      if (S3Storage.isS3Enabled() && !fs.existsSync(recording.audioPath)) {
+        logger.info(`[GoogleRecordingService] Generating presigned URL for S3 key: ${recording.audioPath}`);
+        audioPathToSend = await S3Storage.getPresignedUrl(recording.audioPath, 3600); // 1 hour expiration
+      }
+
       const transcribeRes = await fetch(`${learnServiceUrl}/transcription/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          audioFilePath: recording.audioPath,
+          audioFilePath: audioPathToSend,
           meetUrl: recording.meeting.meetUrl,
           studentId: recording.meeting.studentId,
           teacherId: recording.meeting.teacherId,
@@ -359,14 +428,20 @@ export class GoogleRecordingService {
       const result = body?.data;
 
       if (result && result.transcript) {
-        logger.info(`[GoogleRecordingService] Transcription completed. Writing local transcript text file...`);
+        logger.info(`[GoogleRecordingService] Transcription completed. Writing transcript...`);
         if (!recording.videoPath) {
           throw new Error('No videoPath found on meetingRecording to write the transcript alongside.');
         }
-        const transcriptPath = recording.videoPath + '.transcript.txt';
 
-        fs.writeFileSync(transcriptPath, result.transcript);
-        logger.info(`[GoogleRecordingService] Successfully saved transcript at: ${transcriptPath}`);
+        if (S3Storage.isS3Enabled()) {
+          const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'transcript');
+          logger.info(`[GoogleRecordingService] S3 is enabled. Uploading transcript directly to S3: ${s3Key}`);
+          await S3Storage.uploadBuffer(result.transcript, s3Key, 'text/plain');
+        } else {
+          const transcriptPath = recording.videoPath + '.transcript.txt';
+          fs.writeFileSync(transcriptPath, result.transcript);
+          logger.info(`[GoogleRecordingService] Successfully saved transcript at: ${transcriptPath}`);
+        }
       } else {
         throw new Error('No transcript text returned in the learning-service response data.');
       }

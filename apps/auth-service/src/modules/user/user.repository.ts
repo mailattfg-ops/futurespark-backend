@@ -74,8 +74,18 @@ export const userRepository = {
     if (filters?.isNotRole) {
       where.role = { name: { not: filters.isNotRole } };
     }
+
+    const include: any = { role: true };
+    if (filters?.role === 'TEACHER') {
+      include.scheduledClasses = {
+        include: {
+          reports: true,
+        },
+      };
+    }
+
     const [users, total] = await Promise.all([
-      db.user.findMany({ where, skip, take: limit, include: { role: true }, orderBy: { createdAt: 'desc' } }),
+      db.user.findMany({ where, skip, take: limit, include, orderBy: { createdAt: 'desc' } }),
       db.user.count({ where }),
     ]);
     return { users, total };

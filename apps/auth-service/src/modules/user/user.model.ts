@@ -18,4 +18,8 @@ export interface PublicUser {
   country: string | null;
   timezone: string;
   createdAt: Date;
+  rating?: number;
+  ratingCount?: number;
+  warnings?: string[];
+  feedbacks?: any[];
 }

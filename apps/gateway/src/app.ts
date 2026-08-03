@@ -238,6 +238,44 @@ app.use('/api/google/recordings/:id/stream',
   })
 );
 
+// ── Storage Proxy (Public GET for viewing files, Protected POST/etc for uploading) ───
+app.get('/api/storage/file',
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: (_path, req) => (req as any).originalUrl.replace('/api/storage', '/storage'),
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable for file get: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Storage service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+app.use('/api/storage',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: (_path, req) => (req as any).originalUrl.replace('/api/storage', '/storage'),
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable for storage: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Storage service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // Google Integration service
 app.use('/api/google',
   asyncHandler(authenticate),
