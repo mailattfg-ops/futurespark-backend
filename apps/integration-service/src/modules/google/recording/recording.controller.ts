@@ -66,13 +66,13 @@ export class GoogleRecordingController {
 
       // 1. Prefer local disk file if present (Enables HTTP 206 Partial Content seeking!)
       const rawFilePath = (isAudio && recording.audioPath) ? recording.audioPath : recording.videoPath;
+      let filePath = rawFilePath;
 
       if (S3Storage.isS3Enabled() && filePath && !fs.existsSync(filePath)) {
         const presignedUrl = await S3Storage.getPresignedUrl(filePath, 3600);
         logger.info(`[GoogleRecordingController] Redirecting stream request to S3 presigned URL: ${presignedUrl}`);
         return res.redirect(presignedUrl);
       }
-      let filePath = rawFilePath;
       if (filePath && !path.isAbsolute(filePath)) {
         filePath = path.resolve(process.cwd(), 'apps/integration-service', filePath);
         if (!fs.existsSync(filePath)) {
