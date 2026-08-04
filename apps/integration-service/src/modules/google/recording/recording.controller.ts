@@ -21,8 +21,11 @@ export class GoogleRecordingController {
   static async sync(req: Request, res: Response) {
     try {
       const { meetingId } = req.body;
-      const recordings = await GoogleRecordingService.syncMeetingRecording(meetingId);
-      return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Meeting recordings synced successfully.'));
+      const recording = await GoogleRecordingService.syncMeetingRecording(meetingId);
+      if (!recording || (recording as any).driveFileId?.startsWith('pending_')) {
+        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('No recording video file found on Google Drive for this meeting link.'));
+      }
+      return res.status(HTTP_STATUS.OK).json(successResponse(recording, 'Meeting recordings synced successfully.'));
     } catch (err: any) {
       logger.error(`Error syncing recording: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Sync failed'));
@@ -183,13 +186,17 @@ export class GoogleRecordingController {
         }
       }
 
-      // Check if transcript file exists on disk
+      // Check if real transcript file exists on disk (bypass static fallback templates)
       if (summaryPath && fs.existsSync(summaryPath)) {
-        const content = fs.readFileSync(summaryPath, 'utf-8');
-        const isRealSummary = content.includes('UNIFIED MASTER CLASS SUMMARY & METRICS') &&
-          !content.includes("Welcome to today's live interactive session") &&
-          !content.includes("Demonstrated live exercise and reviewed student submission");
-        if (isRealSummary) {
+        let content = fs.readFileSync(summaryPath, 'utf-8');
+        const isStaticTemplate = content.includes('Demonstrated live exercise') ||
+          content.includes('540 words') ||
+          content.includes('Total Sentence Statements: 38') ||
+          content.includes('Welcome to today\'s live interactive session');
+        if (!isStaticTemplate && content.includes('UNIFIED MASTER CLASS SUMMARY')) {
+          if (content.includes('FULL TRANSCRIPT')) {
+            content = content.split('FULL TRANSCRIPT')[0].replace(/=+\s*$/g, '').trim();
+          }
           return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Master Groq AI Summary loaded successfully.'));
         }
       }
@@ -206,9 +213,10 @@ export class GoogleRecordingController {
             const schedules = classData?.data || [];
             const matchedClass = schedules.find((s: any) => s.meetingLink && s.meetingLink.includes(meetCode));
             if (matchedClass && (matchedClass.classSummary || matchedClass.transcript)) {
-              const summaryContent = matchedClass.classSummary
-                ? `${matchedClass.classSummary}\n\n==================================================\n                 FULL TRANSCRIPT\n==================================================\n${matchedClass.transcript || ''}`
-                : matchedClass.transcript;
+              let summaryContent = matchedClass.classSummary || matchedClass.transcript;
+              if (summaryContent && summaryContent.includes('FULL TRANSCRIPT')) {
+                summaryContent = summaryContent.split('FULL TRANSCRIPT')[0].replace(/=+\s*$/g, '').trim();
+              }
               if (summaryPath) {
                 try { fs.writeFileSync(summaryPath, summaryContent, 'utf-8'); } catch (_) { }
               }
@@ -267,68 +275,18 @@ export class GoogleRecordingController {
             }
             return res.status(HTTP_STATUS.OK).json(successResponse({ content: result.classSummary }, 'Master Groq AI Summary loaded successfully.'));
           }
+          throw new Error('Groq AI transcription pipeline returned empty result.');
         } catch (groqErr: any) {
-          logger.warn(`[GoogleRecordingController] Groq processing error (${groqErr?.message || groqErr}). Using dynamic session summary...`);
+          logger.error(`[GoogleRecordingController] Groq processing error: ${groqErr?.message || groqErr}`);
+          return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(
+            errorResponse(`Failed to generate AI transcript: ${groqErr?.message || 'Audio processing error'}`)
+          );
         }
       }
 
-      // 5-Point Executive Master AI Summary & Metrics Format
-      const instantMasterSummary = `==================================================
-        UNIFIED MASTER CLASS SUMMARY & METRICS
-==================================================
-
-📊 EXACT INTERACTION & ENGAGEMENT METRICS
---------------------------------------------------
-- Class Topic / Module: ${title}
-- Student Name: ${studentName}
-- Mentor / Instructor: ${mentorName}
-- Total Spoken Word Count: 540 words
-- Total Sentence Statements: 38 sentences
-- Total Interactive Prompt / Question Exchanges: 14 exchanges
-- Speaker Contribution Share: 70% ${mentorName} / 30% ${studentName}
-- Student Questions & Doubts Asked: 4 questions
-- Mentor Promptings & Explanations: 14 explanations
-- Overall Student Engagement Rating: HIGH (Active participation in session)
-
-==================================================
-                 SESSION NOTES
-==================================================
-
-1. 📌 EXECUTIVE OVERVIEW & CONTEXT
-   - The live class session involved Mentor ${mentorName} and Student ${studentName}, focusing on reviewing core concepts and project milestones for "${title}". The session began with a welcome and introduction, followed by a demonstration of a live exercise and a review of the student's submission. ${studentName} actively participated throughout the session. Mentor ${mentorName} assigned a homework exercise for the next session, providing clear next steps. The interactive duration was approximately 45 minutes, with Mentor ${mentorName} contributing 70% of the spoken dialogue and Student ${studentName} contributing 30%. The overall student engagement rating is HIGH.
-
-2. 🔑 COMPLETE TOPICS & CONCEPTS COVERED (EXHAUSTIVE & DETAILED)
-   - Comprehensive review of core topic milestones for ${title}.
-   - Interactive exercise evaluation and practical application.
-   - Review of student submission and milestone verification.
-   - Homework exercise assignment and guidelines.
-
-3. 💡 MENTOR GUIDANCE, EXAMPLES & CALCULATIONS
-   - Mentor ${mentorName} demonstrated a live exercise to illustrate key concepts.
-   - Provided detailed feedback on ${studentName}'s exercise submission.
-   - Explained core principles and assigned practical exercises to reinforce learning.
-
-4. ❓ STUDENT QUESTIONS, DOUBTS & CLARIFICATIONS
-   - Student ${studentName} engaged actively during exercise reviews and confirmed readiness for the assigned milestones.
-
-5. 🎯 HOMEWORK, ASSIGNMENTS & NEXT STEPS
-   - Complete assigned homework exercises for "${title}".
-   - Review core concepts and prepare project submission prior to the next class with Mentor ${mentorName}.
-
-==================================================
-                 FULL TRANSCRIPT
-==================================================
-[00:00:05] ${mentorName}: Welcome ${studentName} to today's live session on ${title}.
-[00:02:15] ${studentName}: Hello ${mentorName}! Ready for today's session on ${title}.
-[00:15:30] ${mentorName}: Demonstrated live exercise and reviewed ${studentName}'s submission.
-[00:45:00] ${mentorName}: Session wrap-up, Q&A completed. Homework exercise assigned for next class.`;
-
-      // Save to cache on disk so future reads are instantaneous
-      if (summaryPath) {
-        try { fs.writeFileSync(summaryPath, instantMasterSummary, 'utf-8'); } catch (_) { }
-      }
-
-      return res.status(HTTP_STATUS.OK).json(successResponse({ content: instantMasterSummary }, 'Master AI Summary & Transcript loaded successfully.'));
+      return res.status(HTTP_STATUS.NOT_FOUND).json(
+        errorResponse('Recording video file not available locally or on Google Drive for AI transcription.')
+      );
     } catch (err: any) {
       logger.error(`Error retrieving transcript content: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to retrieve transcript content'));

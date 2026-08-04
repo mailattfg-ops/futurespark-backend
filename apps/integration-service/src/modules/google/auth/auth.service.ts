@@ -175,8 +175,14 @@ export class GoogleAuthService {
           oauth2Client.setCredentials(credentials);
         }
       } catch (err: any) {
-        logger.warn(`Token refresh failed for ${emailToUse} (${err.message}). Falling back to primary account rec@meet.finquojunior.com...`);
-        if (email !== 'rec@meet.finquojunior.com') {
+        logger.warn(`Token refresh failed for ${emailToUse} (${err.message}). Marking account as disconnected and falling back...`);
+        try {
+          await db.googleAccount.update({
+            where: { workspaceEmail: emailToUse },
+            data: { connected: false },
+          });
+        } catch (_) {}
+        if (emailToUse !== 'rec@meet.finquojunior.com') {
           return this.getClientForEmail('rec@meet.finquojunior.com');
         }
         throw err;

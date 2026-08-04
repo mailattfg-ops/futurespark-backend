@@ -44,7 +44,7 @@ export class GroqTranscriptionService {
       }
 
       // Extract & compress audio if file size > 20MB or is a video file (Groq limit: 25MB)
-      const fileToTranscribe = this.compressAudioIfNeeded(audioFilePath);
+      const fileToTranscribe = this.compressAudioIfNeeded(localFilePath);
 
       let transcript = '';
       let classSummary = '';
@@ -54,8 +54,8 @@ export class GroqTranscriptionService {
         // 1. Transcribe with Groq Whisper Large v3
         transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
       } catch (err: any) {
-        logger.warn(`[GroqTranscriptionService] Groq Whisper API call failed (${err.message}). Using fallback transcription...`);
-        transcript = `[00:00:05] ${mentorName}: Welcome to today's live session. We are reviewing core concepts and project milestones.\n[00:02:15] ${studentName}: Hello teacher! Ready for today's session.\n[00:15:30] ${mentorName}: Demonstrated live exercise and reviewed student submission.\n[00:45:00] ${mentorName}: Homework exercise assigned for next session.`;
+        logger.error(`[GroqTranscriptionService] Groq Whisper API call failed: ${err.message}`);
+        throw new Error(`Groq Whisper STT API failed: ${err.message}`);
       }
 
       metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
@@ -64,45 +64,8 @@ export class GroqTranscriptionService {
         // 3. Generate Master AI Summary with Llama 3.3 (70B)
         classSummary = await this.generateMasterSummary(transcript, metrics, studentName, mentorName);
       } catch (err: any) {
-        logger.warn(`[GroqTranscriptionService] Groq Llama 3.3 Summary API failed (${err.message}). Generating fallback master summary...`);
-        classSummary = `==================================================
-        UNIFIED MASTER CLASS SUMMARY & METRICS
-==================================================
-
-📊 EXACT INTERACTION & ENGAGEMENT METRICS
---------------------------------------------------
-- Total Spoken Word Count: ${metrics.wordCount} words
-- Total Sentence Statements: ${metrics.sentenceCount} sentences
-- Total Interactive Prompt / Question Exchanges: ${metrics.questionCount} exchanges
-- Speaker Contribution Share: ${metrics.mentorShareRatio}% ${mentorName} / ${metrics.studentShareRatio}% ${studentName}
-- Student Questions & Doubts Asked: ${metrics.questionCount} questions
-- Mentor Promptings & Explanations: ${metrics.sentenceCount} explanations
-- Overall Student Engagement Rating: ${metrics.engagementRating} (Active participation in session)
-
-==================================================
-                 SESSION NOTES
-==================================================
-
-1. 📌 EXECUTIVE OVERVIEW & CONTEXT
-   - The live class session involved Mentor ${mentorName} and Student ${studentName}, focusing on reviewing core concepts and project milestones. The session began with a welcome and introduction, followed by a demonstration of a live exercise and a review of the student's submission. ${studentName} actively participated throughout the session. Mentor ${mentorName} assigned a homework exercise for the next session, providing clear next steps. The interactive duration was approximately 45 minutes, with Mentor ${mentorName} contributing ${metrics.mentorShareRatio}% of the spoken dialogue and Student ${studentName} contributing ${metrics.studentShareRatio}%. The overall student engagement rating is ${metrics.engagementRating}.
-
-2. 🔑 COMPLETE TOPICS & CONCEPTS COVERED (EXHAUSTIVE & DETAILED)
-   - Comprehensive review of core topic milestones and key learning objectives.
-   - Interactive exercise evaluation and practical application.
-   - Review of student submission and milestone verification.
-   - Homework exercise assignment and guidelines.
-
-3. 💡 MENTOR GUIDANCE, EXAMPLES & CALCULATIONS
-   - Mentor ${mentorName} demonstrated a live exercise to illustrate key concepts.
-   - Provided detailed feedback on ${studentName}'s exercise submission.
-   - Explained core principles and assigned practical exercises to reinforce learning.
-
-4. ❓ STUDENT QUESTIONS, DOUBTS & CLARIFICATIONS
-   - Student ${studentName} engaged actively during exercise reviews and confirmed readiness for the assigned milestones.
-
-5. 🎯 HOMEWORK, ASSIGNMENTS & NEXT STEPS
-   - Complete assigned homework exercises.
-   - Review core concepts and prepare project submission prior to the next class with Mentor ${mentorName}.`;
+        logger.error(`[GroqTranscriptionService] Groq Llama 3.3 Summary API failed: ${err.message}`);
+        throw new Error(`Groq Llama 3.3 Summary API failed: ${err.message}`);
       }
 
       // Clean up temporary compressed audio if created
@@ -113,19 +76,7 @@ export class GroqTranscriptionService {
       return { transcript, classSummary, metrics };
     } catch (err: any) {
       logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
-      const fallbackMetrics = {
-        wordCount: 350,
-        sentenceCount: 25,
-        questionCount: 8,
-        mentorShareRatio: 70,
-        studentShareRatio: 30,
-        engagementRating: 'HIGH',
-      };
-      return {
-        transcript: `[00:00:05] ${mentorName}: Live session completed.\n[00:45:00] Q&A completed.`,
-        classSummary: `==================================================\n        UNIFIED MASTER CLASS SUMMARY & METRICS\n==================================================\n\n📊 CLASS METRICS\n- Student Engagement Rating: HIGH\n- Core concepts covered in live session with ${studentName}.`,
-        metrics: fallbackMetrics,
-      };
+      throw err;
     }
   }
 
@@ -178,7 +129,6 @@ export class GroqTranscriptionService {
   private async transcribeWithGroqWhisper(filePath: string): Promise<string> {
     const formData = new FormData();
     formData.append('model', 'whisper-large-v3-turbo');
-    formData.append('language', 'ml');
     formData.append('file', fs.createReadStream(filePath));
 
     const response = await axios.post(
@@ -251,19 +201,11 @@ export class GroqTranscriptionService {
    * 3. Groq Llama 3.3 (70B) Master Summary API
    */
   private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise<string> {
-    const prompt = `You are a Lead Educational Architect and Master Banking & Financial Literacy Curriculum Specialist.
-Analyze the provided transcript of a live class session between Mentor (${mentorName}) and Student (${studentName}) AS A WHOLE in ONE UNIFIED PASS. Do NOT output meta comments like 'As the Lead Educational Architect...' or section wrappers.
+    const prompt = `You are an expert AI Audio Analyst and Educational Evaluator.
+Analyze the provided transcript of a live class or test audio session between Mentor (${mentorName}) and Student (${studentName}) strictly based ONLY on what was ACTUALLY SPOKEN in the transcript.
+Do NOT invent topics, do NOT assume any hardcoded curriculum, and do NOT mention banking, deposit slips, 50-30-20 rule, KYC, or DICGC unless they were explicitly spoken in the transcript.
 
-IMPORTANT INSTRUCTION ON TOPIC PRIORITIZATION:
-1. Differentiate any brief recap of previous sessions (e.g. 50-30-20 rule, budget trackers) from the PRIMARY CORE LESSON TOPICS.
-2. Provide EXHAUSTIVE, GRANULAR, AND STEP-BY-STEP EXPLANATIONS for all practical banking and financial literacy topics discussed in the transcript, specifically detailing:
-   - How to fill a Deposit Slip / Pay-in Slip (Account number, date, denomination breakdown of notes/cheques, signature, counterfoil receipt).
-   - Basic Safety & Security Measures (Protecting PINs, OTPs, CVV, avoiding phishing/vishing scams, safe online/ATM banking).
-   - KYC (Know Your Customer) Compliance (Purpose, required documents like Identity Proof, Address Proof, PAN/Aadhaar).
-   - DICGC (Deposit Insurance and Credit Guarantee Corporation) Protection (Insurance coverage limits up to ₹5 Lakh per depositor per bank).
-   - Types of Bank Accounts (Savings, Current, Fixed Deposit FD, Recurring Deposit RD) and How to Choose Between Them based on liquidity, interest yield, and financial goals.
-
-Incorporate these EXACT MATHEMATICAL METRICS into the report:
+Incorporate these EXACT COMPUTED METRICS into the report:
 - Total Spoken Words: ${metrics.wordCount} words
 - Total Sentence Statements: ${metrics.sentenceCount} sentences
 - Total Interactive Prompt / Question Exchanges: ${metrics.questionCount} exchanges
@@ -283,31 +225,26 @@ Structure the document EXACTLY like this:
 - Speaker Contribution Share: ${metrics.mentorShareRatio}% ${mentorName} / ${metrics.studentShareRatio}% ${studentName}
 - Student Questions & Doubts Asked: ${metrics.questionCount}
 - Mentor Promptings & Explanations: ${metrics.sentenceCount}
-- Overall Student Engagement Rating: HIGH (Active participation in session)
+- Overall Student Engagement Rating: ${metrics.engagementRating}
 
 ==================================================
                  SESSION NOTES
 ==================================================
 
 1. 📌 EXECUTIVE OVERVIEW & CONTEXT
-   - Provide a comprehensive, detailed paragraph summarizing the session, explicitly highlighting the core primary lesson objectives (e.g. Banking procedures, Deposit Slips, Safety, KYC, DICGC, Account Selection) and distinguishing them from brief recaps of past sessions.
+   - Provide a factual, detailed overview based ONLY on what was discussed in the actual transcript.
 
 2. 🔑 COMPLETE TOPICS & CONCEPTS COVERED (EXHAUSTIVE & DETAILED)
-   - Deep, granular, step-by-step bullet points of ALL primary topics discussed in this session:
-     * Deposit Slips & Pay-in Slips (Step-by-step completion procedure, denomination table, counterfoil receipt).
-     * Banking Safety & Security Measures (PIN/OTP protection, phishing/vishing prevention, secure transactions).
-     * KYC (Know Your Customer) Guidelines (Purpose, mandatory verification documents).
-     * DICGC Insurance Guarantee (Protection limits up to ₹5 Lakh per bank account holder).
-     * Types of Bank Accounts (Savings, Current, FD, RD) and Decision Framework for Choosing Between Them.
+   - Bullet points detailing the actual topics, concepts, or test conversation spoken in this session.
 
 3. 💡 MENTOR GUIDANCE, EXAMPLES & CALCULATIONS
-   - Comprehensive breakdown of all mentor explanations, step-by-step practical demonstrations (e.g., how to fill deposit slip sections, interest spread math, account comparison calculations) performed during class by ${mentorName}.
+   - Detailed summary of explanations, guidance, or statements made by ${mentorName}.
 
 4. ❓ STUDENT QUESTIONS, DOUBTS & CLARIFICATIONS
-   - Complete log of all questions asked by ${studentName} regarding practical banking procedures, safety, account selection, and the exact clarifications provided by ${mentorName}.
+   - Questions, responses, or doubts expressed by ${studentName}.
 
 5. 🎯 HOMEWORK, ASSIGNMENTS & NEXT STEPS
-   - Action items, practical exercises (e.g. practicing deposit slip completion, checking KYC readiness), and clear next steps for ${studentName}.
+   - Action items, assignments, or next steps mentioned in the transcript (or "No homework assigned in this session" if none mentioned).
 
 TRANSCRIPT:
 --------------------------------------------------

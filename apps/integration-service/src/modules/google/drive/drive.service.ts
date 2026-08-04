@@ -9,8 +9,8 @@ export class GoogleDriveService {
       const auth = await GoogleAuthService.getClientForEmail(workspaceEmail);
       const drive = google.drive({ version: 'v3', auth });
 
-      // Look for mp4 video files only
-      let q = "mimeType = 'video/mp4' and trashed = false";
+      // Look for all video files (mp4, webm, etc.)
+      let q = "mimeType contains 'video/' and trashed = false";
       if (searchName || meetCode) {
         const conditions: string[] = [];
         if (searchName) {
@@ -26,6 +26,10 @@ export class GoogleDriveService {
         if (meetCode) {
           const escapedCode = meetCode.replace(/'/g, "\\'");
           conditions.push(`name contains '${escapedCode}'`);
+          const noHyphenCode = meetCode.replace(/-/g, '').replace(/'/g, "\\'");
+          if (noHyphenCode !== escapedCode) {
+            conditions.push(`name contains '${noHyphenCode}'`);
+          }
         }
         q += ` and (${conditions.join(' or ')})`;
       }
@@ -35,6 +39,8 @@ export class GoogleDriveService {
         fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
         orderBy: 'createdTime desc',
         pageSize: 50,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
       });
 
       let files = (response.data.files ?? []).map(file => ({
@@ -46,14 +52,16 @@ export class GoogleDriveService {
         webContentLink: file.webContentLink || '',
       }));
 
-      // Fallback: If 0 files found with specific search criteria, query all recent video/mp4 files on Drive
+      // Fallback: If 0 files found with specific search criteria, query all recent video files on Drive
       if (files.length === 0 && (searchName || meetCode)) {
-        logger.info(`[GoogleDriveService] 0 files matched specific query. Broadening query to all recent video/mp4 files...`);
+        logger.info(`[GoogleDriveService] 0 files matched specific query. Broadening query to all recent video files...`);
         const broadResponse = await drive.files.list({
-          q: "mimeType = 'video/mp4' and trashed = false",
+          q: "mimeType contains 'video/' and trashed = false",
           fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
           orderBy: 'createdTime desc',
           pageSize: 50,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
         });
 
         files = (broadResponse.data.files ?? []).map(file => ({
@@ -108,22 +116,7 @@ export class GoogleDriveService {
 
       return response.data; // Readable Stream
     } catch (err: any) {
-      if (process.env.NODE_ENV === 'development') {
-        logger.info(`[GoogleDriveService] Dev fallback: Returning mock transcript stream for file ID ${fileId}`);
-        const mockStream = new Readable();
-        mockStream.push(` bazena: Hi Zoha, welcome to today's finance session. ready inside?
- zoha: Yes ma'am, I am ready. Today we have to discuss the budgeting rule.
- bazena: Correct. Do you know the 50 30 20 rule for budgeting?
- zoha: Yes, 50% for needs, 30% for wants, and 20% for savings.
- bazena: Very good. What is a need vs want?
- zoha: Needs are essential like food and school fees. Wants are chocolate, toys, or Netflix.
- bazena: Exactly. Let's look at the bank account types: savings account, current account, fixed deposit.
- zoha: Fixed deposit gives higher interest right?
- bazena: Yes, correct. Let's complete the Sharma Family worksheet case study today.
-`);
-        mockStream.push(null);
-        return mockStream;
-      }
+      logger.error(`[GoogleDriveService] Failed to export Google Doc transcript for file ID ${fileId}: ${err.message}`);
       throw err;
     }
   }

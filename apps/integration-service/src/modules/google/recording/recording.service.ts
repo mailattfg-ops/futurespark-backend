@@ -62,8 +62,8 @@ export class GoogleRecordingService {
       meetCode
     );
 
-    // Only select the video recording file (mp4)
-    const selectedFile = files.find(f => f.mimeType === 'video/mp4');
+    // Only select video recording files
+    const selectedFile = files.find(f => f.mimeType && f.mimeType.startsWith('video/')) || files[0];
 
     // Case 1: No file found on Drive
     if (!selectedFile) {
