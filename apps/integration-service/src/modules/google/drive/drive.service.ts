@@ -4,7 +4,7 @@ import { logger } from '@futurespark/logger';
 import { Readable } from 'stream';
 
 export class GoogleDriveService {
-  static async searchMeetFiles(workspaceEmail: string, searchName?: string, meetCode?: string) {
+  static async searchMeetFiles(workspaceEmail: string, searchName?: string, meetCode?: string, targetDate?: Date) {
     try {
       const auth = await GoogleAuthService.getClientForEmail(workspaceEmail);
       const drive = google.drive({ version: 'v3', auth });
@@ -34,6 +34,13 @@ export class GoogleDriveService {
         q += ` and (${conditions.join(' or ')})`;
       }
 
+      if (targetDate && !isNaN(new Date(targetDate).getTime())) {
+        const t = new Date(targetDate).getTime();
+        const minTime = new Date(t - 24 * 60 * 60 * 1000).toISOString();
+        const maxTime = new Date(t + 24 * 60 * 60 * 1000).toISOString();
+        q += ` and createdTime >= '${minTime}' and createdTime <= '${maxTime}'`;
+      }
+
       let response = await drive.files.list({
         q,
         fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
@@ -51,28 +58,6 @@ export class GoogleDriveService {
         createdTime: file.createdTime || '',
         webContentLink: file.webContentLink || '',
       }));
-
-      // Fallback: If 0 files found with specific search criteria, query all recent video files on Drive
-      if (files.length === 0 && (searchName || meetCode)) {
-        logger.info(`[GoogleDriveService] 0 files matched specific query. Broadening query to all recent video files...`);
-        const broadResponse = await drive.files.list({
-          q: "mimeType contains 'video/' and trashed = false",
-          fields: 'files(id, name, size, mimeType, createdTime, webContentLink)',
-          orderBy: 'createdTime desc',
-          pageSize: 50,
-          supportsAllDrives: true,
-          includeItemsFromAllDrives: true,
-        });
-
-        files = (broadResponse.data.files ?? []).map(file => ({
-          id: file.id || '',
-          name: file.name || '',
-          mimeType: file.mimeType || '',
-          size: file.size ? parseInt(file.size, 10) : 0,
-          createdTime: file.createdTime || '',
-          webContentLink: file.webContentLink || '',
-        }));
-      }
 
       return files;
     } catch (err: any) {

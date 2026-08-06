@@ -1,10 +1,23 @@
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
+import { google } from 'googleapis';
 import { db, withDbRetry } from '../../../database/datasource';
 import { GoogleDriveService } from '../drive/drive.service';
+import { GoogleAuthService } from '../auth/auth.service';
 import { logger } from '@futurespark/logger';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
+import { Semaphore, createInFlightMap } from '../../../utils/concurrency';
+
+// Ceilings for the fan-out that happens when many classes end in the same window.
+// Raise these in production (bigger instance / S3-backed storage) via env.
+const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3', 10);
+const MAX_CONCURRENT_FFMPEG = parseInt(process.env.MAX_CONCURRENT_FFMPEG || '2', 10);
+
+const downloadSemaphore = new Semaphore(MAX_CONCURRENT_DOWNLOADS, 'drive-download');
+const ffmpegSemaphore = new Semaphore(MAX_CONCURRENT_FFMPEG, 'ffmpeg-extract');
+const downloadsInFlight = createInFlightMap<string | null>('download');
+const extractionsInFlight = createInFlightMap<string>('extract-audio');
 
 const DOWNLOADS_BASE = path.resolve(__dirname, '../../../../downloads');
 const VIDEO_DIR = path.join(DOWNLOADS_BASE, 'video');
@@ -59,7 +72,8 @@ export class GoogleRecordingService {
     const files = await GoogleDriveService.searchMeetFiles(
       meeting.organizerEmail,
       meeting.title,
-      meetCode
+      meetCode,
+      meeting.startTime
     );
 
     // Only select video recording files
@@ -161,7 +175,7 @@ export class GoogleRecordingService {
 
       return recording;
     } catch (err: any) {
-      logger.warn(`[GoogleRecordingService] DB update failed for recording ${selectedFile.id}: ${err.message}. Returning fallback...`);
+      logger.warn(`[GoogleRecordingService] DB create failed for recording ${selectedFile.id}: ${err.message}. Returning fallback...`);
       return {
         id: `rec_${selectedFile.id}`,
         meetingId,
@@ -173,7 +187,71 @@ export class GoogleRecordingService {
     }
   }
 
-  static async downloadRecordingFile(recordingId: string) {
+  static async linkDriveFileToMeeting(meetingId: string, driveFileIdOrUrl: string) {
+    let driveFileId = driveFileIdOrUrl.trim();
+    if (driveFileId.includes('/file/d/')) {
+      driveFileId = driveFileId.split('/file/d/')[1].split('/')[0].split('?')[0];
+    } else if (driveFileId.includes('id=')) {
+      driveFileId = driveFileId.split('id=')[1].split('&')[0];
+    }
+
+    const meeting = await withDbRetry(() => db.meeting.findUnique({ where: { id: meetingId } }));
+    if (!meeting) throw new Error('Meeting not found.');
+
+    // Fetch file details directly from Google Drive API
+    let fileInfo: any = null;
+    try {
+      const auth = await GoogleAuthService.getClientForEmail(meeting.organizerEmail);
+      const drive = google.drive({ version: 'v3', auth });
+      const res = await drive.files.get({
+        fileId: driveFileId,
+        fields: 'id, name, size, mimeType, createdTime',
+        supportsAllDrives: true,
+      });
+      fileInfo = res.data;
+    } catch (e: any) {
+      logger.warn(`Could not fetch file details for ${driveFileId} from Drive API: ${e.message}`);
+      fileInfo = { id: driveFileId, name: `Google Drive Video (${driveFileId})`, size: 0 };
+    }
+
+    // Delete any existing stale recording for meetingId
+    try {
+      await withDbRetry(() => db.meetingRecording.deleteMany({ where: { meetingId } }));
+    } catch (_) {}
+
+    // Create recording record with this file ID
+    const recording = await withDbRetry(() => db.meetingRecording.create({
+      data: {
+        meetingId,
+        driveFileId: fileInfo.id || driveFileId,
+        fileName: fileInfo.name || `Recording_${driveFileId}`,
+        fileSize: fileInfo.size ? parseInt(fileInfo.size, 10) : 0,
+        downloadStatus: 'PENDING',
+        extractedAudioStatus: 'PENDING',
+      },
+      include: { meeting: true },
+    }));
+
+    // Trigger background download and Groq AI transcription
+    GoogleRecordingService.downloadRecordingFile(recording.id).catch(err => {
+      logger.error(`[GoogleRecordingService] Auto download failed for ${recording.id}: ${err.message}`);
+    });
+
+    return recording;
+  }
+
+  /**
+   * Public entry point. Deduplicates by recordingId first (so repeat triggers
+   * join the running job instead of starting a second write to the same path),
+   * then bounds how many Drive downloads run at once.
+   */
+  static async downloadRecordingFile(recordingId: string): Promise<string | null> {
+    return downloadsInFlight.run(recordingId, () =>
+      downloadSemaphore.run(() => GoogleRecordingService.runDownload(recordingId))
+    );
+  }
+
+  private static async runDownload(recordingId: string): Promise<string | null> {
     const recording = await db.meetingRecording.findUnique({
       where: { id: recordingId },
       include: { meeting: true },
@@ -257,23 +335,44 @@ export class GoogleRecordingService {
       where: { id: recordingId },
     });
 
-    if (!recording || !recording.videoPath) {
-      throw new Error(`Recording file must be downloaded before extracting audio.`);
+    if (!recording) {
+      throw new Error(`Recording metadata not found.`);
     }
 
-    let localVideoPath = recording.videoPath;
+    let localVideoPath = recording.videoPath || '';
     let isVideoOnS3 = false;
 
-    if (S3Storage.isS3Enabled() && !fs.existsSync(recording.videoPath)) {
-      const tempBase = path.basename(recording.videoPath);
+    // Auto-download video from Google Drive if missing or null
+    if (!localVideoPath || !fs.existsSync(localVideoPath)) {
+      if (recording.driveFileId && !recording.driveFileId.startsWith('pending_')) {
+        logger.info(`[GoogleRecordingService] Video missing locally. Auto-downloading file from Google Drive before extracting audio: ${recording.id}`);
+        const downloadedPath = await GoogleRecordingService.downloadRecordingFile(recordingId);
+        if (downloadedPath) {
+          localVideoPath = downloadedPath;
+        }
+      }
+    }
+
+    if (S3Storage.isS3Enabled() && localVideoPath && !fs.existsSync(localVideoPath)) {
+      if (!recording.videoPath) {
+        throw new Error('Recording has no videoPath recorded — cannot download it from S3.');
+      }
+      const tempBase = path.basename(localVideoPath);
       localVideoPath = path.join(VIDEO_DIR, `temp-${Date.now()}-${tempBase}`);
       logger.info(`[GoogleRecordingService] Video is on S3. Downloading S3 key ${recording.videoPath} to local temp path: ${localVideoPath}`);
       await S3Storage.downloadFile(recording.videoPath, localVideoPath);
       isVideoOnS3 = true;
     }
 
-    if (!fs.existsSync(localVideoPath)) {
-      throw new Error(`Local file is missing from path: ${localVideoPath}`);
+    if (!localVideoPath || !fs.existsSync(localVideoPath)) {
+      throw new Error(`Video file is downloading from Google Drive. Please wait for download to complete.`);
+    }
+
+    const currentStats = fs.statSync(localVideoPath);
+    if (recording.fileSize && recording.fileSize > 10000000 && currentStats.size < recording.fileSize * 0.95) {
+      const downloadedMb = (currentStats.size / (1024 * 1024)).toFixed(1);
+      const totalMb = (recording.fileSize / (1024 * 1024)).toFixed(1);
+      throw new Error(`Video download in progress (${downloadedMb} MB / ${totalMb} MB). Please wait a moment for download to finish.`);
     }
 
     const audioFileName = `${path.basename(localVideoPath, '.mp4')}.${format}`;
@@ -332,20 +431,25 @@ export class GoogleRecordingService {
         } catch (_) {}
       }
 
-      const command = `"${ffmpegPath}" -y -i "${localVideoPath}" -q:a 0 -map a "${destinationPath}"`;
+      const { execFile } = require('child_process');
+      const ffmpegArgs = ['-y', '-i', localVideoPath, '-vn', '-ar', '16000', '-ac', '1', '-b:a', '32k', destinationPath];
 
-      exec(command, async (error, stdout, stderr) => {
+      execFile(ffmpegPath, ffmpegArgs, async (error: any) => {
         if (isVideoOnS3 && fs.existsSync(localVideoPath)) {
           try { fs.unlinkSync(localVideoPath); } catch (_) {}
         }
 
         if (error) {
           logger.error(`FFmpeg audio extraction failed: ${error.message}`);
+          // If video file was corrupted (e.g. moov atom not found), remove corrupted file so it re-downloads fresh
+          if (fs.existsSync(localVideoPath)) {
+            try { fs.unlinkSync(localVideoPath); } catch (_) {}
+          }
           await db.meetingRecording.update({
             where: { id: recordingId },
-            data: { extractedAudioStatus: 'FAILED' },
-          });
-          return reject(new Error(`FFmpeg failed: ${error.message}`));
+            data: { extractedAudioStatus: 'FAILED', videoPath: null },
+          }).catch(() => {});
+          return reject(new Error(`Audio extraction failed. Video will re-download on next scan.`));
         }
 
         let finalAudioPath = destinationPath;

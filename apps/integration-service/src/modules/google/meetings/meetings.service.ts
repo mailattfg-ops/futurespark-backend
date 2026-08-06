@@ -37,28 +37,56 @@ export class GoogleMeetingsService {
       throw new Error('Meeting start time must be before end time.');
     }
 
-    // Check for duplicate meetings on the same calendar and time
-    const existing = await db.meeting.findFirst({
+    // Guard against double-booking the same PERSON, not the same calendar account.
+    //
+    // Every booking is organized by one shared workspace account, so keying this
+    // check on (organizerEmail, startTime) capped the whole platform at a single
+    // class per start time. 1-to-1 mentorship runs many concurrent classes at the
+    // same hour with different students and mentors, which is legitimate.
+    const conflict = await db.meeting.findFirst({
       where: {
-        organizerEmail: workspaceEmail,
         startTime: start,
         status: { not: 'CANCELLED' },
+        OR: [
+          { teacherId: input.teacherId },
+          { studentId: input.studentId },
+        ],
       },
     });
-    if (existing) {
-      throw new Error('A meeting is already scheduled at this time for this account.');
+    if (conflict) {
+      const who = conflict.teacherId === input.teacherId ? 'mentor' : 'student';
+      throw new Error(`This ${who} already has a meeting at ${start.toISOString()}.`);
     }
 
-    // 2. Call Google Calendar API to create Meet event
-    logger.info(`Creating Google Calendar Event for Workspace email: ${workspaceEmail}`);
-    const googleEvent = await GoogleCalendarService.createMeetEvent(workspaceEmail, {
-      title: input.title,
-      description: input.description,
-      startTime: input.startTime,
-      endTime: input.endTime,
-      timezone: input.timezone,
-      attendees: input.attendees,
-    });
+    // 2. Call Google Calendar API to create Meet event (with quota fallback)
+    let googleEvent: any = null;
+    try {
+      logger.info(`Creating Google Calendar Event for Workspace email: ${workspaceEmail}`);
+      googleEvent = await GoogleCalendarService.createMeetEvent(workspaceEmail, {
+        title: input.title,
+        description: input.description,
+        startTime: input.startTime,
+        endTime: input.endTime,
+        timezone: input.timezone,
+        attendees: input.attendees,
+      });
+    } catch (apiErr: any) {
+      // Fail loudly. This previously fell back to either a randomly generated Meet
+      // code (a syntactically valid room that does not exist and nobody can join)
+      // or — worse — the most recent meetUrl for the same program, which drops two
+      // different students into ONE live 1-to-1 room and cross-links their
+      // recordings, since Drive matching keys on the Meet code.
+      //
+      // A failed booking the scheduler can retry is strictly safer than a booking
+      // that reports success and hands out a dead or shared link.
+      logger.error(
+        `[GoogleMeetingsService] Google Calendar API failed for ${workspaceEmail} (${apiErr.message}). ` +
+        `Refusing to fabricate a Meet link — no meeting was created.`
+      );
+      throw new Error(
+        `Could not create the Google Meet room: ${apiErr.message}. No meeting was scheduled — please retry.`
+      );
+    }
 
     // 3. Store metadata in local database
     const meeting = await db.meeting.create({

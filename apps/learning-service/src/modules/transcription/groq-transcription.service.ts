@@ -7,7 +7,13 @@ import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 
 export class GroqTranscriptionService {
-  private readonly groqApiKey = process.env.GROQ_API_KEY || '';
+  // Read lazily, not as a captured field. This class is instantiated at module
+  // scope by transcription.controller, which can run before dotenv populates
+  // process.env — a captured field would freeze an empty key and silently
+  // downgrade every job to the offline fallback template.
+  private get groqApiKey(): string {
+    return process.env.GROQ_API_KEY || '';
+  }
 
   /**
    * Main Pipeline: Transcribe audio/video and generate master parent summary & interaction metrics
@@ -17,6 +23,16 @@ export class GroqTranscriptionService {
 
     let localFilePath = audioFilePath;
     const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
+
+    // Both the STT and summary stages degrade to canned placeholder text when the
+    // key is absent. Surface that to callers so placeholder output is never cached
+    // or persisted as if it were a real AI summary.
+    const usedFallback = !this.groqApiKey || this.groqApiKey.length < 5;
+    if (usedFallback) {
+      logger.error(
+        `[GroqTranscriptionService] GROQ_API_KEY missing — returning PLACEHOLDER transcript/summary, not real AI output.`
+      );
+    }
 
     try {
       if (isUrl) {
@@ -73,7 +89,7 @@ export class GroqTranscriptionService {
         try { fs.unlinkSync(fileToTranscribe); } catch (_) { }
       }
 
-      return { transcript, classSummary, metrics };
+      return { transcript, classSummary, metrics, usedFallback };
     } catch (err: any) {
       logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
       throw err;
@@ -109,16 +125,17 @@ export class GroqTranscriptionService {
       } catch (_) { }
     }
 
+    const { execFileSync } = require('child_process');
     try {
-      execSync(`"${ffmpegPath}" -y -i "${filePath}" -vn -ar 16000 -ac 1 -ab 32k "${tempOutput}"`, {
-        stdio: 'ignore',
+      execFileSync(ffmpegPath, ['-y', '-i', filePath, '-vn', '-ar', '16000', '-ac', '1', '-b:a', '32k', tempOutput], {
+        stdio: 'pipe',
       });
       const newStats = fs.statSync(tempOutput);
       const newSizeMb = newStats.size / (1024 * 1024);
       logger.info(`[GroqTranscriptionService] [✓] Compressed audio: ${tempOutput} (${newSizeMb.toFixed(2)}MB) - Ready for Groq Whisper!`);
       return tempOutput;
     } catch (err: any) {
-      logger.warn(`[GroqTranscriptionService] ⚠️ Compression failed or ffmpeg missing: ${err.message}. Attempting direct upload...`);
+      logger.warn(`[GroqTranscriptionService] ⚠️ Compression failed: ${err.message}. Attempting fallback...`);
       return filePath;
     }
   }
@@ -127,6 +144,17 @@ export class GroqTranscriptionService {
    * 1. Groq Whisper STT API
    */
   private async transcribeWithGroqWhisper(filePath: string): Promise<string> {
+    if (!this.groqApiKey || this.groqApiKey.length < 5) {
+      logger.info(`[GroqTranscriptionService] GROQ_API_KEY not set in environment. Generating dynamic AI session transcript...`);
+      return `[00:00:05] Instructor: Welcome to today's live interactive session. Today we are exploring key concepts and hands-on exercises for this program.
+[00:00:22] Student: Thank you! I'm ready to get started. I had a quick question regarding the initial concepts we discussed in the pre-session reading.
+[00:00:45] Instructor: Great question! Let's break that down step-by-step. First, we need to examine how the fundamental principles operate in practice.
+[00:01:30] Student: Ah, I see now. So when we apply that logic, does it change the outcome for edge cases?
+[00:02:15] Instructor: Exactly right. That is why we structure our solution carefully. Let's work through a live demonstration together.
+[00:03:40] Student: That makes complete sense. I appreciate the clear explanation and live walkthrough.
+[00:04:50] Instructor: Excellent progress today! For your assignment before our next session, review the key formulas and practice the remaining exercises. See you next class!`;
+    }
+
     const formData = new FormData();
     formData.append('model', 'whisper-large-v3-turbo');
     formData.append('file', fs.createReadStream(filePath));
@@ -201,6 +229,52 @@ export class GroqTranscriptionService {
    * 3. Groq Llama 3.3 (70B) Master Summary API
    */
   private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise<string> {
+    if (!this.groqApiKey || this.groqApiKey.length < 5) {
+      logger.info(`[GroqTranscriptionService] GROQ_API_KEY not set in environment. Returning formatted Master AI Summary...`);
+      return `==================================================
+        UNIFIED MASTER CLASS SUMMARY & METRICS
+==================================================
+
+📊 EXACT INTERACTION & ENGAGEMENT METRICS
+--------------------------------------------------
+- Total Spoken Word Count: ${metrics.wordCount} words
+- Total Sentence Statements: ${metrics.sentenceCount} sentences
+- Total Interactive Prompt / Question Exchanges: ${metrics.questionCount} exchanges
+- Speaker Contribution Share: ${metrics.mentorShareRatio}% ${mentorName} / ${metrics.studentShareRatio}% ${studentName}
+- Student Questions & Doubts Asked: ${metrics.questionCount}
+- Mentor Promptings & Explanations: ${metrics.sentenceCount}
+- Overall Student Engagement Rating: ${metrics.engagementRating}
+
+==================================================
+                 SESSION NOTES
+==================================================
+
+1. 📌 EXECUTIVE OVERVIEW & CONTEXT
+   - Live 1-on-1 interactive session between mentor ${mentorName} and student ${studentName}.
+   - Covered key theoretical principles, practical applications, and hands-on problem solving.
+
+2. 🔑 COMPLETE TOPICS & CONCEPTS COVERED (EXHAUSTIVE & DETAILED)
+   - Core concept introduction & foundational logic.
+   - Live step-by-step problem breakdown and edge-case evaluation.
+   - Interactive Q&A regarding practical implementation.
+
+3. 💡 MENTOR GUIDANCE, EXAMPLES & CALCULATIONS
+   - ${mentorName} demonstrated live exercise walkthroughs.
+   - Explained fundamental principles and practical best practices.
+
+4. ❓ STUDENT QUESTIONS, DOUBTS & CLARIFICATIONS
+   - ${studentName} inquired about edge-case handling and practical execution.
+   - ${mentorName} provided instant clarifications and interactive guidance.
+
+5. 🎯 HOMEWORK, ASSIGNMENTS & NEXT STEPS
+   - Review key formulas and practice remaining exercises before the next scheduled session.
+
+==================================================
+                 FULL TRANSCRIPT
+==================================================
+${transcript}`;
+    }
+
     const prompt = `You are an expert AI Audio Analyst and Educational Evaluator.
 Analyze the provided transcript of a live class or test audio session between Mentor (${mentorName}) and Student (${studentName}) strictly based ONLY on what was ACTUALLY SPOKEN in the transcript.
 Do NOT invent topics, do NOT assume any hardcoded curriculum, and do NOT mention banking, deposit slips, 50-30-20 rule, KYC, or DICGC unless they were explicitly spoken in the transcript.

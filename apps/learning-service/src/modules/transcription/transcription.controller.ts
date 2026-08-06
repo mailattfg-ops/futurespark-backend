@@ -50,10 +50,17 @@ export const transcriptionController = {
       }
 
       // 2. Process transcription using Groq Pipeline
-      const result = await groqService.processClassAudio(audioFilePath);
+      const result = await groqService.processClassAudio(audioFilePath, studentName, mentorName);
 
-      // 3. Find and update the ScheduledClass record in PostgreSQL (cross-schema)
-      if (meetUrl) {
+      // 3. Find and update the ScheduledClass record in PostgreSQL (cross-schema).
+      // Skipped when the pipeline produced placeholder output — persisting that
+      // would permanently mask the real summary behind a cache hit.
+      if (meetUrl && result.usedFallback) {
+        logger.warn(
+          `[Transcription Controller] Placeholder output — leaving ScheduledClass.classSummary untouched for meetUrl: ${meetUrl}`
+        );
+      }
+      if (meetUrl && !result.usedFallback) {
         try {
           const cleanMeetUrl = meetUrl.replace('https://', '').replace('http://', '').trim();
           const scheduledClass = await db.scheduledClass.findFirst({
