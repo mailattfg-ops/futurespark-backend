@@ -11,6 +11,8 @@ router.use(requireInternalAuth);
 router.use('/leads', leadRoutes);
 
 // ── Global session directory ─────────────────────────────────
+// Static path first, so "reflection-defaults" is never read as a session id.
+router.get('/sessions/reflection-defaults', asyncHandler(courseController.getDefaultReflectionQuestions));
 router.get('/sessions', asyncHandler(courseController.getAllSessions));
 router.post('/sessions', requireRoles(['ADMIN', 'INSTRUCTOR']), asyncHandler(courseController.createSession));
 router.put('/sessions/:id', requireRoles(['ADMIN', 'INSTRUCTOR']), asyncHandler(courseController.updateSession));

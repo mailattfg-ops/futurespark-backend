@@ -75,6 +75,9 @@ model Session {
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
   credits       Int          @default(10)
+  // Post-class reflection prompts the student answers before the next class.
+  // Empty means "not customised" — readers fall back to the platform defaults.
+  reflectionQuestions String[] @default([])
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 

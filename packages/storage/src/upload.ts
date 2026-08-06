@@ -5,7 +5,7 @@ export interface UploadOptions {
   prefix?: string;
 }
 
-export function getS3KeyForRecording(recordingId: string, originalFileName: string, type: "video" | "audio" | "transcript"): string {
+export function getS3KeyForRecording(recordingId: string, originalFileName: string, type: "video" | "audio" | "transcript" | "summary"): string {
   const safeBase = originalFileName.replace(/[^a-zA-Z0-9_\-.]/g, "_");
   const ext = originalFileName.endsWith(".mp4") ? ".mp4" : originalFileName.endsWith(".mp3") ? ".mp3" : path.extname(originalFileName);
   const baseName = safeBase.substring(0, safeBase.lastIndexOf(".")) || safeBase;
@@ -15,6 +15,9 @@ export function getS3KeyForRecording(recordingId: string, originalFileName: stri
   }
   if (type === "audio") {
     return `recordings/audio/${recordingId}_${baseName}.mp3`;
+  }
+  if (type === "summary") {
+    return `recordings/video/${recordingId}_${baseName}.mp4.summary.txt`;
   }
   return `recordings/video/${recordingId}_${baseName}.mp4.transcript.txt`;
 }

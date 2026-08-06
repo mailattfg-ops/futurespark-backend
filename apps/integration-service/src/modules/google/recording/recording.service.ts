@@ -5,6 +5,7 @@ import { google } from 'googleapis';
 import { db, withDbRetry } from '../../../database/datasource';
 import { GoogleDriveService } from '../drive/drive.service';
 import { GoogleAuthService } from '../auth/auth.service';
+import { pickBestRecording, type DriveCandidate } from './recording-match';
 import { logger } from '@futurespark/logger';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
 import { Semaphore, createInFlightMap } from '../../../utils/concurrency';
@@ -76,8 +77,27 @@ export class GoogleRecordingService {
       meeting.startTime
     );
 
-    // Only select video recording files
-    const selectedFile = files.find(f => f.mimeType && f.mimeType.startsWith('video/')) || files[0];
+    // Strict match. Previously this took the newest same-day video, which attached
+    // one session's recording to another whenever two classes shared a title.
+    const match = pickBestRecording(files as DriveCandidate[], {
+      meetCode: meetCode || null,
+      title: meeting.title,
+      startTime: meeting.startTime,
+      endTime: meeting.endTime,
+      timezone: meeting.timezone,
+    });
+
+    for (const r of match.rejected) {
+      logger.info(`[GoogleRecordingService] Rejected "${r.name}" for "${meeting.title}" — ${r.reason}`);
+    }
+
+    const selectedFile = match.file;
+    if (selectedFile) {
+      logger.info(
+        `[GoogleRecordingService] Matched "${selectedFile.name}" to "${meeting.title}" ` +
+        `(score ${match.score}: ${match.reasons.join(', ')})`
+      );
+    }
 
     // Case 1: No file found on Drive
     if (!selectedFile) {
@@ -330,7 +350,17 @@ export class GoogleRecordingService {
     }
   }
 
-  static async extractAudioFromRecording(recordingId: string, format: 'mp3' | 'wav' = 'mp3') {
+  /**
+   * Public entry point. Deduplicated per recording, and capped so N ending
+   * classes cannot spawn N simultaneous ffmpeg processes.
+   */
+  static async extractAudioFromRecording(recordingId: string, format: 'mp3' | 'wav' = 'mp3'): Promise<string> {
+    return extractionsInFlight.run(recordingId, () =>
+      ffmpegSemaphore.run(() => GoogleRecordingService.runAudioExtraction(recordingId, format))
+    );
+  }
+
+  private static async runAudioExtraction(recordingId: string, format: 'mp3' | 'wav' = 'mp3'): Promise<string> {
     const recording = await db.meetingRecording.findUnique({
       where: { id: recordingId },
     });
@@ -545,6 +575,37 @@ export class GoogleRecordingService {
           const transcriptPath = recording.videoPath + '.transcript.txt';
           fs.writeFileSync(transcriptPath, result.transcript);
           logger.info(`[GoogleRecordingService] Successfully saved transcript at: ${transcriptPath}`);
+        }
+
+        // Persist the AI summary too, so the dashboard has nothing left to compute.
+        //
+        // learning-service already returns classSummary here, but it used to be
+        // discarded — the summary was only produced later, on demand, when someone
+        // opened the recording modal. That made every first view wait ~10s on a
+        // live Groq call. Writing it now means the class ends, the pipeline runs,
+        // and the summary is simply there when anyone looks.
+        //
+        // Placeholder output (no GROQ_API_KEY) is deliberately not cached; caching
+        // it once is what previously pinned a fake summary in place permanently.
+        if (result.classSummary && !result.usedFallback) {
+          try {
+            if (S3Storage.isS3Enabled()) {
+              const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'summary');
+              await S3Storage.uploadBuffer(result.classSummary, s3Key, 'text/plain');
+              logger.info(`[GoogleRecordingService] Pre-generated AI summary uploaded to S3: ${s3Key}`);
+            } else {
+              const summaryPath = recording.videoPath + '.summary.txt';
+              fs.writeFileSync(summaryPath, result.classSummary, 'utf-8');
+              logger.info(`[GoogleRecordingService] Pre-generated AI summary saved at: ${summaryPath}`);
+            }
+          } catch (summaryErr: any) {
+            // Non-fatal: the modal can still generate it on demand.
+            logger.warn(`[GoogleRecordingService] Could not persist AI summary: ${summaryErr.message}`);
+          }
+        } else if (result.usedFallback) {
+          logger.error(
+            `[GoogleRecordingService] learning-service returned placeholder output for ${recordingId} — not caching a fake summary.`
+          );
         }
       } else {
         throw new Error('No transcript text returned in the learning-service response data.');

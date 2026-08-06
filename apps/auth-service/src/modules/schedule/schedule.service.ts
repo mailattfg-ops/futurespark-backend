@@ -1,8 +1,10 @@
 import { db } from '../../database/datasource';
 import { CreateScheduleInput, UpdateScheduleInput } from './schedule.schema';
 import { AppError } from '@futurespark/middleware';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, effectiveReflectionQuestions } from '@futurespark/constants';
+import { logger } from '@futurespark/logger';
 import { sendNotification } from '../notification-helper';
+import { rescheduleCalendarEvent } from '../calendar-helper';
 
 export const scheduleService = {
   async getMentorsWithSchedules(groupId?: string) {
@@ -359,26 +361,42 @@ export const scheduleService = {
     }
 
     if (input.meetingLink !== undefined && input.updateAll !== false) {
+      // Only rewrite links on classes that have NOT run yet.
+      //
+      // This used to rewrite every class for the student+program unconditionally.
+      // Scheduling a second session therefore overwrote the earlier class's link,
+      // and since a recording is matched to the Meet room it was actually held in,
+      // the earlier session's recording was orphaned — no class pointed at its room
+      // any more. Past classes keep the room they were genuinely taught in.
+      const notYetRun = {
+        startTime: { gt: new Date() },
+        status: { notIn: ['COMPLETED', 'CANCELLED'] },
+      };
+
       if (classSession.studentId) {
-        await db.scheduledClass.updateMany({
+        const { count } = await db.scheduledClass.updateMany({
           where: {
             studentId: classSession.studentId,
             programId: classSession.programId,
+            ...notYetRun,
           },
           data: {
             meetingLink: input.meetingLink,
           },
         });
+        logger.info(`[Schedule] Propagated meeting link to ${count} upcoming class(es); past classes left untouched.`);
       } else if (classSession.leadId) {
-        await db.scheduledClass.updateMany({
+        const { count } = await db.scheduledClass.updateMany({
           where: {
             leadId: classSession.leadId,
             programId: classSession.programId,
+            ...notYetRun,
           },
           data: {
             meetingLink: input.meetingLink,
           },
         });
+        logger.info(`[Schedule] Propagated meeting link to ${count} upcoming demo class(es); past classes left untouched.`);
       }
     }
 
@@ -415,6 +433,20 @@ export const scheduleService = {
         },
       },
     });
+
+    // Keep Google Calendar in step with the new slot. Only when the time actually
+    // moved — a status or credits edit should not touch anyone's calendar.
+    if (input.startTime && updatedClass.meetingLink) {
+      const timeChanged =
+        new Date(classSession.startTime).getTime() !== new Date(updatedClass.startTime).getTime();
+      if (timeChanged) {
+        await rescheduleCalendarEvent(
+          updatedClass.meetingLink,
+          updatedClass.startTime,
+          updatedClass.endTime
+        );
+      }
+    }
 
     let session = null;
     if (updatedClass.sessionId) {
@@ -657,4 +689,125 @@ export const scheduleService = {
       },
     });
   },
+
+  // ── Post-class reflection ───────────────────────────────────────────────────
+
+  /**
+   * The prompts a student must answer for a given class, plus whatever they
+   * have already submitted. Questions come from the curriculum session; a
+   * session with no custom set falls back to the platform defaults.
+   */
+  async getReflection(classId: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        id: true,
+        studentId: true,
+        mentorId: true,
+        sessionId: true,
+        status: true,
+        startTime: true,
+        endTime: true,
+        reflectionAnswers: true,
+        reflectionSubmittedAt: true,
+      },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    let sessionTitle: string | null = null;
+    let stored: string[] | null = null;
+    if (scheduledClass.sessionId) {
+      const session = await db.session.findUnique({
+        where: { id: scheduledClass.sessionId },
+        select: { title: true, reflectionQuestions: true },
+      });
+      sessionTitle = session?.title ?? null;
+      stored = session?.reflectionQuestions ?? null;
+    }
+
+    return {
+      classId: scheduledClass.id,
+      studentId: scheduledClass.studentId,
+      sessionId: scheduledClass.sessionId,
+      sessionTitle,
+      questions: effectiveReflectionQuestions(stored),
+      answers: (scheduledClass.reflectionAnswers as ReflectionEntry[] | null) ?? null,
+      submittedAt: scheduledClass.reflectionSubmittedAt,
+    };
+  },
+
+  /**
+   * Stores a student's reflection. Question text is resolved server-side and
+   * snapshotted alongside each answer, so a client cannot invent prompts and a
+   * later admin edit cannot silently reword what a student was asked.
+   */
+  async submitReflection(classId: string, answers: string[], callerId?: string, callerRole?: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: { id: true, studentId: true, sessionId: true, status: true, endTime: true },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    // Only the student who attended may answer. ADMIN is allowed through for
+    // support fixes; every other role is rejected outright.
+    const isAdmin = callerRole === 'ADMIN';
+    if (!isAdmin) {
+      if (!callerId) {
+        throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
+      }
+      if (scheduledClass.studentId !== callerId) {
+        throw new AppError('You can only submit a reflection for your own class', HTTP_STATUS.FORBIDDEN);
+      }
+    }
+
+    // Reflection is a *post*-class activity — the class must be over.
+    const classIsOver = scheduledClass.status === 'COMPLETED' || scheduledClass.endTime.getTime() <= Date.now();
+    if (!classIsOver) {
+      throw new AppError('This class has not finished yet', HTTP_STATUS.BAD_REQUEST);
+    }
+    if (scheduledClass.status === 'CANCELLED') {
+      throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    let stored: string[] | null = null;
+    if (scheduledClass.sessionId) {
+      const session = await db.session.findUnique({
+        where: { id: scheduledClass.sessionId },
+        select: { reflectionQuestions: true },
+      });
+      stored = session?.reflectionQuestions ?? null;
+    }
+    const questions = effectiveReflectionQuestions(stored);
+
+    const entries: ReflectionEntry[] = questions.map((question, i) => ({
+      question,
+      answer: (answers[i] ?? '').trim(),
+    }));
+
+    if (entries.every((e) => !e.answer)) {
+      throw new AppError('Answer at least one reflection question before submitting', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    const updated = await db.scheduledClass.update({
+      where: { id: classId },
+      data: {
+        reflectionAnswers: entries as any,
+        reflectionSubmittedAt: new Date(),
+      },
+      select: { id: true, reflectionAnswers: true, reflectionSubmittedAt: true },
+    });
+
+    logger.info(`[Reflection] Student ${scheduledClass.studentId} submitted reflection for class ${classId}`);
+    return updated;
+  },
 };
+
+/** One answered prompt, snapshotted at submit time. */
+export interface ReflectionEntry {
+  question: string;
+  answer: string;
+}

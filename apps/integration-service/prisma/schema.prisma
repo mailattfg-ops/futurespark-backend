@@ -45,6 +45,14 @@ model Meeting {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   recordings         MeetingRecording[]
+
+  // ── Live presence, polled from the Meet REST API (spaces.activeConference) ──
+  // The join link opens 30 min early, so clock time alone cannot distinguish
+  // "class running" from "link open, nobody came". These fields carry that.
+  presenceIsLive      Boolean   @default(false) // a conference is active right now
+  presenceFirstJoinAt DateTime? // first time anyone was ever seen in this meeting
+  presenceLastLiveAt  DateTime? // most recent poll that saw an active conference
+  presenceCheckedAt   DateTime? // most recent poll of any kind (staleness guard)
 }
 
 model MeetingRecording {

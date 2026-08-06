@@ -220,8 +220,18 @@ export class GoogleRecordingController {
         }
       }
 
-      // 1. Check if real Groq AI summary file or S3 is enabled and file is not local, then fetch from S3
+      // 1. S3 mode: prefer the summary the pipeline pre-generated, then the transcript.
       if (!forceRefresh && S3Storage.isS3Enabled() && transcriptPath && !fs.existsSync(transcriptPath)) {
+        try {
+          const summaryKey = getS3KeyForRecording(recording.id, recording.fileName, 'summary');
+          const content = await S3Storage.downloadBuffer(summaryKey);
+          if (content) {
+            logger.info(`[GoogleRecordingController] Serving pre-generated summary from S3: ${summaryKey}`);
+            return res.status(HTTP_STATUS.OK).json(successResponse({ content }, 'Master Groq AI Summary loaded successfully.'));
+          }
+        } catch (s3Err: any) {
+          logger.info(`[GoogleRecordingController] No pre-generated summary on S3 yet: ${s3Err.message}`);
+        }
         try {
           const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'transcript');
           logger.info(`[GoogleRecordingController] Fetching transcript from S3 key: ${s3Key}`);

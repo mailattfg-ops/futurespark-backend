@@ -6,6 +6,8 @@ import {
   validateCreateProgram,
   validateUpsertPaymentPlan,
   validateCreateSession,
+  validateUpdateSession,
+  DEFAULT_REFLECTION_QUESTIONS,
 } from './course.schema';
 
 export const courseController = {
@@ -68,8 +70,16 @@ export const courseController = {
   },
 
   async updateSession(req: Request, res: Response) {
-    const result = await courseService.updateSession(req.params.id, req.body);
+    const input = validateUpdateSession(req.body);
+    const result = await courseService.updateSession(req.params.id, input);
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Session updated'));
+  },
+
+  /** Lets the admin UI offer "reset to defaults" without hardcoding the list. */
+  async getDefaultReflectionQuestions(_req: Request, res: Response) {
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(DEFAULT_REFLECTION_QUESTIONS, 'Default reflection questions fetched'));
   },
 
   async deleteSession(req: Request, res: Response) {

@@ -6,6 +6,8 @@ const router = Router();
 
 // Student Accounts Management (must be defined before /customers/:id catch-all)
 router.get('/customers/students',            asyncHandler(userController.listAllStudents));
+// Students are not in the User table, so GET /users/:id cannot resolve them.
+router.get('/customers/students/:id',        asyncHandler(userController.getStudentById));
 router.put('/customers/students/:id/reset-password', asyncHandler(userController.resetStudentPassword));
 router.put('/customers/students/:id',                asyncHandler(userController.updateStudent));
 router.delete('/customers/students/:id',      asyncHandler(userController.deleteStudent));
@@ -26,6 +28,8 @@ router.put('/customers/:id',                 asyncHandler(userController.updateP
 router.delete('/customers/:id',              asyncHandler(userController.deleteCustomer));
 
 // Mentor Schedule Management
+router.get('/mentors/:id/availability',           asyncHandler(userController.getMentorAvailability));
+router.put('/mentors/:id/availability',           asyncHandler(userController.updateMentorAvailability));
 router.get('/mentors/:id/schedules',              asyncHandler(userController.getMentorSchedules));
 router.post('/mentors/:id/schedules',             asyncHandler(userController.addMentorSchedule));
 router.delete('/mentors/schedules/:scheduleId',   asyncHandler(userController.deleteMentorSchedule));

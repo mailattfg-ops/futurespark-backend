@@ -8,6 +8,26 @@ import { UserWithoutPassword, PublicUser } from './user.model';
 import type { PaginatedResponse } from '@futurespark/types';
 import { sendNotification } from '../notification-helper';
 
+/**
+ * FIXED       — bookable only in the weekly slots the mentor has published.
+ * FLEXIBLE    — open to any slot; the weekly grid becomes a preference, not a limit.
+ * UNAVAILABLE — not taking new classes (leave, notice period, etc).
+ */
+export const MENTOR_AVAILABILITY_MODES = ['FIXED', 'FLEXIBLE', 'UNAVAILABLE'];
+
+/**
+ * Mentors now edit their own weekly slots from the teacher portal, so a TEACHER
+ * caller is confined to their own rows. Staff callers are left alone — they
+ * have always managed everyone's grid from the admin scheduler.
+ */
+const assertOwnSlotIfTeacher = (mentorId: string, caller?: { id?: string; role?: string }) => {
+  if (caller?.role !== 'TEACHER') return;
+  if (!caller.id) throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
+  if (caller.id !== mentorId) {
+    throw new AppError('You can only change your own availability slots', HTTP_STATUS.FORBIDDEN);
+  }
+};
+
 const sanitize = (user: any): UserWithoutPassword => {
   const { passwordHash, ...rest } = user;
   return rest;
@@ -382,6 +402,8 @@ export const userService = {
       paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
       selectedPlanType: input.selectedPlanType !== undefined ? input.selectedPlanType : undefined,
       paidInstallmentIds: input.paidInstallmentIds !== undefined ? input.paidInstallmentIds : undefined,
+      // Empty string clears the photo; undefined leaves it untouched.
+      avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl || null : undefined,
     };
 
     // If programId is changed and not explicitly setting paymentApproved, reset it to false
@@ -421,6 +443,33 @@ export const userService = {
     });
   },
 
+  /**
+   * Look up a single student by id.
+   *
+   * Students live in their own table, not in `User`, so `GET /users/:id` 404s for
+   * a studentId. Callers that only had that route silently fell back to whatever
+   * default they carried — which is how the placeholder name "Zoha" ended up
+   * printed in real AI class summaries.
+   */
+  async getStudentById(studentId: string) {
+    const student = await db.student.findUnique({
+      where: { id: studentId },
+      select: {
+        id: true,
+        studentCode: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        avatarUrl: true,
+        isActive: true,
+        timezone: true,
+        credits: true,
+      },
+    });
+    if (!student) throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
+    return student;
+  },
+
   async updateStudent(studentId: string, input: any) {
     const student = await db.student.findUnique({ where: { id: studentId } });
     if (!student) throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
@@ -438,7 +487,10 @@ export const userService = {
         email: input.email || undefined,
         isActive: input.isActive !== undefined ? input.isActive : undefined,
         paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
-        credits: input.credits !== undefined ? Number(input.credits) : undefined
+        credits: input.credits !== undefined ? Number(input.credits) : undefined,
+        timezone: input.timezone || undefined,
+        // Empty string clears the photo; undefined leaves it untouched.
+        avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl || null : undefined,
       }
     });
   },
@@ -455,7 +507,13 @@ export const userService = {
     });
   },
 
-  async addMentorSchedule(mentorId: string, input: { weekday: number; startTime: string; scheduleType?: string }) {
+  async addMentorSchedule(
+    mentorId: string,
+    input: { weekday: number; startTime: string; scheduleType?: string },
+    caller?: { id?: string; role?: string }
+  ) {
+    assertOwnSlotIfTeacher(mentorId, caller);
+
     const mentor = await db.user.findUnique({ where: { id: mentorId } });
     if (!mentor) throw new AppError('Mentor not found', HTTP_STATUS.NOT_FOUND);
 
@@ -502,11 +560,81 @@ export const userService = {
     });
   },
 
-  async deleteMentorSchedule(scheduleId: string) {
+  async deleteMentorSchedule(scheduleId: string, caller?: { id?: string; role?: string }) {
     const slot = await db.mentorSchedule.findUnique({ where: { id: scheduleId } });
     if (!slot) throw new AppError('Schedule slot not found', HTTP_STATUS.NOT_FOUND);
+    assertOwnSlotIfTeacher(slot.mentorId, caller);
     await db.mentorSchedule.delete({ where: { id: scheduleId } });
     return { id: scheduleId };
+  },
+
+  // ── Mentor Availability ────────────────────────────────────────────────────
+  // A mentor declares *how* they are available; the weekly MentorSchedule rows
+  // say *when*. FLEXIBLE means "book me any slot" and makes the weekly grid
+  // advisory rather than binding, which is why the two are stored separately.
+
+  async getMentorAvailability(mentorId: string) {
+    const mentor = await db.user.findUnique({
+      where: { id: mentorId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        timezone: true,
+        availabilityMode: true,
+        availabilityNote: true,
+        availabilityUpdatedAt: true,
+      },
+    });
+    if (!mentor) throw new AppError('Mentor not found', HTTP_STATUS.NOT_FOUND);
+
+    const slots = await db.mentorSchedule.findMany({
+      where: { mentorId },
+      orderBy: [{ weekday: 'asc' }, { startTime: 'asc' }],
+    });
+
+    return { ...mentor, slots };
+  },
+
+  async updateMentorAvailability(
+    mentorId: string,
+    input: { availabilityMode?: string; availabilityNote?: string | null },
+    caller: { id?: string; role?: string }
+  ) {
+    // A mentor edits only their own availability; staff may edit anyone's.
+    const isStaff = caller.role === 'ADMIN' || caller.role === 'SCHEDULER';
+    if (!isStaff) {
+      if (!caller.id) throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
+      if (caller.id !== mentorId) {
+        throw new AppError('You can only update your own availability', HTTP_STATUS.FORBIDDEN);
+      }
+    }
+
+    const mentor = await db.user.findUnique({ where: { id: mentorId }, select: { id: true } });
+    if (!mentor) throw new AppError('Mentor not found', HTTP_STATUS.NOT_FOUND);
+
+    const data: any = { availabilityUpdatedAt: new Date() };
+
+    if (input.availabilityMode !== undefined) {
+      if (!MENTOR_AVAILABILITY_MODES.includes(input.availabilityMode)) {
+        throw new AppError(
+          `availabilityMode must be one of: ${MENTOR_AVAILABILITY_MODES.join(', ')}`,
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
+      data.availabilityMode = input.availabilityMode;
+    }
+
+    if (input.availabilityNote !== undefined) {
+      const note = typeof input.availabilityNote === 'string' ? input.availabilityNote.trim() : '';
+      if (note.length > 500) {
+        throw new AppError('Availability note must be 500 characters or fewer', HTTP_STATUS.BAD_REQUEST);
+      }
+      data.availabilityNote = note || null;
+    }
+
+    await db.user.update({ where: { id: mentorId }, data });
+    return this.getMentorAvailability(mentorId);
   },
 
   async warnUser(targetId: string, targetRole: string, reason: string) {

@@ -37,6 +37,58 @@ export class GoogleMeetingsService {
       throw new Error('Meeting start time must be before end time.');
     }
 
+    // Retrying the exact same booking? Reuse the room instead of failing.
+    //
+    // The scheduler creates the Google meeting first and saves the class second.
+    // If that second step fails, the room is left orphaned — and a naive conflict
+    // check then blocks the retry forever using the debris of the first attempt.
+    // Same teacher + same student + same instant is the same booking, not a clash.
+    const sameBooking = await db.meeting.findFirst({
+      where: {
+        startTime: start,
+        status: { not: 'CANCELLED' },
+        teacherId: input.teacherId,
+        studentId: input.studentId,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (sameBooking) {
+      // Only reuse it if the Calendar event is genuinely still live. Deleting a
+      // class cancels the event on Google but can leave our row behind saying
+      // SCHEDULED. Handing back a cancelled room looks fine — the Meet link still
+      // works — but attendees see it cancelled, and Meet stops naming recordings
+      // after the class, falling back to "abc-defg-hij (2026-08-06 14:32 …)".
+      const stillActive = await GoogleCalendarService.isEventActive(
+        sameBooking.organizerEmail,
+        sameBooking.calendarEventId
+      );
+
+      if (stillActive === false) {
+        logger.warn(
+          `[GoogleMeetingsService] Existing room ${sameBooking.meetUrl} has a CANCELLED calendar event — ` +
+          `creating a fresh room instead of reusing it.`
+        );
+        await db.meeting
+          .update({ where: { id: sameBooking.id }, data: { status: 'CANCELLED' } })
+          .catch(() => {});
+        // fall through and create a new meeting
+      } else {
+        logger.info(
+          `[GoogleMeetingsService] Reusing existing room ${sameBooking.meetUrl} for the same teacher/student/slot ` +
+          `(meeting ${sameBooking.id}) instead of creating a duplicate.`
+        );
+        return {
+          id: sameBooking.id,
+          calendarEventId: sameBooking.calendarEventId,
+          meetLink: sameBooking.meetUrl,
+          calendarLink: sameBooking.meetUrl,
+          startTime: sameBooking.startTime.toISOString(),
+          endTime: sameBooking.endTime.toISOString(),
+          reused: true,
+        };
+      }
+    }
+
     // Guard against double-booking the same PERSON, not the same calendar account.
     //
     // Every booking is organized by one shared workspace account, so keying this
@@ -55,7 +107,14 @@ export class GoogleMeetingsService {
     });
     if (conflict) {
       const who = conflict.teacherId === input.teacherId ? 'mentor' : 'student';
-      throw new Error(`This ${who} already has a meeting at ${start.toISOString()}.`);
+      const localTime = new Intl.DateTimeFormat('en-GB', {
+        timeZone: conflict.timezone || input.timezone || 'Asia/Kolkata',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(start);
+      throw new Error(
+        `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+      );
     }
 
     // 2. Call Google Calendar API to create Meet event (with quota fallback)
@@ -192,6 +251,55 @@ export class GoogleMeetingsService {
       startTime: updated.startTime.toISOString(),
       endTime: updated.endTime.toISOString(),
     };
+  }
+
+  /**
+   * Move a meeting by its Meet link rather than its internal id.
+   *
+   * auth-service owns the class schedule but has no idea what an integration
+   * Meeting id is — all it holds is the meetingLink. Rescheduling a class used
+   * to move only the class row, leaving the Google Calendar event (and therefore
+   * the invite everyone sees, and the timestamp Meet stamps into the recording
+   * filename) still pointing at the old slot.
+   */
+  static async rescheduleByLink(
+    meetUrl: string,
+    input: { startTime: string; endTime: string; timezone?: string }
+  ) {
+    const code = meetUrl.trim().split('?')[0].split('#')[0].split('/').pop();
+    if (!code) throw new Error('A valid Google Meet link is required.');
+
+    const meeting = await db.meeting.findFirst({
+      where: { meetUrl: { contains: code } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!meeting) {
+      throw new Error(`No meeting found for Meet link ${meetUrl}`);
+    }
+
+    // Calendar events created by the quota fallback have no real event id, so
+    // there is nothing on Google to move.
+    if (!meeting.calendarEventId || meeting.calendarEventId.startsWith('manual_')) {
+      logger.warn(
+        `[GoogleMeetingsService] Meeting ${meeting.id} has no real Calendar event — updating local times only.`
+      );
+      const updated = await db.meeting.update({
+        where: { id: meeting.id },
+        data: {
+          startTime: new Date(input.startTime),
+          endTime: new Date(input.endTime),
+          timezone: input.timezone || undefined,
+        },
+      });
+      return { id: updated.id, meetLink: updated.meetUrl, calendarUpdated: false };
+    }
+
+    const result = await GoogleMeetingsService.update(meeting.id, {
+      startTime: input.startTime,
+      endTime: input.endTime,
+      timezone: input.timezone,
+    });
+    return { ...result, calendarUpdated: true };
   }
 
   static async delete(id: string) {

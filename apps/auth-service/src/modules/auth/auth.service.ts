@@ -26,6 +26,9 @@ const buildAuthResponse = (user: any, tokens: TokenPair, jti: string): AuthRespo
     email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
+    // Without this the header falls back to initials on every fresh login,
+    // making an uploaded profile photo look like it never saved.
+    avatarUrl: user.avatarUrl ?? null,
     role: user.role?.name || user.role || 'STUDENT',
     requiresFtlReset: user.requiresFtlReset,
   },

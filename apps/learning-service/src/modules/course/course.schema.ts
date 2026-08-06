@@ -1,5 +1,12 @@
 import { AppError } from '@futurespark/middleware';
-import { HTTP_STATUS } from '@futurespark/constants';
+import {
+  HTTP_STATUS,
+  DEFAULT_REFLECTION_QUESTIONS,
+  REFLECTION_QUESTION_COUNT,
+  effectiveReflectionQuestions,
+} from '@futurespark/constants';
+
+export { DEFAULT_REFLECTION_QUESTIONS, REFLECTION_QUESTION_COUNT, effectiveReflectionQuestions };
 
 // ── Program ───────────────────────────────────────────────────
 
@@ -83,6 +90,32 @@ export const validateUpsertPaymentPlan = (data: any): UpsertPaymentPlanInput => 
 
 // ── Session ───────────────────────────────────────────────────
 
+const MAX_REFLECTION_QUESTION_LEN = 500;
+
+/**
+ * Trims, drops blanks, and caps the list. Returns `[]` for "no custom set",
+ * which the read path reads as "use the defaults" — so clearing every box in
+ * the admin form resets the session to the defaults rather than leaving the
+ * student with nothing to answer.
+ */
+export const normalizeReflectionQuestions = (value: any): string[] => {
+  if (!Array.isArray(value)) {
+    throw new AppError('reflectionQuestions must be an array of strings', HTTP_STATUS.BAD_REQUEST);
+  }
+  const cleaned = value
+    .map((q) => (typeof q === 'string' ? q.trim() : ''))
+    .filter((q) => q.length > 0);
+
+  const tooLong = cleaned.find((q) => q.length > MAX_REFLECTION_QUESTION_LEN);
+  if (tooLong) {
+    throw new AppError(
+      `Each reflection question must be ${MAX_REFLECTION_QUESTION_LEN} characters or fewer`,
+      HTTP_STATUS.BAD_REQUEST
+    );
+  }
+  return cleaned.slice(0, REFLECTION_QUESTION_COUNT);
+};
+
 export interface CreateSessionInput {
   title: string;
   order: number;
@@ -92,6 +125,7 @@ export interface CreateSessionInput {
   worksheetUrl?: string | null;
   programId?: string | null;
   credits?: number;
+  reflectionQuestions?: string[];
 }
 
 export const validateCreateSession = (data: any): CreateSessionInput => {
@@ -118,5 +152,47 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
     worksheetUrl: data.worksheetUrl?.trim() || null,
     programId: data.programId?.trim() || null,
     credits: typeof data.credits === 'number' ? data.credits : undefined,
+    reflectionQuestions:
+      data.reflectionQuestions === undefined ? undefined : normalizeReflectionQuestions(data.reflectionQuestions),
   };
+};
+
+/**
+ * Whitelisted partial update. Only keys actually present in the body are
+ * returned, so a caller editing just the resources cannot blank out the title.
+ */
+export const validateUpdateSession = (data: any): Partial<CreateSessionInput> => {
+  const out: Partial<CreateSessionInput> = {};
+  const errors: string[] = [];
+
+  if (data.title !== undefined) {
+    if (typeof data.title !== 'string' || !data.title.trim()) errors.push('Session title must be a non-empty string');
+    else out.title = data.title.trim();
+  }
+  if (data.order !== undefined) {
+    if (typeof data.order !== 'number') errors.push('Session order must be a number');
+    else out.order = data.order;
+  }
+  if (data.durationMin !== undefined) {
+    if (typeof data.durationMin !== 'number') errors.push('Duration must be a number');
+    else out.durationMin = data.durationMin;
+  }
+  if (data.credits !== undefined) {
+    if (typeof data.credits !== 'number') errors.push('Credits must be a number');
+    else out.credits = data.credits;
+  }
+  for (const key of ['slidesUrl', 'guideUrl', 'worksheetUrl'] as const) {
+    if (data[key] !== undefined) out[key] = typeof data[key] === 'string' ? data[key].trim() || null : null;
+  }
+  if (data.programId !== undefined) {
+    out.programId = typeof data.programId === 'string' ? data.programId.trim() || null : null;
+  }
+
+  if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
+
+  // Throws on its own if malformed, so it stays outside the errors array.
+  if (data.reflectionQuestions !== undefined) {
+    out.reflectionQuestions = normalizeReflectionQuestions(data.reflectionQuestions);
+  }
+  return out;
 };

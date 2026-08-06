@@ -12,6 +12,8 @@ router.get('/',       asyncHandler(scheduleController.list));
 router.post('/',      asyncHandler(scheduleController.create));
 router.put('/:id/complete', asyncHandler(scheduleController.completeClass));
 router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
+router.get('/:id/reflection', asyncHandler(scheduleController.getReflection));
+router.post('/:id/reflection', asyncHandler(scheduleController.submitReflection));
 router.get('/:id',    asyncHandler(scheduleController.getById));
 router.put('/:id',    asyncHandler(scheduleController.update));
 router.delete('/:id', asyncHandler(scheduleController.delete));

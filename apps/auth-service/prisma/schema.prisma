@@ -29,6 +29,9 @@ model User {
   experience        String?
   state             String?
   country           String?
+  availabilityMode  String            @default("FIXED") // "FIXED" = only the weekly slots below, "FLEXIBLE" = open to any slot, "UNAVAILABLE" = not taking classes
+  availabilityNote  String?           // Free-text caveat shown to schedulers, e.g. "prefer mornings IST"
+  availabilityUpdatedAt DateTime?
   timezone          String            @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -90,6 +93,7 @@ model ParentAccount {
   id                   String          @id @default(uuid())
   email                String          @unique
   passwordHash         String
+  avatarUrl            String?
   isActive             Boolean         @default(true)
   requiresFtlReset     Boolean         @default(false)
   profiles             ParentProfile[]
@@ -131,6 +135,7 @@ model Student {
   passwordHash     String
   firstName        String
   lastName         String
+  avatarUrl        String?
   isActive         Boolean          @default(true)
   requiresFtlReset Boolean          @default(false)
   createdAt        DateTime         @default(now())
@@ -188,6 +193,11 @@ model ScheduledClass {
   creditsAwarded    Int?
   studentRating     Int?
   studentFeedback   String?
+  // Post-class reflection. Questions are snapshotted at submit time so later
+  // edits to the curriculum session never orphan or reword a stored answer.
+  // Shape: [{ question: string, answer: string }]
+  reflectionAnswers     Json?
+  reflectionSubmittedAt DateTime?
   autoRecording       Boolean   @default(true)
   recordingUrl        String?
   transcript          String?   @db.Text
@@ -296,6 +306,9 @@ model Session {
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
   credits       Int          @default(10)
+  // Post-class reflection prompts the student answers before the next class.
+  // Empty means "not customised" — readers fall back to the platform defaults.
+  reflectionQuestions String[] @default([])
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 

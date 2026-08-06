@@ -8,6 +8,8 @@ import googleAuthRouter from './modules/google/auth/auth.routes';
 import googleMeetingsRouter from './modules/google/meetings/meetings.routes';
 import googleRecordingsRouter from './modules/google/recording/recording.routes';
 import { startSyncCron } from './modules/google/cron/sync.cron';
+import googlePresenceRouter from './modules/google/presence/presence.routes';
+import { startPresencePolling } from './modules/google/presence/presence.service';
 import storageRouter from './modules/storage/storage.routes';
 
 const app = express();
@@ -22,11 +24,14 @@ app.use((req, res, next) => {
 
 // Start background cron worker
 startSyncCron();
+// Poll Meet for who is actually in each room during its join window
+startPresencePolling();
 
 // Register Google module endpoints
 app.use('/google/auth', googleAuthRouter);
 app.use('/google/meetings', googleMeetingsRouter);
 app.use('/google/recordings', googleRecordingsRouter);
+app.use('/google/presence', googlePresenceRouter);
 app.use('/storage', storageRouter);
 
 app.get('/health', (req, res) => {

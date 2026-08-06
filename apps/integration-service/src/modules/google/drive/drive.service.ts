@@ -36,8 +36,12 @@ export class GoogleDriveService {
 
       if (targetDate && !isNaN(new Date(targetDate).getTime())) {
         const t = new Date(targetDate).getTime();
-        const minTime = new Date(t - 24 * 60 * 60 * 1000).toISOString();
-        const maxTime = new Date(t + 24 * 60 * 60 * 1000).toISOString();
+        // A recording is written after its call, never before. The old ±24h window
+        // let every same-day session match, so a 09:42 recording could attach to a
+        // 12:10 class. Bound it to "shortly before the start" (clock skew only)
+        // through "a few hours after", which is ample for Drive to finish rendering.
+        const minTime = new Date(t - 15 * 60 * 1000).toISOString();
+        const maxTime = new Date(t + 8 * 60 * 60 * 1000).toISOString();
         q += ` and createdTime >= '${minTime}' and createdTime <= '${maxTime}'`;
       }
 

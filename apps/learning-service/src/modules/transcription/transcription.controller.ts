@@ -19,35 +19,46 @@ export const transcriptionController = {
 
       logger.info(`[Transcription Controller] Starting transcription for file: ${audioFilePath}`);
 
-      // 1. Resolve student and mentor names via auth-service
-      let studentName = 'Zoha';
-      let mentorName = 'Bazena';
+      // 1. Resolve student and mentor names via auth-service.
+      //
+      // Defaults are deliberately generic. They used to be real-looking names
+      // ('Zoha', 'Bazena'), and because a studentId cannot be resolved through
+      // /users/:id — students live in their own table — the fallback fired every
+      // single time and printed a stranger's name into real class summaries.
+      let studentName = 'Student';
+      let mentorName = 'Mentor';
 
-      try {
-        if (studentId) {
-          const studentRes = await fetch(`${AUTH_SERVICE_URL}/users/${studentId}`);
-          if (studentRes.ok) {
-            const body = await studentRes.json() as any;
-            const u = body?.data;
-            if (u?.firstName) studentName = u.firstName;
-          }
+      const fetchName = async (url: string, label: string): Promise<string | null> => {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return null;
+          const body = (await res.json()) as any;
+          const person = body?.data;
+          if (!person?.firstName) return null;
+          return [person.firstName, person.lastName].filter(Boolean).join(' ').trim();
+        } catch (err: any) {
+          logger.warn(`[Transcription Controller] Could not resolve ${label} name: ${err.message}`);
+          return null;
         }
-      } catch (err: any) {
-        logger.warn(`[Transcription Controller] Failed to fetch student name: ${err.message}. Using default 'Zoha'.`);
+      };
+
+      if (studentId) {
+        // Students are in the Student table; fall back to User for legacy rows
+        // where a student was created as a staff user.
+        const resolved =
+          (await fetchName(`${AUTH_SERVICE_URL}/users/customers/students/${studentId}`, 'student')) ??
+          (await fetchName(`${AUTH_SERVICE_URL}/users/${studentId}`, 'student (legacy user)'));
+        if (resolved) studentName = resolved;
+        else logger.warn(`[Transcription Controller] Student ${studentId} not found — summary will say "Student".`);
       }
 
-      try {
-        if (teacherId) {
-          const mentorRes = await fetch(`${AUTH_SERVICE_URL}/users/${teacherId}`);
-          if (mentorRes.ok) {
-            const body = await mentorRes.json() as any;
-            const u = body?.data;
-            if (u?.firstName) mentorName = u.firstName;
-          }
-        }
-      } catch (err: any) {
-        logger.warn(`[Transcription Controller] Failed to fetch mentor name: ${err.message}. Using default 'Bazena'.`);
+      if (teacherId) {
+        const resolved = await fetchName(`${AUTH_SERVICE_URL}/users/${teacherId}`, 'mentor');
+        if (resolved) mentorName = resolved;
+        else logger.warn(`[Transcription Controller] Mentor ${teacherId} not found — summary will say "Mentor".`);
       }
+
+      logger.info(`[Transcription Controller] Resolved participants — student: "${studentName}", mentor: "${mentorName}"`);
 
       // 2. Process transcription using Groq Pipeline
       const result = await groqService.processClassAudio(audioFilePath, studentName, mentorName);

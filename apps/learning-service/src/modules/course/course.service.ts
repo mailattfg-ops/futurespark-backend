@@ -1,7 +1,26 @@
 import { db } from '../../database/datasource';
-import { CreateProgramInput, UpsertPaymentPlanInput, CreateSessionInput, PlanType } from './course.schema';
+import {
+  CreateProgramInput,
+  UpsertPaymentPlanInput,
+  CreateSessionInput,
+  PlanType,
+  effectiveReflectionQuestions,
+} from './course.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
+
+/**
+ * Substitutes the platform default reflection prompts for any session that has
+ * not been customised, so every consumer (admin editor, student portal, mentor
+ * tracker) sees exactly five questions without each re-implementing the
+ * fallback. `reflectionQuestionsCustomised` preserves the distinction for the
+ * admin UI, which shows whether a session is on defaults or overridden.
+ */
+const withReflectionQuestions = <T extends { reflectionQuestions?: string[] | null }>(session: T) => ({
+  ...session,
+  reflectionQuestions: effectiveReflectionQuestions(session.reflectionQuestions),
+  reflectionQuestionsCustomised: Boolean(session.reflectionQuestions && session.reflectionQuestions.length > 0),
+});
 
 export const courseService = {
   // ── Program Operations ───────────────────────────────────────
@@ -11,7 +30,7 @@ export const courseService = {
   },
 
   async getAllPrograms() {
-    return db.program.findMany({
+    const programs = await db.program.findMany({
       include: {
         sessions: { orderBy: { order: 'asc' } },
         paymentPlans: {
@@ -22,15 +41,17 @@ export const courseService = {
       },
       orderBy: { createdAt: 'desc' },
     });
+    return programs.map((p) => ({ ...p, sessions: p.sessions.map(withReflectionQuestions) }));
   },
 
   async getAllSessions() {
-    return db.session.findMany({
+    const sessions = await db.session.findMany({
       include: {
         program: { select: { id: true, title: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+    return sessions.map(withReflectionQuestions);
   },
 
   async getProgramById(id: string) {
@@ -49,7 +70,7 @@ export const courseService = {
       },
     });
     if (!program) throw new AppError('Program not found', HTTP_STATUS.NOT_FOUND);
-    return program;
+    return { ...program, sessions: program.sessions.map(withReflectionQuestions) };
   },
 
   async updateProgram(id: string, input: Partial<CreateProgramInput>) {
@@ -134,7 +155,7 @@ export const courseService = {
     if (resolvedProgramId) {
       await this.getProgramById(resolvedProgramId);
     }
-    return db.session.create({
+    const created = await db.session.create({
       data: {
         title: input.title,
         order: input.order,
@@ -144,14 +165,17 @@ export const courseService = {
         worksheetUrl: input.worksheetUrl ?? null,
         programId: resolvedProgramId ?? null,
         credits: input.credits ?? 10,
+        reflectionQuestions: input.reflectionQuestions ?? [],
       },
     });
+    return withReflectionQuestions(created);
   },
 
   async updateSession(id: string, input: Partial<CreateSessionInput>) {
     const session = await db.session.findUnique({ where: { id } });
     if (!session) throw new AppError('Session not found', HTTP_STATUS.NOT_FOUND);
-    return db.session.update({ where: { id }, data: input });
+    const updated = await db.session.update({ where: { id }, data: input });
+    return withReflectionQuestions(updated);
   },
 
   async deleteSession(id: string) {

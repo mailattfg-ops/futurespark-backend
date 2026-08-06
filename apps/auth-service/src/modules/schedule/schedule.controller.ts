@@ -98,4 +98,26 @@ export const scheduleController = {
     const classSession = await scheduleService.rateClass(req.params.id, Number(rating), feedback);
     return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class rating submitted successfully'));
   },
+
+  async getReflection(req: Request, res: Response) {
+    const result = await scheduleService.getReflection(req.params.id);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection fetched successfully'));
+  },
+
+  async submitReflection(req: Request, res: Response) {
+    const { answers } = req.body;
+    if (!Array.isArray(answers)) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: 'Body must contain an "answers" array, one entry per question.',
+      });
+    }
+    const result = await scheduleService.submitReflection(
+      req.params.id,
+      answers.map((a: any) => (typeof a === 'string' ? a : '')),
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection submitted successfully'));
+  },
 };

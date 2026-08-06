@@ -103,6 +103,24 @@ export class GoogleMeetingsController {
     }
   }
 
+  /** Reschedule the Calendar event for a class, addressed by its Meet link. */
+  static async rescheduleByLink(req: Request, res: Response) {
+    try {
+      const { meetUrl, startTime, endTime, timezone } = req.body;
+      if (!meetUrl || !startTime || !endTime) {
+        return res
+          .status(HTTP_STATUS.BAD_REQUEST)
+          .json(errorResponse('meetUrl, startTime and endTime are required.'));
+      }
+
+      const result = await GoogleMeetingsService.rescheduleByLink(meetUrl, { startTime, endTime, timezone });
+      return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Meeting rescheduled successfully.'));
+    } catch (err: any) {
+      logger.error(`Error rescheduling meeting by link: ${err.message}`);
+      return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(err.message || 'Failed to reschedule meeting'));
+    }
+  }
+
   static async delete(req: Request, res: Response) {
     try {
       const { id } = req.params;

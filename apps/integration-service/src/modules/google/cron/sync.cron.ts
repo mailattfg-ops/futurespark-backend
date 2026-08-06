@@ -2,7 +2,22 @@ import { db } from '../../../database/datasource';
 import { GoogleRecordingService } from '../recording/recording.service';
 import { logger } from '@futurespark/logger';
 
+// Guards against overlapping ticks. A sweep that downloads several large
+// recordings can easily exceed the 2-minute interval; without this the next
+// timer fires into the same work and re-processes the same meetings.
+let isRunning = false;
+let skippedTicks = 0;
+
 async function runSyncCheck() {
+  if (isRunning) {
+    skippedTicks++;
+    logger.warn(`[Google Sync Cron] Previous sweep still running — skipping this tick (${skippedTicks} skipped in a row).`);
+    return;
+  }
+  isRunning = true;
+  skippedTicks = 0;
+  const startedAt = Date.now();
+
   try {
     logger.info('[Google Sync Cron] Auditing ended meetings to auto-sync recordings & AI summaries...');
     
@@ -45,6 +60,14 @@ async function runSyncCheck() {
     }
   } catch (err: any) {
     logger.error(`[Google Sync Cron] Error running Google Meet sync job: ${err.message}`);
+  } finally {
+    // Must be in `finally` — the early return above would otherwise wedge the
+    // flag on and stop the daemon permanently.
+    isRunning = false;
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    if (Number(elapsed) > 120) {
+      logger.warn(`[Google Sync Cron] Sweep took ${elapsed}s, longer than the 2 min interval — ticks will be skipped while it catches up.`);
+    }
   }
 }
 

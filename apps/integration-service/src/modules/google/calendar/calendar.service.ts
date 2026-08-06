@@ -1,5 +1,6 @@
 import { google } from 'googleapis';
 import { GoogleAuthService } from '../auth/auth.service';
+import { logger } from '@futurespark/logger';
 import crypto from 'crypto';
 
 export interface CalendarEventInput {
@@ -112,6 +113,32 @@ export class GoogleCalendarService {
       calendarLink: updatedEvent.htmlLink || '',
       attendees: updatedEvent.attendees?.map(a => a.email).filter(Boolean) as string[] || [],
     };
+  }
+
+  /**
+   * Is this calendar event still live on Google?
+   *
+   * Our Meeting row can say SCHEDULED while the event has been cancelled on
+   * Google — deleting a class cancels the event but leaves our row behind. A
+   * cancelled event still has a working Meet room, but Meet no longer names the
+   * recording after it (you get "abc-defg-hij (2026-08-06 14:32 GMT+5:30)"
+   * instead of the class title), and attendees see it cancelled in their calendar.
+   *
+   * Returns null when the answer cannot be determined, so callers can decide
+   * rather than assume.
+   */
+  static async isEventActive(workspaceEmail: string, eventId: string): Promise<boolean | null> {
+    if (!eventId || eventId.startsWith('manual_')) return null;
+    try {
+      const auth = await GoogleAuthService.getClientForEmail(workspaceEmail);
+      const calendar = google.calendar({ version: 'v3', auth });
+      const res = await calendar.events.get({ calendarId: 'primary', eventId });
+      return res.data.status !== 'cancelled';
+    } catch (err: any) {
+      if (err?.code === 404 || err?.response?.status === 404) return false;
+      logger.warn(`[GoogleCalendarService] Could not read event ${eventId}: ${err.message}`);
+      return null;
+    }
   }
 
   static async deleteMeetEvent(workspaceEmail: string, eventId: string) {

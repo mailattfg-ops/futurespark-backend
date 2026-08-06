@@ -142,6 +142,11 @@ export const userController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Student password reset successfully'));
   },
 
+  async getStudentById(req: Request, res: Response) {
+    const result = await userService.getStudentById(req.params.id);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Student fetched successfully'));
+  },
+
   async updateStudent(req: Request, res: Response) {
     const { id } = req.params;
     const result = await userService.updateStudent(id, req.body);
@@ -163,14 +168,40 @@ export const userController = {
     if (weekday === undefined || weekday === null || !startTime) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'weekday and startTime are required' });
     }
-    const slot = await userService.addMentorSchedule(id, { weekday: Number(weekday), startTime, scheduleType });
+    const slot = await userService.addMentorSchedule(
+      id,
+      { weekday: Number(weekday), startTime, scheduleType },
+      { id: req.headers['x-user-id'] as string | undefined, role: req.headers['x-user-role'] as string | undefined }
+    );
     logger.info(`[Mentor Schedule] Added slot for mentorId: ${id} weekday=${weekday} start=${startTime} type=${scheduleType || 'REGULAR'}`);
     return res.status(HTTP_STATUS.CREATED).json(successResponse(slot, 'Schedule slot added'));
   },
 
+  async getMentorAvailability(req: Request, res: Response) {
+    const result = await userService.getMentorAvailability(req.params.id);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Mentor availability fetched'));
+  },
+
+  async updateMentorAvailability(req: Request, res: Response) {
+    const { availabilityMode, availabilityNote } = req.body;
+    const result = await userService.updateMentorAvailability(
+      req.params.id,
+      { availabilityMode, availabilityNote },
+      {
+        id: req.headers['x-user-id'] as string | undefined,
+        role: req.headers['x-user-role'] as string | undefined,
+      }
+    );
+    logger.info(`[Mentor Availability] Updated mentorId: ${req.params.id} mode=${result.availabilityMode}`);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Availability updated'));
+  },
+
   async deleteMentorSchedule(req: Request, res: Response) {
     const { scheduleId } = req.params;
-    const result = await userService.deleteMentorSchedule(scheduleId);
+    const result = await userService.deleteMentorSchedule(scheduleId, {
+      id: req.headers['x-user-id'] as string | undefined,
+      role: req.headers['x-user-role'] as string | undefined,
+    });
     logger.info(`[Mentor Schedule] Deleted scheduleId: ${scheduleId}`);
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Schedule slot deleted'));
   },
