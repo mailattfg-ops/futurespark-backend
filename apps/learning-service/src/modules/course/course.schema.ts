@@ -1,12 +1,28 @@
 import { AppError } from '@futurespark/middleware';
 import {
   HTTP_STATUS,
-  DEFAULT_REFLECTION_QUESTIONS,
+  DEFAULT_REFLECTION_QUESTIONS as CONSTANTS_DEFAULT_REFLECTION_QUESTIONS,
   REFLECTION_QUESTION_COUNT,
-  effectiveReflectionQuestions,
+  effectiveReflectionQuestions as constantsEffectiveReflectionQuestions,
 } from '@futurespark/constants';
 
-export { DEFAULT_REFLECTION_QUESTIONS, REFLECTION_QUESTION_COUNT, effectiveReflectionQuestions };
+const FALLBACK_REFLECTION_QUESTIONS = [
+  'What is the most important thing you learned in this session?',
+  'Which part did you find most challenging, and why?',
+  'How could you use what you learned today outside of class?',
+  'What is one question you still have for your mentor?',
+  'How confident do you feel about this topic now (1-5), and what would raise it?',
+];
+
+export const DEFAULT_REFLECTION_QUESTIONS = CONSTANTS_DEFAULT_REFLECTION_QUESTIONS || FALLBACK_REFLECTION_QUESTIONS;
+export { REFLECTION_QUESTION_COUNT };
+
+export const effectiveReflectionQuestions = (stored: string[] | null | undefined): string[] => {
+  if (typeof constantsEffectiveReflectionQuestions === 'function') {
+    return constantsEffectiveReflectionQuestions(stored);
+  }
+  return stored && stored.length > 0 ? stored : DEFAULT_REFLECTION_QUESTIONS;
+};
 
 // ── Program ───────────────────────────────────────────────────
 
