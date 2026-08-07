@@ -195,9 +195,18 @@ model ScheduledClass {
   studentFeedback   String?
   // Post-class reflection. Questions are snapshotted at submit time so later
   // edits to the curriculum session never orphan or reword a stored answer.
-  // Shape: [{ question: string, answer: string }]
+  // Shape: ReflectionAnswerEntry[] from @futurespark/constants. Rows written
+  // before the quiz existed hold the older { question, answer } pairs, which
+  // every reader still handles.
   reflectionAnswers     Json?
   reflectionSubmittedAt DateTime?
+  reflectionScore       Int?
+  reflectionMaxScore    Int?
+  reflectionBadge       String?   // "GOLD" | "SILVER" | "BRONZE"
+  // How many times this class has actually been moved. Drives the "Postponed"
+  // attendance state, which cannot be told from `status` alone once the class
+  // has been rescheduled back to SCHEDULED.
+  rescheduledCount    Int       @default(0)
   autoRecording       Boolean   @default(true)
   recordingUrl        String?
   transcript          String?   @db.Text
@@ -309,6 +318,13 @@ model Session {
   // Post-class reflection prompts the student answers before the next class.
   // Empty means "not customised" — readers fall back to the platform defaults.
   reflectionQuestions String[] @default([])
+  // The typed quiz that supersedes the plain prompts above. Shape:
+  // ReflectionQuestion[] from @futurespark/constants. Null/empty means the
+  // session has no custom quiz and readers fall back to the prompts, then to
+  // the platform defaults.
+  reflectionQuiz Json?
+  // Mind map of what this session covers. Shape: SessionTopic[].
+  topics        Json?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 

@@ -5,6 +5,8 @@ import { scheduleController } from './schedule.controller';
 const router = Router();
 
 router.get('/mentors', asyncHandler(scheduleController.listMentors));
+// Static prefix, so "students" is never matched as a class id by "/:id".
+router.get('/students/:studentId/overview', asyncHandler(scheduleController.getStudentOverview));
 router.get('/reports', asyncHandler(scheduleController.listReports));
 router.post('/reports', asyncHandler(scheduleController.createReport));
 router.put('/reports/:id', asyncHandler(scheduleController.updateReport));
