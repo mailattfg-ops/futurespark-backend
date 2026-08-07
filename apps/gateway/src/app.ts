@@ -262,7 +262,7 @@ app.use('/api/storage',
   createProxyMiddleware({
     target: INTEGRATION_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { '^/api/storage': '/storage' },
+    pathRewrite: { '^/': '/storage/' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable for storage: ${err.message}`);
@@ -323,7 +323,7 @@ app.use('/api/whatsapp/webhook',
   createProxyMiddleware({
     target: COMMUNICATION_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { '^/api/whatsapp/webhook': '/whatsapp/webhook' },
+    pathRewrite: { '^/': '/whatsapp/webhook' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Communication service unreachable for WhatsApp webhook: ${err.message}`);

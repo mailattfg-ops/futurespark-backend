@@ -8,3 +8,4 @@ app.listen(PORT, () => {
   logger.info(`learning-service server listening on port ${PORT}`);
   logger.info(`[learning-service] GROQ_API_KEY ${process.env.GROQ_API_KEY ? 'loaded' : 'MISSING'}`);
 });
+
