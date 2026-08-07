@@ -243,7 +243,7 @@ app.get('/api/storage/file',
   createProxyMiddleware({
     target: INTEGRATION_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: (_path, req) => (req as any).originalUrl.replace('/api/storage', '/storage'),
+    pathRewrite: { '^/api/storage': '/storage' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable for file get: ${err.message}`);
@@ -262,7 +262,7 @@ app.use('/api/storage',
   createProxyMiddleware({
     target: INTEGRATION_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: (_path, req) => (req as any).originalUrl.replace('/api/storage', '/storage'),
+    pathRewrite: { '^/api/storage': '/storage' },
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable for storage: ${err.message}`);
