@@ -7,19 +7,30 @@ import {
   effectiveReflectionQuestions,
 } from './course.schema';
 import { AppError } from '@futurespark/middleware';
-import { HTTP_STATUS } from '@futurespark/constants';
+import {
+  HTTP_STATUS,
+  effectiveReflectionQuiz,
+  effectiveSessionTopics,
+} from '@futurespark/constants';
 
 /**
- * Substitutes the platform default reflection prompts for any session that has
- * not been customised, so every consumer (admin editor, student portal, mentor
- * tracker) sees exactly five questions without each re-implementing the
- * fallback. `reflectionQuestionsCustomised` preserves the distinction for the
- * admin UI, which shows whether a session is on defaults or overridden.
+ * Substitutes the platform defaults for any session that has not been
+ * customised, so every consumer (admin editor, student portal, mentor tracker)
+ * receives a ready-to-answer quiz without each re-implementing the fallback
+ * chain. The `*Customised` flags preserve the distinction for the admin UI,
+ * which shows whether a session is on defaults or overridden.
  */
-const withReflectionQuestions = <T extends { reflectionQuestions?: string[] | null }>(session: T) => ({
+const withReflectionQuestions = <
+  T extends { reflectionQuestions?: string[] | null; reflectionQuiz?: unknown; topics?: unknown }
+>(
+  session: T
+) => ({
   ...session,
   reflectionQuestions: effectiveReflectionQuestions(session.reflectionQuestions),
   reflectionQuestionsCustomised: Boolean(session.reflectionQuestions && session.reflectionQuestions.length > 0),
+  reflectionQuiz: effectiveReflectionQuiz(session.reflectionQuiz, session.reflectionQuestions),
+  reflectionQuizCustomised: Array.isArray(session.reflectionQuiz) && session.reflectionQuiz.length > 0,
+  topics: effectiveSessionTopics(session.topics),
 });
 
 export const courseService = {
@@ -166,6 +177,8 @@ export const courseService = {
         programId: resolvedProgramId ?? null,
         credits: input.credits ?? 10,
         reflectionQuestions: input.reflectionQuestions ?? [],
+        reflectionQuiz: (input.reflectionQuiz ?? []) as any,
+        topics: (input.topics ?? []) as any,
       },
     });
     return withReflectionQuestions(created);
@@ -174,7 +187,18 @@ export const courseService = {
   async updateSession(id: string, input: Partial<CreateSessionInput>) {
     const session = await db.session.findUnique({ where: { id } });
     if (!session) throw new AppError('Session not found', HTTP_STATUS.NOT_FOUND);
-    const updated = await db.session.update({ where: { id }, data: input });
+    // Json columns need an explicit cast: Prisma's InputJsonValue does not
+    // accept our interface types, and passing the whole input through would
+    // widen them to `never`.
+    const { reflectionQuiz, topics, ...rest } = input;
+    const updated = await db.session.update({
+      where: { id },
+      data: {
+        ...rest,
+        ...(reflectionQuiz !== undefined ? { reflectionQuiz: reflectionQuiz as any } : {}),
+        ...(topics !== undefined ? { topics: topics as any } : {}),
+      },
+    });
     return withReflectionQuestions(updated);
   },
 

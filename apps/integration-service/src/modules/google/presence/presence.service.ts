@@ -49,6 +49,52 @@ export function extractMeetCode(meetUrl: string | null | undefined): string | nu
   return MEET_CODE_RE.test(code) ? code : null;
 }
 
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+
+/**
+ * Rooms already reported this process lifetime.
+ *
+ * The poller runs every 30s and a finished meeting stays in the watch window for
+ * an hour, so without this the same class would be reported ~120 times. The
+ * auth-service side is idempotent anyway; this just avoids the chatter.
+ */
+const reportedRooms = new Set<string>();
+
+/**
+ * Tell auth-service that a Meet room emptied after a real meeting.
+ *
+ * Cross-service HTTP rather than a direct write because integration-service has
+ * its own database and no access to the auth schema where ScheduledClass lives.
+ *
+ * Best-effort: a failure here only delays the portals noticing the class ended,
+ * which the scheduled end time will cover anyway, so it must never break polling.
+ */
+async function reportRoomEnded(meetUrl: string, endedAt: Date, title: string): Promise<void> {
+  const key = `${meetUrl}|${endedAt.toISOString()}`;
+  if (reportedRooms.has(key)) return;
+  reportedRooms.add(key);
+
+  try {
+    const res = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/room-ended`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ meetingLink: meetUrl, endedAt: endedAt.toISOString() }),
+    });
+    if (!res.ok) {
+      reportedRooms.delete(key); // let the next poll retry
+      logger.warn(`[MeetPresence] auth-service rejected room-ended for "${title}": ${res.status}`);
+      return;
+    }
+    const body: any = await res.json().catch(() => null);
+    if (body?.data?.updated) {
+      logger.info(`[MeetPresence] "${title}" ended — class ${body.data.classId} marked as actually finished.`);
+    }
+  } catch (err: any) {
+    reportedRooms.delete(key);
+    logger.warn(`[MeetPresence] Could not report room end for "${title}": ${err.message}`);
+  }
+}
+
 export class MeetPresenceService {
   /**
    * Ask Meet whether a conference is currently active in this room.
@@ -142,6 +188,17 @@ export class MeetPresenceService {
 
           if (active && !meeting.presenceFirstJoinAt) {
             logger.info(`[MeetPresence] First join detected for "${meeting.title}" (${code})`);
+          }
+
+          // The room was used and has now been empty past the grace period —
+          // the class is over, whatever the clock says. Tell auth-service once
+          // so the portals can stop offering a Join button and start offering
+          // the reflection quiz, without waiting out the full 90-minute slot.
+          if (!active && meeting.presenceFirstJoinAt && meeting.presenceLastLiveAt) {
+            const emptyFor = now.getTime() - new Date(meeting.presenceLastLiveAt).getTime();
+            if (emptyFor >= EMPTY_GRACE_MS) {
+              await reportRoomEnded(meeting.meetUrl, new Date(meeting.presenceLastLiveAt), meeting.title);
+            }
           }
         })
       )

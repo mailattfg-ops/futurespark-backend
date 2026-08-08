@@ -1,7 +1,17 @@
 import { db } from '../../database/datasource';
 import { CreateScheduleInput, UpdateScheduleInput } from './schedule.schema';
 import { AppError } from '@futurespark/middleware';
-import { HTTP_STATUS, effectiveReflectionQuestions } from '@futurespark/constants';
+import {
+  HTTP_STATUS,
+  effectiveReflectionQuestions,
+  effectiveReflectionQuiz,
+  effectiveSessionTopics,
+  gradeReflection,
+  deriveAttendance,
+  owesReflection,
+  stripAnswerKey,
+  ReflectionResponse,
+} from '@futurespark/constants';
 import { logger } from '@futurespark/logger';
 import { sendNotification } from '../notification-helper';
 import { rescheduleCalendarEvent } from '../calendar-helper';
@@ -60,9 +70,16 @@ export const scheduleService = {
         student: {
           select: {
             id: true,
+            studentCode: true,
             firstName: true,
             lastName: true,
             email: true,
+            avatarUrl: true,
+            // Points and timezone travel with the class so a mentor's dashboard
+            // can show a student's full record without a second round trip per
+            // student — it already loads every class it needs.
+            credits: true,
+            timezone: true,
             schedulerGroupId: true,
           },
         },
@@ -90,12 +107,17 @@ export const scheduleService = {
     const sessionIds = [...new Set(schedules.map((s) => s.sessionId).filter(Boolean))] as string[];
     const sessions = await db.session.findMany({
       where: { id: { in: sessionIds } },
-      select: { id: true, title: true, credits: true },
+      select: { id: true, title: true, order: true, credits: true, topics: true },
     });
 
+    const now = Date.now();
     return schedules.map((s) => ({
       ...s,
       session: sessions.find((sess) => sess.id === s.sessionId) || null,
+      // Derived here rather than in each portal, so the student's attendance
+      // tab and the mentor's student record can never disagree about whether a
+      // class was missed.
+      attendance: deriveAttendance(s, now),
     }));
   },
 
@@ -407,12 +429,21 @@ export const scheduleService = {
       creditsDiff = newCredits - oldCredits;
     }
 
+    // A class whose slot actually moved is "postponed" from then on. Recorded as
+    // a counter rather than inferred from `status`, because rescheduling puts
+    // the class straight back to SCHEDULED and the move would otherwise leave
+    // no trace for the attendance view.
+    const slotMoved =
+      Boolean(input.startTime) &&
+      new Date(classSession.startTime).getTime() !== new Date(startTime).getTime();
+
     const updatedClass = await db.scheduledClass.update({
       where: { id },
       data: {
         startTime,
         endTime,
         status,
+        ...(slotMoved ? { rescheduledCount: { increment: 1 } } : {}),
         mentorId: effectiveMentorId,
         meetingLink: input.meetingLink !== undefined ? input.meetingLink : undefined,
         rescheduleReason: input.startTime ? null : (input.rescheduleReason !== undefined ? input.rescheduleReason : undefined),
@@ -676,10 +707,78 @@ export const scheduleService = {
     });
   },
 
+  /**
+   * Records that a Meet room emptied after a real meeting, for whichever class
+   * was using that link.
+   *
+   * Called by integration-service's presence poller, which can see the room but
+   * cannot reach the auth schema to write this itself. Deliberately narrow:
+   * it stamps `actualEndedAt` and nothing else. It does not set status, award
+   * credits or notify anyone — a robot noticing an empty room is evidence the
+   * class happened, not a decision that it went well.
+   *
+   * Idempotent, and only ever applies to the class whose slot the meeting fell
+   * in: one Meet link can be shared by all 40 sessions of a programme, so
+   * matching on link alone would stamp the wrong week.
+   */
+  async markRoomEnded(meetingLink: string, endedAt: Date) {
+    if (!meetingLink) return { updated: 0 };
+
+    // The class must have been *running* when the room emptied: started already,
+    // and not so long finished that this is clearly a different session.
+    //
+    // Matching merely "near" the timestamp is not enough. One Meet link is shared
+    // by every session of a programme, so a loose window lets a second, older
+    // class match once the correct one has been stamped — which is exactly what
+    // happened: a 19:10 room-end landed on a class scheduled for 20:00.
+    const OVERRUN_GRACE_MS = 60 * 60 * 1000;
+
+    const candidates = await db.scheduledClass.findMany({
+      where: {
+        meetingLink,
+        status: { notIn: ['CANCELLED'] },
+        startTime: { lte: endedAt },
+        endTime: { gte: new Date(endedAt.getTime() - OVERRUN_GRACE_MS) },
+      },
+      select: { id: true, startTime: true, actualEndedAt: true },
+      orderBy: { startTime: 'desc' },
+    });
+
+    // Only ever the single most recent class that was live at that moment. If it
+    // is already stamped, this is a repeat report from the 30-second poller and
+    // there is nothing to do — never fall through to an earlier class.
+    const target = candidates[0];
+    if (!target || target.actualEndedAt) return { updated: 0 };
+
+    await db.scheduledClass.update({
+      where: { id: target.id },
+      data: { actualEndedAt: endedAt },
+    });
+
+    logger.info(
+      `[Presence] Class ${target.id} recorded as actually ended at ${endedAt.toISOString()} ` +
+      `(room ${meetingLink} emptied). Status left untouched for the mentor to confirm.`
+    );
+    return { updated: 1, classId: target.id };
+  },
+
   async rateClass(id: string, rating: number, feedback?: string) {
     const scheduledClass = await db.scheduledClass.findUnique({ where: { id } });
     if (!scheduledClass) {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    // You can only rate a class that actually took place. A slot whose time has
+    // merely elapsed is not evidence the class ran, and rating a mentor for a
+    // lesson that never happened would quietly corrupt their average. Either the
+    // mentor marking it complete or the Meet room emptying after a real meeting
+    // counts as evidence.
+    if (deriveAttendance(scheduledClass) !== 'ATTENDED') {
+      throw new AppError(
+        scheduledClass.status === 'CANCELLED'
+          ? 'This class was cancelled and cannot be rated'
+          : 'You can rate a mentor once the class has finished',
+        HTTP_STATUS.BAD_REQUEST
+      );
     }
     return db.scheduledClass.update({
       where: { id },
@@ -693,9 +792,10 @@ export const scheduleService = {
   // ── Post-class reflection ───────────────────────────────────────────────────
 
   /**
-   * The prompts a student must answer for a given class, plus whatever they
-   * have already submitted. Questions come from the curriculum session; a
-   * session with no custom set falls back to the platform defaults.
+   * The quiz a student must answer for a given class, plus whatever they have
+   * already submitted. Questions come from the curriculum session; a session
+   * with no custom quiz falls back to its text prompts, then to the platform
+   * defaults, so there is always something to answer.
    */
   async getReflection(classId: string) {
     const scheduledClass = await db.scheduledClass.findUnique({
@@ -710,43 +810,73 @@ export const scheduleService = {
         endTime: true,
         reflectionAnswers: true,
         reflectionSubmittedAt: true,
+        reflectionScore: true,
+        reflectionMaxScore: true,
+        reflectionBadge: true,
       },
     });
     if (!scheduledClass) {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
     }
 
-    let sessionTitle: string | null = null;
-    let stored: string[] | null = null;
-    if (scheduledClass.sessionId) {
-      const session = await db.session.findUnique({
-        where: { id: scheduledClass.sessionId },
-        select: { title: true, reflectionQuestions: true },
-      });
-      sessionTitle = session?.title ?? null;
-      stored = session?.reflectionQuestions ?? null;
-    }
+    const session = scheduledClass.sessionId
+      ? await db.session.findUnique({
+          where: { id: scheduledClass.sessionId },
+          select: { title: true, order: true, reflectionQuestions: true, reflectionQuiz: true, topics: true },
+        })
+      : null;
+
+    const quiz = effectiveReflectionQuiz(session?.reflectionQuiz, session?.reflectionQuestions);
 
     return {
       classId: scheduledClass.id,
       studentId: scheduledClass.studentId,
       sessionId: scheduledClass.sessionId,
-      sessionTitle,
-      questions: effectiveReflectionQuestions(stored),
+      sessionTitle: session?.title ?? null,
+      sessionOrder: session?.order ?? null,
+      // `questions` keeps the plain-string shape older clients read; `quiz`
+      // carries the typed version with images, options and points.
+      //
+      // The answer key is stripped unconditionally here: this endpoint exists to
+      // serve the person about to sit the quiz. Reviewers read the graded
+      // answers instead, which already carry correct/incorrect per question.
+      questions: effectiveReflectionQuestions(session?.reflectionQuestions ?? null),
+      quiz: stripAnswerKey(quiz),
+      topics: effectiveSessionTopics(session?.topics),
       answers: (scheduledClass.reflectionAnswers as ReflectionEntry[] | null) ?? null,
       submittedAt: scheduledClass.reflectionSubmittedAt,
+      score: scheduledClass.reflectionScore,
+      maxScore: scheduledClass.reflectionMaxScore,
+      badge: scheduledClass.reflectionBadge,
     };
   },
 
   /**
-   * Stores a student's reflection. Question text is resolved server-side and
-   * snapshotted alongside each answer, so a client cannot invent prompts and a
-   * later admin edit cannot silently reword what a student was asked.
+   * Stores and grades a student's reflection.
+   *
+   * Grading happens against the server's copy of the quiz and the question text
+   * is snapshotted alongside each answer, so a client cannot invent prompts,
+   * award itself points, or have a later admin edit silently reword what it was
+   * asked.
    */
-  async submitReflection(classId: string, answers: string[], callerId?: string, callerRole?: string) {
+  async submitReflection(
+    classId: string,
+    responses: ReflectionResponse[],
+    callerId?: string,
+    callerRole?: string
+  ) {
     const scheduledClass = await db.scheduledClass.findUnique({
       where: { id: classId },
-      select: { id: true, studentId: true, sessionId: true, status: true, endTime: true },
+      select: {
+        id: true,
+        studentId: true,
+        sessionId: true,
+        status: true,
+        startTime: true,
+        endTime: true,
+        actualEndedAt: true,
+        rescheduledCount: true,
+      },
     });
     if (!scheduledClass) {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
@@ -764,50 +894,251 @@ export const scheduleService = {
       }
     }
 
-    // Reflection is a *post*-class activity — the class must be over.
-    const classIsOver = scheduledClass.status === 'COMPLETED' || scheduledClass.endTime.getTime() <= Date.now();
-    if (!classIsOver) {
-      throw new AppError('This class has not finished yet', HTTP_STATUS.BAD_REQUEST);
-    }
-    if (scheduledClass.status === 'CANCELLED') {
-      throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
+    // You can only reflect on a class you actually attended. Two things prove
+    // that: the mentor marked it complete, or the Meet room was used and then
+    // emptied. A slot whose clock simply ran out proves nothing — it is
+    // indistinguishable from the student never turning up — so it is refused.
+    // ADMIN bypasses for support fixes.
+    if (callerRole !== 'ADMIN') {
+      if (scheduledClass.status === 'CANCELLED') {
+        throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
+      }
+      if (deriveAttendance(scheduledClass) !== 'ATTENDED') {
+        throw new AppError(
+          scheduledClass.endTime.getTime() > Date.now()
+            ? 'This class has not finished yet'
+            : 'This class is not recorded as attended yet',
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
     }
 
-    let stored: string[] | null = null;
-    if (scheduledClass.sessionId) {
-      const session = await db.session.findUnique({
-        where: { id: scheduledClass.sessionId },
-        select: { reflectionQuestions: true },
-      });
-      stored = session?.reflectionQuestions ?? null;
-    }
-    const questions = effectiveReflectionQuestions(stored);
+    const session = scheduledClass.sessionId
+      ? await db.session.findUnique({
+          where: { id: scheduledClass.sessionId },
+          select: { reflectionQuestions: true, reflectionQuiz: true },
+        })
+      : null;
 
-    const entries: ReflectionEntry[] = questions.map((question, i) => ({
-      question,
-      answer: (answers[i] ?? '').trim(),
-    }));
+    const quiz = effectiveReflectionQuiz(session?.reflectionQuiz, session?.reflectionQuestions);
+    const graded = gradeReflection(quiz, responses);
 
-    if (entries.every((e) => !e.answer)) {
-      throw new AppError('Answer at least one reflection question before submitting', HTTP_STATUS.BAD_REQUEST);
+    if (graded.answeredCount === 0) {
+      throw new AppError('Answer at least one question before submitting', HTTP_STATUS.BAD_REQUEST);
     }
 
     const updated = await db.scheduledClass.update({
       where: { id: classId },
       data: {
-        reflectionAnswers: entries as any,
+        reflectionAnswers: graded.entries as any,
         reflectionSubmittedAt: new Date(),
+        reflectionScore: graded.score,
+        reflectionMaxScore: graded.maxScore,
+        reflectionBadge: graded.badge?.id ?? null,
       },
-      select: { id: true, reflectionAnswers: true, reflectionSubmittedAt: true },
+      select: {
+        id: true,
+        reflectionAnswers: true,
+        reflectionSubmittedAt: true,
+        reflectionScore: true,
+        reflectionMaxScore: true,
+        reflectionBadge: true,
+      },
     });
 
-    logger.info(`[Reflection] Student ${scheduledClass.studentId} submitted reflection for class ${classId}`);
-    return updated;
+    logger.info(
+      `[Reflection] Student ${scheduledClass.studentId} submitted reflection for class ${classId} ` +
+      `— ${graded.score}/${graded.maxScore}${graded.badge ? ` (${graded.badge.id})` : ''}`
+    );
+    return { ...updated, badge: graded.badge, answeredCount: graded.answeredCount };
+  },
+
+  /**
+   * Everything known about one student's journey on a programme: attendance per
+   * class, reflection answers and scores, points, and progress against the
+   * curriculum.
+   *
+   * Exists so a mentor can answer a parent's question without piecing it
+   * together from three different screens. Deliberately spans *all* the
+   * student's classes rather than only the caller's, since a substitute mentor
+   * covering one week should still see the full picture.
+   */
+  async getStudentOverview(studentId: string, callerId?: string, callerRole?: string) {
+    const student = await db.student.findUnique({
+      where: { id: studentId },
+      select: {
+        id: true,
+        studentCode: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        avatarUrl: true,
+        credits: true,
+        timezone: true,
+        isActive: true,
+        createdAt: true,
+        parentAccountId: true,
+        parentAccount: {
+          select: {
+            id: true,
+            email: true,
+            paymentApproved: true,
+            selectedPlanType: true,
+            profiles: { select: { firstName: true, lastName: true, phone: true, relationship: true } },
+          },
+        },
+      },
+    });
+    if (!student) {
+      throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    const classes = await db.scheduledClass.findMany({
+      where: { studentId },
+      include: {
+        mentor: { select: { id: true, firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { startTime: 'asc' },
+    });
+
+    // A mentor may read the record of any student they actually teach; the
+    // student and their parent may read their own. Everyone else is refused,
+    // including other mentors on the platform.
+    if (callerRole !== 'ADMIN') {
+      const permitted =
+        (callerRole === 'TEACHER' && classes.some((c) => c.mentorId === callerId)) ||
+        (callerRole === 'STUDENT' && callerId === studentId) ||
+        (callerRole === 'PARENT' && callerId === student.parentAccountId);
+      if (!permitted) {
+        throw new AppError('You do not have access to this student record', HTTP_STATUS.FORBIDDEN);
+      }
+    }
+
+    const sessionIds = [...new Set(classes.map((c) => c.sessionId).filter(Boolean))] as string[];
+    const programIds = [...new Set(classes.map((c) => c.programId).filter(Boolean))] as string[];
+
+    const [sessions, programs] = await Promise.all([
+      sessionIds.length
+        ? db.session.findMany({
+            where: { id: { in: sessionIds } },
+            select: { id: true, title: true, order: true, credits: true, programId: true, topics: true },
+          })
+        : Promise.resolve([]),
+      programIds.length
+        ? db.program.findMany({
+            where: { id: { in: programIds } },
+            select: { id: true, title: true, _count: { select: { sessions: true } } },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const sessionById = new Map(sessions.map((s) => [s.id, s]));
+    const now = Date.now();
+
+    const timeline = classes.map((c) => {
+      const session = c.sessionId ? sessionById.get(c.sessionId) : undefined;
+      const answers = (c.reflectionAnswers as ReflectionEntry[] | null) ?? null;
+      return {
+        id: c.id,
+        programId: c.programId,
+        sessionId: c.sessionId,
+        sessionTitle: session?.title ?? null,
+        sessionOrder: session?.order ?? null,
+        startTime: c.startTime,
+        endTime: c.endTime,
+        status: c.status,
+        classType: c.classType,
+        attendance: deriveAttendance(c, now),
+        actualEndedAt: c.actualEndedAt,
+        rescheduledCount: c.rescheduledCount,
+        rescheduleReason: c.rescheduleReason,
+        creditsAwarded: c.creditsAwarded,
+        studentRating: c.studentRating,
+        studentFeedback: c.studentFeedback,
+        mentor: c.mentor,
+        meetingLink: c.meetingLink,
+        recordingUrl: c.recordingUrl,
+        reflection: {
+          submittedAt: c.reflectionSubmittedAt,
+          score: c.reflectionScore,
+          maxScore: c.reflectionMaxScore,
+          badge: c.reflectionBadge,
+          answers,
+          pending: owesReflection(c, now),
+        },
+      };
+    });
+
+    const tally = (state: string) => timeline.filter((t) => t.attendance === state).length;
+    const reflectionsDone = timeline.filter((t) => t.reflection.submittedAt);
+    const scored = reflectionsDone.filter((t) => typeof t.reflection.score === 'number' && t.reflection.maxScore);
+    const ratings = timeline.filter((t) => typeof t.studentRating === 'number');
+
+    // Curriculum reach: the furthest session order actually completed.
+    const reachedOrder = timeline
+      .filter((t) => t.attendance === 'ATTENDED' && typeof t.sessionOrder === 'number')
+      .reduce((max, t) => Math.max(max, t.sessionOrder as number), 0);
+
+    const curriculumTotal = programs.reduce((sum, p) => sum + (p._count?.sessions ?? 0), 0);
+
+    return {
+      student: {
+        ...student,
+        parentName: student.parentAccount?.profiles?.[0]
+          ? `${student.parentAccount.profiles[0].firstName} ${student.parentAccount.profiles[0].lastName}`.trim()
+          : null,
+      },
+      programs: programs.map((p) => ({ id: p.id, title: p.title, sessionCount: p._count?.sessions ?? 0 })),
+      stats: {
+        totalScheduled: timeline.length,
+        attended: tally('ATTENDED'),
+        missed: tally('MISSED'),
+        postponed: tally('POSTPONED'),
+        cancelled: tally('CANCELLED'),
+        upcoming: tally('UPCOMING'),
+        points: student.credits,
+        reachedOrder,
+        curriculumTotal,
+        reflectionsSubmitted: reflectionsDone.length,
+        reflectionsPending: timeline.filter((t) => t.reflection.pending).length,
+        // Average of the score percentages, not of the raw scores — quizzes can
+        // be worth different totals, so raw averages would be meaningless.
+        averageQuizPercent: scored.length
+          ? Math.round(
+              scored.reduce(
+                (sum, t) => sum + ((t.reflection.score as number) / (t.reflection.maxScore as number)) * 100,
+                0
+              ) / scored.length
+            )
+          : null,
+        badges: {
+          GOLD: reflectionsDone.filter((t) => t.reflection.badge === 'GOLD').length,
+          SILVER: reflectionsDone.filter((t) => t.reflection.badge === 'SILVER').length,
+          BRONZE: reflectionsDone.filter((t) => t.reflection.badge === 'BRONZE').length,
+        },
+        averageRatingGiven: ratings.length
+          ? Number((ratings.reduce((sum, t) => sum + (t.studentRating as number), 0) / ratings.length).toFixed(1))
+          : null,
+      },
+      timeline,
+    };
   },
 };
 
-/** One answered prompt, snapshotted at submit time. */
+/**
+ * One answered prompt, snapshotted at submit time.
+ *
+ * Rows written before the quiz existed hold only `question` and `answer`; the
+ * rest is optional so those still deserialise. Readers must treat every
+ * optional field as possibly absent.
+ */
 export interface ReflectionEntry {
   question: string;
   answer: string;
+  questionId?: string;
+  type?: string;
+  selectedOptionId?: string | null;
+  correct?: boolean | null;
+  pointsEarned?: number;
+  pointsPossible?: number;
 }

@@ -4,6 +4,10 @@ import {
   DEFAULT_REFLECTION_QUESTIONS as CONSTANTS_DEFAULT_REFLECTION_QUESTIONS,
   REFLECTION_QUESTION_COUNT,
   effectiveReflectionQuestions as constantsEffectiveReflectionQuestions,
+  normalizeReflectionQuiz,
+  normalizeSessionTopics,
+  ReflectionQuestion,
+  SessionTopic,
 } from '@futurespark/constants';
 
 const FALLBACK_REFLECTION_QUESTIONS = [
@@ -132,6 +136,19 @@ export const normalizeReflectionQuestions = (value: any): string[] => {
   return cleaned.slice(0, REFLECTION_QUESTION_COUNT);
 };
 
+/**
+ * The shared normalisers throw plain Errors so `@futurespark/constants` stays
+ * framework-free. Everything they reject is a client mistake, so they surface
+ * as 400s rather than escaping as 500s.
+ */
+const asBadRequest = <T>(fn: () => T): T => {
+  try {
+    return fn();
+  } catch (err: any) {
+    throw new AppError(err?.message || 'Invalid request body', HTTP_STATUS.BAD_REQUEST);
+  }
+};
+
 export interface CreateSessionInput {
   title: string;
   order: number;
@@ -142,6 +159,8 @@ export interface CreateSessionInput {
   programId?: string | null;
   credits?: number;
   reflectionQuestions?: string[];
+  reflectionQuiz?: ReflectionQuestion[];
+  topics?: SessionTopic[];
 }
 
 export const validateCreateSession = (data: any): CreateSessionInput => {
@@ -170,6 +189,9 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
     credits: typeof data.credits === 'number' ? data.credits : undefined,
     reflectionQuestions:
       data.reflectionQuestions === undefined ? undefined : normalizeReflectionQuestions(data.reflectionQuestions),
+    reflectionQuiz:
+      data.reflectionQuiz === undefined ? undefined : asBadRequest(() => normalizeReflectionQuiz(data.reflectionQuiz)),
+    topics: data.topics === undefined ? undefined : asBadRequest(() => normalizeSessionTopics(data.topics)),
   };
 };
 
@@ -206,9 +228,15 @@ export const validateUpdateSession = (data: any): Partial<CreateSessionInput> =>
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
-  // Throws on its own if malformed, so it stays outside the errors array.
+  // These throw on their own if malformed, so they stay outside the errors array.
   if (data.reflectionQuestions !== undefined) {
     out.reflectionQuestions = normalizeReflectionQuestions(data.reflectionQuestions);
+  }
+  if (data.reflectionQuiz !== undefined) {
+    out.reflectionQuiz = asBadRequest(() => normalizeReflectionQuiz(data.reflectionQuiz));
+  }
+  if (data.topics !== undefined) {
+    out.topics = asBadRequest(() => normalizeSessionTopics(data.topics));
   }
   return out;
 };

@@ -120,14 +120,32 @@ export class GoogleAuthService {
     let account: any = null;
     try {
       account = await withDbRetry(() => db.googleAccount.findUnique({ where: { workspaceEmail: email } }));
-      if (!account || !account.connected) {
-        account = await withDbRetry(() => db.googleAccount.findFirst({ where: { connected: true } }));
+      // `connected` is a cached verdict, not the truth. A single transient
+      // refresh failure — a network blip, Google briefly 503-ing — flips it
+      // false, and treating that as final meant a perfectly good refresh token
+      // sitting in the row was never tried again. Every Drive and Calendar call
+      // then failed with "no refresh token set" until someone re-ran the OAuth
+      // consent flow by hand. A stored refresh token is worth attempting; if it
+      // really is dead the refresh below fails and we fall back then.
+      if (!account?.refreshToken) {
+        const fallback = await withDbRetry(() =>
+          db.googleAccount.findFirst({
+            where: { connected: true },
+          })
+        );
+        account = fallback ?? account;
       }
     } catch (dbErr: any) {
       logger.warn(`[GoogleAuthService] DB lookup failed: ${dbErr.message}`);
     }
 
-    if (!account || !account.connected) {
+    if (account && !account.connected && account.refreshToken) {
+      logger.info(
+        `[GoogleAuthService] ${account.workspaceEmail} is marked disconnected but still holds a refresh token — retrying it.`
+      );
+    }
+
+    if (!account || !account.refreshToken) {
       logger.info(`[GoogleAuthService] Account ${email} not in DB or DB offline. Initializing Google OAuth client from environment/fallback...`);
       const oauth2Client = this.getOAuth2Client();
       const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || '';
@@ -169,6 +187,9 @@ export class GoogleAuthService {
             data: {
               accessToken: encryptedNewAccess,
               tokenExpiry: newExpiry,
+              // A successful refresh proves the account works, so clear any
+              // `connected: false` left behind by an earlier transient failure.
+              connected: true,
             },
           });
 

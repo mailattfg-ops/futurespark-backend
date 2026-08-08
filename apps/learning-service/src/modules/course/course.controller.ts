@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { successResponse } from '@futurespark/response';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, defaultReflectionQuiz, stripAnswerKey, canSeeAnswerKey } from '@futurespark/constants';
 import { courseService } from './course.service';
 import {
   validateCreateProgram,
@@ -9,6 +9,19 @@ import {
   validateUpdateSession,
   DEFAULT_REFLECTION_QUESTIONS,
 } from './course.schema';
+
+/**
+ * The session catalogue is readable by every signed-in role, students included,
+ * so the quiz answer key has to come off before it leaves the service. Only
+ * admins and instructors — the people who build the quiz — see which option is
+ * correct.
+ */
+const redactForCaller = <T extends { reflectionQuiz?: any }>(session: T, role: string | undefined): T =>
+  canSeeAnswerKey(role) || !Array.isArray(session.reflectionQuiz)
+    ? session
+    : { ...session, reflectionQuiz: stripAnswerKey(session.reflectionQuiz) };
+
+const callerRole = (req: Request): string | undefined => req.headers['x-user-role'] as string | undefined;
 
 export const courseController = {
   // ── Program ──────────────────────────────────────────────────
@@ -21,17 +34,32 @@ export const courseController = {
 
   async getAllPrograms(req: Request, res: Response) {
     const result = await courseService.getAllPrograms();
-    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Programs fetched'));
+    const role = callerRole(req);
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse(
+        result.map((p) => ({ ...p, sessions: p.sessions.map((s) => redactForCaller(s, role)) })),
+        'Programs fetched'
+      )
+    );
   },
 
   async getAllSessions(req: Request, res: Response) {
     const result = await courseService.getAllSessions();
-    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Sessions fetched'));
+    const role = callerRole(req);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(result.map((s) => redactForCaller(s, role)), 'Sessions fetched'));
   },
 
   async getProgramById(req: Request, res: Response) {
     const result = await courseService.getProgramById(req.params.id);
-    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Program fetched'));
+    const role = callerRole(req);
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse(
+        { ...result, sessions: result.sessions.map((s) => redactForCaller(s, role)) },
+        'Program fetched'
+      )
+    );
   },
 
   async updateProgram(req: Request, res: Response) {
@@ -76,10 +104,16 @@ export const courseController = {
   },
 
   /** Lets the admin UI offer "reset to defaults" without hardcoding the list. */
+  /**
+   * Powers "Reset to defaults" in the admin editors. `data` stays the bare
+   * string array the original text editor consumes; the quiz builder reads
+   * `quiz` off the same response, so one endpoint serves both.
+   */
   async getDefaultReflectionQuestions(_req: Request, res: Response) {
-    return res
-      .status(HTTP_STATUS.OK)
-      .json(successResponse(DEFAULT_REFLECTION_QUESTIONS, 'Default reflection questions fetched'));
+    return res.status(HTTP_STATUS.OK).json({
+      ...successResponse(DEFAULT_REFLECTION_QUESTIONS, 'Default reflection questions fetched'),
+      quiz: defaultReflectionQuiz(),
+    });
   },
 
   async deleteSession(req: Request, res: Response) {

@@ -12,6 +12,56 @@ export interface CalendarEventInput {
   attendees: string[]; // array of emails
 }
 
+/**
+ * Google answers a burst of writes with 403 rateLimitExceeded / usageLimits or
+ * 429, and those clear on their own within seconds. Booking a 12-session
+ * programme fires twelve creates back to back, so without this the whole
+ * booking failed on a limit that had already lifted by the time the user read
+ * the error.
+ *
+ * Only retries limit errors — a bad token or malformed event is returned
+ * immediately, since repeating those just burns more quota.
+ */
+const RETRYABLE_REASONS = new Set([
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'quotaExceeded',
+  'backendError',
+]);
+
+const isRetryableGoogleError = (err: any): boolean => {
+  const status = err?.code ?? err?.response?.status;
+  if (status === 429 || status === 500 || status === 503) return true;
+  if (status !== 403) return false;
+  const errors = err?.errors ?? err?.response?.data?.error?.errors ?? [];
+  if (errors.some((e: any) => RETRYABLE_REASONS.has(e?.reason))) return true;
+  // Some quota rejections arrive with only the human-readable message.
+  return /usage limits|rate limit|quota/i.test(err?.message ?? '');
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function withCalendarRetry<T>(label: string, fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt === attempts || !isRetryableGoogleError(err)) throw err;
+      // Exponential backoff with jitter, so parallel bookings do not resynchronise
+      // and collide on the retry.
+      const delay = Math.round(500 * 2 ** (attempt - 1) * (1 + Math.random() * 0.4));
+      logger.warn(
+        `[GoogleCalendar] ${label} hit a rate limit (attempt ${attempt}/${attempts}). ` +
+        `Retrying in ${delay}ms — ${err.message}`
+      );
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
 export class GoogleCalendarService {
   static async createMeetEvent(workspaceEmail: string, input: CalendarEventInput) {
     const auth = await GoogleAuthService.getClientForEmail(workspaceEmail);
@@ -39,11 +89,18 @@ export class GoogleCalendarService {
       },
     };
 
-    const response = await calendar.events.insert({
-      calendarId: 'primary',
-      requestBody: event,
-      conferenceDataVersion: 1,
-    });
+    const response = await withCalendarRetry('createMeetEvent', () =>
+      calendar.events.insert({
+        calendarId: 'primary',
+        requestBody: event,
+        conferenceDataVersion: 1,
+        // Attendees are still on the event (they need it for Meet admission and
+        // it shows in their own calendar), but Google does not email them.
+        // Invitation email is the most aggressively throttled part of the
+        // Calendar API, and the app already notifies both parties itself.
+        sendUpdates: 'none',
+      })
+    );
 
     const createdEvent = response.data;
     const meetLink = createdEvent.conferenceData?.entryPoints?.find(
@@ -96,11 +153,14 @@ export class GoogleCalendarService {
         : {}),
     };
 
-    const response = await calendar.events.update({
-      calendarId: 'primary',
-      eventId,
-      requestBody: updatedRequestBody,
-    });
+    const response = await withCalendarRetry('updateMeetEvent', () =>
+      calendar.events.update({
+        calendarId: 'primary',
+        eventId,
+        requestBody: updatedRequestBody,
+        sendUpdates: 'none',
+      })
+    );
 
     const updatedEvent = response.data;
     const meetLink = updatedEvent.conferenceData?.entryPoints?.find(
@@ -145,10 +205,13 @@ export class GoogleCalendarService {
     const auth = await GoogleAuthService.getClientForEmail(workspaceEmail);
     const calendar = google.calendar({ version: 'v3', auth });
 
-    await calendar.events.delete({
-      calendarId: 'primary',
-      eventId,
-    });
+    await withCalendarRetry('deleteMeetEvent', () =>
+      calendar.events.delete({
+        calendarId: 'primary',
+        eventId,
+        sendUpdates: 'none',
+      })
+    );
 
     return { eventId, status: 'CANCELLED' };
   }

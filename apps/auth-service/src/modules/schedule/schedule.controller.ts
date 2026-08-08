@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { successResponse } from '@futurespark/response';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, ReflectionResponse } from '@futurespark/constants';
 import { scheduleService } from './schedule.service';
 import { validateCreateSchedule, validateUpdateSchedule } from './schedule.schema';
 
@@ -104,20 +104,70 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection fetched successfully'));
   },
 
+  /**
+   * Accepts either shape:
+   *   { responses: [{ questionId, answer?, selectedOptionId? }] }  — the quiz
+   *   { answers: ["...", "..."] }                                  — legacy text
+   * The legacy form is mapped positionally, which is how the grader falls back
+   * when a questionId is missing.
+   */
   async submitReflection(req: Request, res: Response) {
-    const { answers } = req.body;
-    if (!Array.isArray(answers)) {
+    const { responses, answers } = req.body;
+
+    let normalized: ReflectionResponse[];
+    if (Array.isArray(responses)) {
+      normalized = responses.map((r: any) => ({
+        questionId: typeof r?.questionId === 'string' ? r.questionId : '',
+        answer: typeof r?.answer === 'string' ? r.answer : undefined,
+        selectedOptionId: typeof r?.selectedOptionId === 'string' ? r.selectedOptionId : null,
+      }));
+    } else if (Array.isArray(answers)) {
+      normalized = answers.map((a: any) => ({
+        questionId: '',
+        answer: typeof a === 'string' ? a : '',
+      }));
+    } else {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({
         success: false,
-        message: 'Body must contain an "answers" array, one entry per question.',
+        message: 'Body must contain a "responses" array, one entry per question.',
       });
     }
+
     const result = await scheduleService.submitReflection(
       req.params.id,
-      answers.map((a: any) => (typeof a === 'string' ? a : '')),
+      normalized,
       req.headers['x-user-id'] as string | undefined,
       req.headers['x-user-role'] as string | undefined
     );
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection submitted successfully'));
+  },
+
+  /** Internal: integration-service reporting that a Meet room emptied. */
+  async markRoomEnded(req: Request, res: Response) {
+    const { meetingLink, endedAt } = req.body;
+    if (!meetingLink || typeof meetingLink !== 'string') {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: 'Body must contain a "meetingLink".',
+      });
+    }
+    const when = endedAt ? new Date(endedAt) : new Date();
+    if (Number.isNaN(when.getTime())) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: '"endedAt" is not a valid timestamp.',
+      });
+    }
+    const result = await scheduleService.markRoomEnded(meetingLink, when);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Room end recorded'));
+  },
+
+  async getStudentOverview(req: Request, res: Response) {
+    const overview = await scheduleService.getStudentOverview(
+      req.params.studentId,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(overview, 'Student overview fetched successfully'));
   },
 };

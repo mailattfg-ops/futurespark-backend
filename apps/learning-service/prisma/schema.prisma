@@ -78,6 +78,13 @@ model Session {
   // Post-class reflection prompts the student answers before the next class.
   // Empty means "not customised" — readers fall back to the platform defaults.
   reflectionQuestions String[] @default([])
+  // The typed quiz that supersedes the plain prompts above. Shape:
+  // ReflectionQuestion[] from @futurespark/constants. Null/empty means the
+  // session has no custom quiz and readers fall back to the prompts, then to
+  // the platform defaults.
+  reflectionQuiz Json?
+  // Mind map of what this session covers. Shape: SessionTopic[].
+  topics        Json?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -133,6 +140,13 @@ model ScheduledClass {
   classSummary        String?  @db.Text
   interactionMetrics  Json?
   transcriptionStatus String   @default("NOT_STARTED")
+  reflectionAnswers     Json?
+  reflectionSubmittedAt DateTime?
+  reflectionScore       Int?
+  reflectionMaxScore    Int?
+  reflectionBadge       String?
+  rescheduledCount      Int      @default(0)
+  actualEndedAt         DateTime?
 
   @@schema("auth")
 }

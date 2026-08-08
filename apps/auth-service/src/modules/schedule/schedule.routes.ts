@@ -5,6 +5,11 @@ import { scheduleController } from './schedule.controller';
 const router = Router();
 
 router.get('/mentors', asyncHandler(scheduleController.listMentors));
+// Internal, service-to-service: the presence poller reporting an emptied room.
+// Not exposed through the gateway.
+router.post('/internal/room-ended', asyncHandler(scheduleController.markRoomEnded));
+// Static prefix, so "students" is never matched as a class id by "/:id".
+router.get('/students/:studentId/overview', asyncHandler(scheduleController.getStudentOverview));
 router.get('/reports', asyncHandler(scheduleController.listReports));
 router.post('/reports', asyncHandler(scheduleController.createReport));
 router.put('/reports/:id', asyncHandler(scheduleController.updateReport));
