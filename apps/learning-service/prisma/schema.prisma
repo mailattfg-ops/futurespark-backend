@@ -146,6 +146,7 @@ model ScheduledClass {
   reflectionMaxScore    Int?
   reflectionBadge       String?
   rescheduledCount      Int      @default(0)
+  actualEndedAt         DateTime?
 
   @@schema("auth")
 }

@@ -8,6 +8,7 @@ import {
   effectiveSessionTopics,
   gradeReflection,
   deriveAttendance,
+  owesReflection,
   stripAnswerKey,
   ReflectionResponse,
 } from '@futurespark/constants';
@@ -706,10 +707,78 @@ export const scheduleService = {
     });
   },
 
+  /**
+   * Records that a Meet room emptied after a real meeting, for whichever class
+   * was using that link.
+   *
+   * Called by integration-service's presence poller, which can see the room but
+   * cannot reach the auth schema to write this itself. Deliberately narrow:
+   * it stamps `actualEndedAt` and nothing else. It does not set status, award
+   * credits or notify anyone — a robot noticing an empty room is evidence the
+   * class happened, not a decision that it went well.
+   *
+   * Idempotent, and only ever applies to the class whose slot the meeting fell
+   * in: one Meet link can be shared by all 40 sessions of a programme, so
+   * matching on link alone would stamp the wrong week.
+   */
+  async markRoomEnded(meetingLink: string, endedAt: Date) {
+    if (!meetingLink) return { updated: 0 };
+
+    // The class must have been *running* when the room emptied: started already,
+    // and not so long finished that this is clearly a different session.
+    //
+    // Matching merely "near" the timestamp is not enough. One Meet link is shared
+    // by every session of a programme, so a loose window lets a second, older
+    // class match once the correct one has been stamped — which is exactly what
+    // happened: a 19:10 room-end landed on a class scheduled for 20:00.
+    const OVERRUN_GRACE_MS = 60 * 60 * 1000;
+
+    const candidates = await db.scheduledClass.findMany({
+      where: {
+        meetingLink,
+        status: { notIn: ['CANCELLED'] },
+        startTime: { lte: endedAt },
+        endTime: { gte: new Date(endedAt.getTime() - OVERRUN_GRACE_MS) },
+      },
+      select: { id: true, startTime: true, actualEndedAt: true },
+      orderBy: { startTime: 'desc' },
+    });
+
+    // Only ever the single most recent class that was live at that moment. If it
+    // is already stamped, this is a repeat report from the 30-second poller and
+    // there is nothing to do — never fall through to an earlier class.
+    const target = candidates[0];
+    if (!target || target.actualEndedAt) return { updated: 0 };
+
+    await db.scheduledClass.update({
+      where: { id: target.id },
+      data: { actualEndedAt: endedAt },
+    });
+
+    logger.info(
+      `[Presence] Class ${target.id} recorded as actually ended at ${endedAt.toISOString()} ` +
+      `(room ${meetingLink} emptied). Status left untouched for the mentor to confirm.`
+    );
+    return { updated: 1, classId: target.id };
+  },
+
   async rateClass(id: string, rating: number, feedback?: string) {
     const scheduledClass = await db.scheduledClass.findUnique({ where: { id } });
     if (!scheduledClass) {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    // You can only rate a class that actually took place. A slot whose time has
+    // merely elapsed is not evidence the class ran, and rating a mentor for a
+    // lesson that never happened would quietly corrupt their average. Either the
+    // mentor marking it complete or the Meet room emptying after a real meeting
+    // counts as evidence.
+    if (deriveAttendance(scheduledClass) !== 'ATTENDED') {
+      throw new AppError(
+        scheduledClass.status === 'CANCELLED'
+          ? 'This class was cancelled and cannot be rated'
+          : 'You can rate a mentor once the class has finished',
+        HTTP_STATUS.BAD_REQUEST
+      );
     }
     return db.scheduledClass.update({
       where: { id },
@@ -798,7 +867,16 @@ export const scheduleService = {
   ) {
     const scheduledClass = await db.scheduledClass.findUnique({
       where: { id: classId },
-      select: { id: true, studentId: true, sessionId: true, status: true, endTime: true },
+      select: {
+        id: true,
+        studentId: true,
+        sessionId: true,
+        status: true,
+        startTime: true,
+        endTime: true,
+        actualEndedAt: true,
+        rescheduledCount: true,
+      },
     });
     if (!scheduledClass) {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
@@ -816,13 +894,23 @@ export const scheduleService = {
       }
     }
 
-    // Reflection is a *post*-class activity — the class must be over.
-    const classIsOver = scheduledClass.status === 'COMPLETED' || scheduledClass.endTime.getTime() <= Date.now();
-    if (!classIsOver) {
-      throw new AppError('This class has not finished yet', HTTP_STATUS.BAD_REQUEST);
-    }
-    if (scheduledClass.status === 'CANCELLED') {
-      throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
+    // You can only reflect on a class you actually attended. Two things prove
+    // that: the mentor marked it complete, or the Meet room was used and then
+    // emptied. A slot whose clock simply ran out proves nothing — it is
+    // indistinguishable from the student never turning up — so it is refused.
+    // ADMIN bypasses for support fixes.
+    if (callerRole !== 'ADMIN') {
+      if (scheduledClass.status === 'CANCELLED') {
+        throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
+      }
+      if (deriveAttendance(scheduledClass) !== 'ATTENDED') {
+        throw new AppError(
+          scheduledClass.endTime.getTime() > Date.now()
+            ? 'This class has not finished yet'
+            : 'This class is not recorded as attended yet',
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
     }
 
     const session = scheduledClass.sessionId
@@ -961,6 +1049,7 @@ export const scheduleService = {
         status: c.status,
         classType: c.classType,
         attendance: deriveAttendance(c, now),
+        actualEndedAt: c.actualEndedAt,
         rescheduledCount: c.rescheduledCount,
         rescheduleReason: c.rescheduleReason,
         creditsAwarded: c.creditsAwarded,
@@ -975,8 +1064,7 @@ export const scheduleService = {
           maxScore: c.reflectionMaxScore,
           badge: c.reflectionBadge,
           answers,
-          // Owed once the slot has passed and the class was not cancelled.
-          pending: !c.reflectionSubmittedAt && c.status !== 'CANCELLED' && c.endTime.getTime() <= now,
+          pending: owesReflection(c, now),
         },
       };
     });

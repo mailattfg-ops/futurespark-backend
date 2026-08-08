@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import * as fs from "fs";
 import { logger } from "@futurespark/logger";
@@ -145,6 +145,29 @@ export const S3Storage = {
 
     const str = await body.transformToString();
     return str;
+  },
+
+  /**
+   * Is this key actually in the bucket?
+   *
+   * `getPresignedUrl` signs any key it is handed, existing or not, so a caller
+   * that redirects blindly sends the browser to a URL that answers with S3's
+   * NoSuchKey XML. Callers with another source for the file — a Drive stream,
+   * say — should check here first and fall through instead.
+   *
+   * Returns false on any error, including permission problems: the caller's
+   * fallback is always safer than a redirect that might 404.
+   */
+  async objectExists(s3Key: string): Promise<boolean> {
+    const client = getS3Client();
+    const bucket = getBucketName();
+    if (!client || !bucket) return false;
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: s3Key }));
+      return true;
+    } catch {
+      return false;
+    }
   },
 
   async getPresignedUrl(s3Key: string, expiresInSeconds: number = 3600): Promise<string> {

@@ -142,6 +142,26 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection submitted successfully'));
   },
 
+  /** Internal: integration-service reporting that a Meet room emptied. */
+  async markRoomEnded(req: Request, res: Response) {
+    const { meetingLink, endedAt } = req.body;
+    if (!meetingLink || typeof meetingLink !== 'string') {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: 'Body must contain a "meetingLink".',
+      });
+    }
+    const when = endedAt ? new Date(endedAt) : new Date();
+    if (Number.isNaN(when.getTime())) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({
+        success: false,
+        message: '"endedAt" is not a valid timestamp.',
+      });
+    }
+    const result = await scheduleService.markRoomEnded(meetingLink, when);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Room end recorded'));
+  },
+
   async getStudentOverview(req: Request, res: Response) {
     const overview = await scheduleService.getStudentOverview(
       req.params.studentId,

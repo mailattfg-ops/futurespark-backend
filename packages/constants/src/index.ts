@@ -446,6 +446,11 @@ export interface AttendanceInput {
   startTime: string | Date;
   endTime?: string | Date | null;
   rescheduledCount?: number | null;
+  /**
+   * When the Meet room actually emptied after a real meeting. Independent
+   * evidence the class took place, which `status` cannot provide on its own.
+   */
+  actualEndedAt?: string | Date | null;
 }
 
 export const ATTENDANCE_LABELS: Record<AttendanceState, string> = {
@@ -456,17 +461,53 @@ export const ATTENDANCE_LABELS: Record<AttendanceState, string> = {
   UPCOMING: 'Upcoming',
 };
 
+/**
+ * Does this class still owe a reflection quiz?
+ *
+ * Only classes the student actually attended. A missed class has nothing to
+ * reflect on, and answers about a lesson the student was not in would be
+ * worthless to the mentor reading them.
+ *
+ * The practical consequence is that the quiz appears once the mentor marks the
+ * class complete, not the moment the slot ends — until then nothing in the data
+ * distinguishes "the student did not turn up" from "the mentor has not marked
+ * it yet", and guessing wrong in that direction is the worse failure.
+ */
+export const owesReflection = (
+  cls: AttendanceInput & { reflectionSubmittedAt?: Date | string | null },
+  nowMs: number = Date.now()
+): boolean => !cls.reflectionSubmittedAt && deriveAttendance(cls, nowMs) === 'ATTENDED';
+
 export const deriveAttendance = (cls: AttendanceInput, nowMs: number = Date.now()): AttendanceState => {
   if (cls.status === 'CANCELLED') return 'CANCELLED';
   // A completed class counts as attended even if it had to be moved first.
   if (cls.status === 'COMPLETED') return 'ATTENDED';
+  // The room was used and then emptied. That is direct evidence the class ran,
+  // so it counts as attended without waiting for the mentor to click Complete —
+  // which is what previously left a real class showing as MISSED for days.
+  if (cls.actualEndedAt) return 'ATTENDED';
 
   const start = new Date(cls.startTime).getTime();
   const end = cls.endTime ? new Date(cls.endTime).getTime() : start + 90 * 60 * 1000;
 
   if (cls.status === 'RESCHEDULE_REQUESTED') return 'POSTPONED';
-  // Past its slot and never marked complete — nobody recorded it happening.
+  // Past its slot with no sign anyone was ever in the room.
   if (end <= nowMs) return 'MISSED';
   if ((cls.rescheduledCount ?? 0) > 0) return 'POSTPONED';
   return 'UPCOMING';
+};
+
+/**
+ * Is this class finished — by any evidence at all?
+ *
+ * Three independent signals, in order of confidence: the mentor marked it, the
+ * Meet room emptied after a real meeting, or the allotted slot simply ran out.
+ * Used to decide whether to keep offering a Join button.
+ */
+export const isClassOver = (cls: AttendanceInput, nowMs: number = Date.now()): boolean => {
+  if (cls.status === 'COMPLETED' || cls.status === 'CANCELLED') return true;
+  if (cls.actualEndedAt) return true;
+  const start = new Date(cls.startTime).getTime();
+  const end = cls.endTime ? new Date(cls.endTime).getTime() : start + 90 * 60 * 1000;
+  return end <= nowMs;
 };

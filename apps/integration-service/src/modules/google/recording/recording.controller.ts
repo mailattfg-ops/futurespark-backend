@@ -6,6 +6,7 @@ import { logger } from '@futurespark/logger';
 import * as fs from 'fs';
 import { S3Storage, getS3KeyForRecording } from '@futurespark/storage';
 import * as path from 'path';
+import { createStreamToken, verifyStreamToken } from './stream-token';
 
 export class GoogleRecordingController {
   static async list(req: Request, res: Response) {
@@ -86,24 +87,66 @@ export class GoogleRecordingController {
     }
   }
 
-  static async stream(req: Request, res: Response) {
+  /**
+   * Mints a short-lived link for one recording. Authenticated at the gateway,
+   * which is what makes the otherwise-public stream route safe.
+   */
+  static async mediaToken(req: Request, res: Response) {
     try {
       const { id } = req.params;
       const recording = await GoogleRecordingService.getRecordingById(id);
       if (!recording) {
         return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Recording not found.'));
       }
+      const { token, expiresAt } = createStreamToken(id);
+      return res.status(HTTP_STATUS.OK).json(
+        successResponse({ token, expiresAt }, 'Stream token issued.')
+      );
+    } catch (err: any) {
+      logger.error(`Error issuing stream token: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse('Could not issue a stream token.'));
+    }
+  }
+
+  static async stream(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+
+      // This route is deliberately unauthenticated at the gateway — a <video>
+      // element cannot send an Authorization header — so the signed token in the
+      // query string is the only thing standing between a recording of a child's
+      // class and the open internet. Check it before touching anything else.
+      if (!verifyStreamToken(id, req.query.token)) {
+        logger.warn(`[GoogleRecordingController] Rejected unsigned stream request for recording ${id}`);
+        return res
+          .status(HTTP_STATUS.UNAUTHORIZED)
+          .json(errorResponse('This media link is missing, invalid, or has expired.'));
+      }
+
+      const recording = await GoogleRecordingService.getRecordingById(id);
+      if (!recording) {
+        return res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Recording not found.'));
+      }
 
       const isAudio = req.query.type === 'audio';
+      // Hoisted: both the local-disk path and the live Drive path need it.
+      const range = req.headers.range;
 
       // 1. Prefer local disk file if present (Enables HTTP 206 Partial Content seeking!)
       const rawFilePath = (isAudio && recording.audioPath) ? recording.audioPath : recording.videoPath;
       let filePath = rawFilePath;
 
+      // Only redirect to S3 once the object is confirmed present. A recording
+      // can carry a videoPath whose upload never completed, and signing that key
+      // regardless sent the player to a URL answering with S3's NoSuchKey XML —
+      // which surfaced as a dead video even though Drive had the file all along.
       if (S3Storage.isS3Enabled() && filePath && !fs.existsSync(filePath)) {
-        const presignedUrl = await S3Storage.getPresignedUrl(filePath, 3600);
-        logger.info(`[GoogleRecordingController] Redirecting stream request to S3 presigned URL: ${presignedUrl}`);
-        return res.redirect(presignedUrl);
+        if (await S3Storage.objectExists(filePath)) {
+          const presignedUrl = await S3Storage.getPresignedUrl(filePath, 3600);
+          logger.info(`[GoogleRecordingController] Redirecting stream request to S3 presigned URL for ${filePath}`);
+          return res.redirect(presignedUrl);
+        }
+        logger.info(`[GoogleRecordingController] ${filePath} is not in S3 — streaming from Drive instead.`);
       }
       if (filePath && !path.isAbsolute(filePath)) {
         filePath = path.resolve(process.cwd(), 'apps/integration-service', filePath);
@@ -115,7 +158,6 @@ export class GoogleRecordingController {
       if (filePath && fs.existsSync(filePath)) {
         const stat = fs.statSync(filePath);
         const fileSize = stat.size;
-        const range = req.headers.range;
         const contentType = isAudio ? 'audio/mpeg' : 'video/mp4';
 
         if (range) {
@@ -144,26 +186,35 @@ export class GoogleRecordingController {
         return;
       }
 
-      // 2. Direct Cloud Streaming from Google Drive if file is not local yet
+      // 2. Live cloud streaming straight from Google Drive when the file has not
+      //    been downloaded. Downloading a 90-minute class first is unnecessary
+      //    just to review it, so this is the normal path, not a fallback.
       if (recording.driveFileId && !recording.driveFileId.startsWith('mock_') && !recording.driveFileId.startsWith('pending_')) {
         try {
-          logger.info(`[GoogleRecordingController] Direct Live Cloud Streaming for file ID: ${recording.driveFileId} from Google Drive...`);
+          logger.info(`[GoogleRecordingController] Live Drive stream for file ${recording.driveFileId}${range ? ` (range ${range})` : ''}`);
           const { GoogleDriveService } = await import('../drive/drive.service');
-          const driveStream = await GoogleDriveService.downloadFileStream(
+          const { stream, status, headers } = await GoogleDriveService.streamFileRange(
             recording.meeting?.organizerEmail || 'rec@meet.finquojunior.com',
-            recording.driveFileId
+            recording.driveFileId,
+            range
           );
 
-          res.status(200);
+          // Mirror what Drive answered so the browser can seek. Drive replies 206
+          // with a Content-Range when a Range was sent; anything else is a plain
+          // 200 and the player falls back to linear playback.
+          res.status(status === 206 ? 206 : 200);
           res.set({
-            'Content-Type': isAudio ? 'audio/mpeg' : 'video/mp4',
+            'Content-Type': headers['content-type'] || (isAudio ? 'audio/mpeg' : 'video/mp4'),
             'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=3600',
+            ...(headers['content-length'] ? { 'Content-Length': headers['content-length'] } : {}),
+            ...(headers['content-range'] ? { 'Content-Range': headers['content-range'] } : {}),
+            // Class recordings are personal data — never let a shared cache hold them.
+            'Cache-Control': 'private, max-age=3600',
           });
-          driveStream.pipe(res);
+          stream.pipe(res);
           return;
         } catch (e: any) {
-          logger.warn(`Direct Google Drive cloud stream failed (${e.message}). Falling back...`);
+          logger.warn(`Live Google Drive stream failed (${e.message}). Falling back...`);
         }
       }
 
