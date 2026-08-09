@@ -58,10 +58,12 @@ export class GoogleMeetingsService {
       // SCHEDULED. Handing back a cancelled room looks fine — the Meet link still
       // works — but attendees see it cancelled, and Meet stops naming recordings
       // after the class, falling back to "abc-defg-hij (2026-08-06 14:32 …)".
-      const stillActive = await GoogleCalendarService.isEventActive(
-        sameBooking.organizerEmail,
-        sameBooking.calendarEventId
-      );
+      const stillActive = sameBooking.calendarEventId
+        ? await GoogleCalendarService.isEventActive(
+            sameBooking.organizerEmail,
+            sameBooking.calendarEventId
+          )
+        : true;
 
       if (stillActive === false) {
         logger.warn(
@@ -219,14 +221,16 @@ export class GoogleMeetingsService {
     logger.info(`Updating Google Calendar Event ${meeting.calendarEventId} for Workspace: ${meeting.organizerEmail}`);
 
     // Update in Google Calendar
-    const googleEvent = await GoogleCalendarService.updateMeetEvent(meeting.organizerEmail, meeting.calendarEventId, {
-      title: input.title,
-      description: input.description,
-      startTime: input.startTime,
-      endTime: input.endTime,
-      timezone: input.timezone,
-      attendees: input.attendees,
-    });
+    if (meeting.calendarEventId) {
+      await GoogleCalendarService.updateMeetEvent(meeting.organizerEmail, meeting.calendarEventId, {
+        title: input.title,
+        description: input.description,
+        startTime: input.startTime,
+        endTime: input.endTime,
+        timezone: input.timezone,
+        attendees: input.attendees,
+      });
+    }
 
     // Update local database
     const updated = await db.meeting.update({
@@ -247,7 +251,7 @@ export class GoogleMeetingsService {
       id: updated.id,
       calendarEventId: updated.calendarEventId,
       meetLink: updated.meetUrl,
-      calendarLink: googleEvent.calendarLink,
+      calendarLink: updated.meetUrl,
       startTime: updated.startTime.toISOString(),
       endTime: updated.endTime.toISOString(),
     };
@@ -312,7 +316,9 @@ export class GoogleMeetingsService {
 
     try {
       // Delete event in Google Calendar
-      await GoogleCalendarService.deleteMeetEvent(meeting.organizerEmail, meeting.calendarEventId);
+      if (meeting.calendarEventId) {
+        await GoogleCalendarService.deleteMeetEvent(meeting.organizerEmail, meeting.calendarEventId);
+      }
     } catch (err: any) {
       // Soft handling: if it was already deleted on Calendar, log it and proceed
       logger.warn(`Google Calendar event deletion failed (might have been removed directly on Google): ${err.message}`);

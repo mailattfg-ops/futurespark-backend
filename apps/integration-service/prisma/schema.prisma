@@ -26,10 +26,31 @@ model GoogleAccount {
   updatedAt      DateTime  @updatedAt
 }
 
+model ZoomAccount {
+  id             String    @id @default(uuid())
+  accountEmail   String    @unique
+  accountType    String    @default("SERVER_TO_SERVER") // "SERVER_TO_SERVER" | "OAUTH"
+  accountId      String?
+  clientId       String?
+  clientSecret   String?
+  accessToken    String?
+  refreshToken   String?
+  tokenExpiry    DateTime?
+  connected      Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
 model Meeting {
   id                 String             @id @default(uuid())
-  calendarEventId    String             @unique
+  provider           String             @default("GOOGLE_MEET") // "GOOGLE_MEET" | "ZOOM"
+  calendarEventId    String?            @unique
   conferenceId       String?
+  zoomMeetingId      String?            @unique
+  zoomJoinUrl        String?
+  zoomStartUrl       String?
+  zoomPasscode       String?
+  zoomHostEmail      String?
   meetUrl            String
   title              String
   description        String?
@@ -46,23 +67,24 @@ model Meeting {
   updatedAt          DateTime           @updatedAt
   recordings         MeetingRecording[]
 
-  // ── Live presence, polled from the Meet REST API (spaces.activeConference) ──
-  // The join link opens 30 min early, so clock time alone cannot distinguish
-  // "class running" from "link open, nobody came". These fields carry that.
-  presenceIsLive      Boolean   @default(false) // a conference is active right now
-  presenceFirstJoinAt DateTime? // first time anyone was ever seen in this meeting
-  presenceLastLiveAt  DateTime? // most recent poll that saw an active conference
-  presenceCheckedAt   DateTime? // most recent poll of any kind (staleness guard)
+  // ── Live presence (Google Meet spaces.activeConference or Zoom live status) ──
+  presenceIsLive      Boolean   @default(false)
+  presenceFirstJoinAt DateTime?
+  presenceLastLiveAt  DateTime?
+  presenceCheckedAt   DateTime?
 }
 
 model MeetingRecording {
   id                   String   @id @default(uuid())
   meetingId            String
   meeting              Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
-  driveFileId          String   @unique
+  driveFileId          String?  @unique
+  zoomRecordingId      String?  @unique
   fileName             String
   fileSize             Int
   duration             Int?     // Duration in seconds
+  downloadUrl          String?
+  playUrl              String?
   videoPath            String?  // Local/storage path for download
   audioPath            String?  // Local/storage path for extracted audio
   downloadStatus       String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"

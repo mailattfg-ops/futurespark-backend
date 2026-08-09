@@ -219,6 +219,44 @@ app.use('/api/google/callback',
   })
 );
 
+// Public Callback for Zoom OAuth (does NOT require JWT auth)
+app.use('/api/zoom/callback',
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/zoom/auth/callback' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable on Zoom callback: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+// Public Zoom Webhooks (URL Validation & Event Delivery)
+app.use('/api/zoom/webhooks',
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/zoom/webhooks' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable on Zoom webhooks: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // Public Stream Route for Google Recordings (No JWT authentication required for browser media players)
 app.use('/api/google/recordings/:id/stream',
   createProxyMiddleware({
@@ -228,6 +266,25 @@ app.use('/api/google/recordings/:id/stream',
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable on stream: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+// Public Stream Route for Zoom Recordings
+app.use('/api/zoom/recordings/:id/stream',
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: (path, req) => (req as express.Request).originalUrl.replace('/api/zoom/recordings/', '/zoom/recordings/'),
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable on Zoom stream: ${err.message}`);
         res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
           success: false,
           message: 'Integration service is temporarily unavailable.',
@@ -286,6 +343,26 @@ app.use('/api/google',
     on: {
       error: (err, _req, res: any) => {
         logger.error(`[Gateway] Integration service unreachable: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Integration service is temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+// Zoom Integration service
+app.use('/api/zoom',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: INTEGRATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/zoom/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Integration service unreachable for Zoom: ${err.message}`);
         res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
           success: false,
           message: 'Integration service is temporarily unavailable.',
