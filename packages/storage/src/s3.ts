@@ -187,6 +187,24 @@ export const S3Storage = {
     return url;
   },
 
+  async getUploadPresignedUrl(s3Key: string, contentType?: string, expiresInSeconds: number = 3600): Promise<string> {
+    const client = getS3Client();
+    const bucket = getBucketName();
+    if (!client || !bucket) {
+      throw new Error("AWS S3 is not configured/enabled.");
+    }
+
+    logger.debug(`[S3Storage] Generating PUT presigned upload URL for key: ${s3Key} (expires in ${expiresInSeconds}s)`);
+    const command = new PutObjectCommand({
+      Bucket: bucket,
+      Key: s3Key,
+      ContentType: contentType,
+    });
+
+    const url = await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+    return url;
+  },
+
   async deleteFile(s3Key: string): Promise<void> {
     const client = getS3Client();
     const bucket = getBucketName();

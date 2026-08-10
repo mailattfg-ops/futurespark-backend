@@ -17,6 +17,36 @@ try {
 }
 
 export class StorageController {
+  static async getPresignedUploadUrl(req: Request, res: Response) {
+    try {
+      const { fileName, contentType } = req.body;
+      if (!fileName) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('fileName is required'));
+      }
+
+      const safeName = fileName.replace(/[^a-zA-Z0-9_\-.]/g, '_');
+      const s3Key = `uploads/sessions/${Date.now()}_${safeName}`;
+
+      if (S3Storage.isS3Enabled()) {
+        const uploadUrl = await S3Storage.getUploadPresignedUrl(s3Key, contentType || 'application/octet-stream', 3600);
+        const fileUrl = `/api/storage/file?key=${encodeURIComponent(s3Key)}`;
+        return res.status(HTTP_STATUS.OK).json(successResponse({
+          direct: true,
+          uploadUrl,
+          key: s3Key,
+          fileUrl,
+        }, 'Presigned upload URL generated'));
+      }
+
+      return res.status(HTTP_STATUS.OK).json(successResponse({
+        direct: false,
+      }, 'Direct S3 upload not available; fallback to standard upload'));
+    } catch (err: any) {
+      logger.error(`Error generating presigned upload URL: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to generate upload URL'));
+    }
+  }
+
   static async upload(req: Request, res: Response) {
     try {
       const file = req.file;

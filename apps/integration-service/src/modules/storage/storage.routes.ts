@@ -10,6 +10,7 @@ const upload = multer({
   },
 });
 
+router.post('/presigned-url', StorageController.getPresignedUploadUrl);
 router.post('/upload', upload.single('file'), StorageController.upload);
 router.get('/file', StorageController.getFile);
 

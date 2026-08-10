@@ -1,6 +1,7 @@
 datasource db {
   provider          = "postgresql"
   url               = env("LEARN_DATABASE_URL")
+  directUrl         = env("LEARN_DATABASE_URL")
   schemas           = ["auth", "learning"]
 }
 
@@ -10,25 +11,257 @@ generator client {
   previewFeatures = ["multiSchema"]
 }
 
+model User {
+  id                String            @id @default(uuid())
+  email             String            @unique
+  passwordHash      String
+  firstName         String?
+  lastName          String?
+  avatarUrl         String?
+  roleId            String?
+  role              Role?             @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  isActive          Boolean           @default(true)
+  requiresFtlReset  Boolean           @default(false)
+  lastLoginAt       DateTime?
+  qualifiedPrograms String[]          @default([]) // Program IDs qualified to teach
+  mentorTypes       String[]          @default(["REGULAR"]) // "REGULAR", "DEMO"
+  qualifications    String?
+  experience        String?
+  state             String?
+  country           String?
+  availabilityMode  String            @default("FIXED") // "FIXED" = only the weekly slots below, "FLEXIBLE" = open to any slot, "UNAVAILABLE" = not taking classes
+  availabilityNote  String?           // Free-text caveat shown to schedulers, e.g. "prefer mornings IST"
+  availabilityUpdatedAt DateTime?
+  timezone          String            @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  refreshTokens     RefreshToken[]
+  mentorSchedules   MentorSchedule[]
+  scheduledClasses  ScheduledClass[]  @relation("MentorClasses")
+  scheduledByClasses ScheduledClass[]  @relation("ScheduledByUser")
+  warningCount      Int               @default(0)
+  warnings          String[]          @default([])
+  schedulerGroupId  String?
+  schedulerGroup    SchedulerGroup?   @relation("GroupMentors", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
+  managedGroups     SchedulerGroup[]  @relation("AssignedScheduler")
+
+  @@schema("auth")
+}
+
+model MentorSchedule {
+  id           String   @id @default(uuid())
+  mentorId     String
+  mentor       User     @relation(fields: [mentorId], references: [id], onDelete: Cascade)
+  weekday      Int      // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+  startTime    String   // "HH:MM" 24-hr format
+  endTime      String   // auto-calculated: startTime + 90 min
+  scheduleType String   @default("REGULAR")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@schema("auth")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g. "ADMIN", "TEACHER", etc.
+  description String?
+  permissions String[] @default([]) // Checked permission keys list
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@schema("auth")
+}
+
+model RefreshToken {
+  id               String         @id @default(uuid())
+  token            String         @unique
+  userId           String?
+  user             User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentAccountId  String?
+  parentAccount    ParentAccount? @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  studentId        String?
+  student          Student?       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  expiresAt        DateTime
+  createdAt        DateTime       @default(now())
+
+  @@schema("auth")
+}
+
+model ParentAccount {
+  id                   String          @id @default(uuid())
+  email                String          @unique
+  passwordHash         String
+  avatarUrl            String?
+  isActive             Boolean         @default(true)
+  requiresFtlReset     Boolean         @default(false)
+  profiles             ParentProfile[]
+  students             Student[]
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  refreshTokens        RefreshToken[]
+  programId            String?
+  program              Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+  paymentApproved      Boolean         @default(false)
+  selectedPlanType     String?         // "FULL" or "INSTALLMENT"
+  paidInstallmentIds   String[]        @default([]) // IDs of paid installments
+  warningCount         Int             @default(0)
+  warnings             String[]        @default([])
+
+  @@schema("auth")
+}
+
+model ParentProfile {
+  id              String        @id @default(uuid())
+  parentAccountId String
+  parentAccount   ParentAccount @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  firstName       String
+  lastName        String
+  phone           String?
+  relationship    String?       // e.g. "Mother", "Father", "Guardian"
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@schema("auth")
+}
+
+model Student {
+  id               String           @id @default(uuid())
+  studentCode      String?          @unique
+  parentAccountId  String
+  parentAccount    ParentAccount    @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  email            String           @unique
+  passwordHash     String
+  firstName        String
+  lastName         String
+  avatarUrl        String?
+  isActive         Boolean          @default(true)
+  requiresFtlReset Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  refreshTokens    RefreshToken[]
+  scheduledClasses ScheduledClass[]
+  paymentApproved  Boolean          @default(false)
+  warningCount     Int              @default(0)
+  warnings         String[]         @default([])
+  credits          Int              @default(0)
+  timezone         String           @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
+  schedulerGroupId String?
+  schedulerGroup   SchedulerGroup?  @relation("GroupStudents", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
+
+  @@schema("auth")
+}
+
+model SchedulerGroup {
+  id           String    @id @default(uuid())
+  name         String    @unique
+  description  String?
+  maxMentors   Int       @default(50)
+  maxStudents  Int       @default(100)
+  schedulerId  String?
+  scheduler    User?     @relation("AssignedScheduler", fields: [schedulerId], references: [id], onDelete: SetNull)
+  mentors      User[]    @relation("GroupMentors")
+  students     Student[] @relation("GroupStudents")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@schema("auth")
+}
+
+model ScheduledClass {
+  id              String    @id @default(uuid())
+  studentId       String?
+  student         Student?  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  mentorId        String
+  mentor          User      @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: Cascade)
+  scheduledById   String?   // Staff User ID who created this booking
+  scheduledBy     User?     @relation("ScheduledByUser", fields: [scheduledById], references: [id], onDelete: SetNull)
+  programId       String    // Program UUID from learning service
+  sessionId       String?   // Session UUID from learning service
+  startTime       DateTime
+  endTime         DateTime
+  status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
+  classType       String    @default("REGULAR")   // "REGULAR", "DEMO"
+  leadId            String?   // Lead UUID if classType is DEMO
+  meetingLink       String?   // Optional Google Meet / Zoom / video call URL
+  rescheduleReason  String?
+  rescheduleMessage String?
+  qaStatus          String    @default("PENDING")   // "PENDING", "PASSED", "FAILED", "FLAGGED"
+  qaFeedback        String?
+  reports           SessionReport[]
+  creditsAwarded    Int?
+  studentRating     Int?
+  studentFeedback   String?
+  reflectionAnswers     Json?
+  reflectionSubmittedAt DateTime?
+  reflectionScore       Int?
+  reflectionMaxScore    Int?
+  reflectionBadge       String?   // "GOLD" | "SILVER" | "BRONZE"
+  rescheduledCount    Int       @default(0)
+  actualEndedAt       DateTime?
+  autoRecording       Boolean   @default(true)
+  recordingUrl        String?
+  transcript          String?   @db.Text
+  classSummary        String?   @db.Text
+  interactionMetrics  Json?
+  transcriptionStatus String    @default("NOT_STARTED")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@schema("auth")
+}
+
+model SessionReport {
+  id           String         @id @default(uuid())
+  classId      String
+  class        ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  reporterId   String
+  reporterRole String
+  reporterName String
+  issueType    String
+  description  String
+  status       String         @default("OPEN") // "OPEN", "INVESTIGATING", "RESOLVED"
+  qaFeedback   String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@schema("auth")
+}
+
+// ── Models from learning schema ──
+
 enum PlanType {
   FULL
   INSTALLMENT
+  @@schema("learning")
+}
 
+enum LeadStatus {
+  NEW
+  CONTACTED
+  INTERESTED
+  DEMO_SCHEDULED
+  ADMISSION_PENDING
+  PAYMENT_SUBMITTED
+  ENROLLED
+  LOST
   @@schema("learning")
 }
 
 model Program {
-  id           String        @id @default(uuid())
-  title        String
-  description  String?
-  level        String        @default("Beginner")
-  levelColor   String        @default("purple")
-  image        String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  sessions     Session[]
-  paymentPlans PaymentPlan[]
-  leads        Lead[]
+  id             String          @id @default(uuid())
+  title          String
+  description    String?
+  level          String          @default("Beginner")
+  levelColor     String          @default("purple")
+  image          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  sessions       Session[]
+  paymentPlans   PaymentPlan[]
+  leads          Lead[]
+  parentAccounts ParentAccount[]
 
   @@schema("learning")
 }
@@ -75,15 +308,8 @@ model Session {
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
   credits       Int          @default(10)
-  // Post-class reflection prompts the student answers before the next class.
-  // Empty means "not customised" — readers fall back to the platform defaults.
   reflectionQuestions String[] @default([])
-  // The typed quiz that supersedes the plain prompts above. Shape:
-  // ReflectionQuestion[] from @futurespark/constants. Null/empty means the
-  // session has no custom quiz and readers fall back to the prompts, then to
-  // the platform defaults.
   reflectionQuiz Json?
-  // Mind map of what this session covers. Shape: SessionTopic[].
   topics        Json?
   resources     SessionResource[]
   createdAt     DateTime     @default(now())
@@ -92,10 +318,6 @@ model Session {
   @@schema("learning")
 }
 
-/// A teaching aid a mentor attaches to a curriculum session: a link, an uploaded
-/// file, a video. Separate from Session.slidesUrl/guideUrl/worksheetUrl, which
-/// are the three fixed admin-owned slots — this is an open-ended list any mentor
-/// can contribute to and everyone teaching that session can read.
 model SessionResource {
   id          String   @id @default(uuid())
   sessionId   String
@@ -103,10 +325,7 @@ model SessionResource {
   title       String
   description String?
   url         String
-  /// "LINK" | "FILE" | "VIDEO" | "SLIDES" | "WORKSHEET" | "OTHER"
   kind        String   @default("LINK")
-  /// Free-text topic label so a resource can be tied to one part of the session
-  /// without hard-coupling to a topic id inside the mind map's JSON.
   topic       String?
   addedById   String
   addedByName String
@@ -115,19 +334,6 @@ model SessionResource {
   updatedAt   DateTime @updatedAt
 
   @@index([sessionId])
-  @@schema("learning")
-}
-
-enum LeadStatus {
-  NEW
-  CONTACTED
-  INTERESTED
-  DEMO_SCHEDULED
-  ADMISSION_PENDING
-  PAYMENT_SUBMITTED
-  ENROLLED
-  LOST
-
   @@schema("learning")
 }
 
@@ -158,34 +364,4 @@ model Lead {
   updatedAt           DateTime   @updatedAt
 
   @@schema("learning")
-}
-
-/// Read-only stub of the auth-schema User, so this service can resolve the name
-/// of whoever is adding a resource instead of trusting one the client sends.
-/// Never written to from here, and never pushed — auth-service owns this table.
-model User {
-  id        String  @id
-  email     String  @unique
-  firstName String?
-  lastName  String?
-
-  @@schema("auth")
-}
-
-model ScheduledClass {
-  id                  String   @id @default(uuid())
-  meetingLink         String?
-  transcript          String?  @db.Text
-  classSummary        String?  @db.Text
-  interactionMetrics  Json?
-  transcriptionStatus String   @default("NOT_STARTED")
-  reflectionAnswers     Json?
-  reflectionSubmittedAt DateTime?
-  reflectionScore       Int?
-  reflectionMaxScore    Int?
-  reflectionBadge       String?
-  rescheduledCount      Int      @default(0)
-  actualEndedAt         DateTime?
-
-  @@schema("auth")
 }
