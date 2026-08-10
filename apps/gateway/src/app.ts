@@ -180,6 +180,25 @@ app.use('/api/courses',
   })
 );
 
+// Session resources hub — mentor-contributed teaching aids, read by every role
+app.use('/api/resources',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: LEARN_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/resources/' },
+    on: {
+      error: (_err, _req, res: any) => {
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Learning service temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // Payment service — Fail-fast 503, no cached fallback
 app.use('/api/payments',
   asyncHandler(authenticate),
