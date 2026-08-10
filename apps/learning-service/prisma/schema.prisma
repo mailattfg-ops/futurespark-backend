@@ -14,7 +14,7 @@ generator client {
 model User {
   id                String            @id @default(uuid())
   email             String            @unique
-  passwordHash      String
+  passwordHash      String            @default("")
   firstName         String?
   lastName          String?
   avatarUrl         String?
@@ -34,7 +34,7 @@ model User {
   availabilityUpdatedAt DateTime?
   timezone          String            @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
   createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  updatedAt         DateTime          @default(now()) @updatedAt
   refreshTokens     RefreshToken[]
   mentorSchedules   MentorSchedule[]
   scheduledClasses  ScheduledClass[]  @relation("MentorClasses")
@@ -173,14 +173,14 @@ model ScheduledClass {
   id              String    @id @default(uuid())
   studentId       String?
   student         Student?  @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  mentorId        String
-  mentor          User      @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: Cascade)
+  mentorId        String?
+  mentor          User?     @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: SetNull)
   scheduledById   String?   // Staff User ID who created this booking
   scheduledBy     User?     @relation("ScheduledByUser", fields: [scheduledById], references: [id], onDelete: SetNull)
-  programId       String    // Program UUID from learning service
+  programId       String?   // Program UUID from learning service
   sessionId       String?   // Session UUID from learning service
-  startTime       DateTime
-  endTime         DateTime
+  startTime       DateTime  @default(now())
+  endTime         DateTime  @default(now())
   status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
   classType       String    @default("REGULAR")   // "REGULAR", "DEMO"
   leadId            String?   // Lead UUID if classType is DEMO
@@ -207,7 +207,7 @@ model ScheduledClass {
   interactionMetrics  Json?
   transcriptionStatus String    @default("NOT_STARTED")
   createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  updatedAt           DateTime  @default(now()) @updatedAt
 
   @@schema("auth")
 }
@@ -229,7 +229,7 @@ model SessionReport {
   @@schema("auth")
 }
 
-// ── Models from learning schema ──
+// ── Models from learning schema (read-only in auth context but mapped for relation consistency) ──
 
 enum PlanType {
   FULL
@@ -308,8 +308,15 @@ model Session {
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
   credits       Int          @default(10)
+  // Post-class reflection prompts the student answers before the next class.
+  // Empty means "not customised" — readers fall back to the platform defaults.
   reflectionQuestions String[] @default([])
+  // The typed quiz that supersedes the plain prompts above. Shape:
+  // ReflectionQuestion[] from @futurespark/constants. Null/empty means the
+  // session has no custom quiz and readers fall back to the prompts, then to
+  // the platform defaults.
   reflectionQuiz Json?
+  // Mind map of what this session covers. Shape: SessionTopic[].
   topics        Json?
   resources     SessionResource[]
   createdAt     DateTime     @default(now())
@@ -318,6 +325,9 @@ model Session {
   @@schema("learning")
 }
 
+/// Mentor-contributed teaching aids for a curriculum session. Owned by
+/// learning-service; mirrored here because this schema is the one that runs
+/// `prisma db push`, and a model missing from it would be dropped from the DB.
 model SessionResource {
   id          String   @id @default(uuid())
   sessionId   String
