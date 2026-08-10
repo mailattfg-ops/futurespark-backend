@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+
 export const HTTP_STATUS = {
   OK: 200,
   CREATED: 201,
@@ -369,6 +371,17 @@ export const gradeReflection = (
 // Topics an admin attaches to a curriculum session. Students and mentors open
 // the same map; a topic can carry a longer explanation and, later, a video.
 
+/** One short clip attached to a topic. */
+export interface TopicVideo {
+  id: string;
+  title: string;
+  url: string;
+  /** Runtime in seconds, so the card can print "2:30". Optional. */
+  durationSec?: number | null;
+  /** Poster image. Falls back to a generated placeholder in the UI. */
+  thumbnailUrl?: string | null;
+}
+
 export interface SessionTopic {
   id: string;
   title: string;
@@ -376,10 +389,17 @@ export interface SessionTopic {
   summary?: string | null;
   /** Longer explanation revealed when the node is opened. */
   details?: string | null;
+  /**
+   * Legacy single video. Kept so maps built before `videos` existed still play;
+   * readers fold it into `videos` rather than rendering it separately.
+   */
   videoUrl?: string | null;
+  videos?: TopicVideo[];
   resourceUrl?: string | null;
   children?: SessionTopic[];
 }
+
+export const MAX_TOPIC_VIDEOS = 8;
 
 export const MAX_SESSION_TOPICS = 12;
 export const MAX_SESSION_SUBTOPICS = 8;
@@ -387,16 +407,43 @@ const MAX_TOPIC_TITLE_LEN = 160;
 const MAX_TOPIC_SUMMARY_LEN = 300;
 const MAX_TOPIC_DETAILS_LEN = 4000;
 
+const normalizeTopicVideos = (raw: any, legacyUrl: string | null): TopicVideo[] => {
+  const list: TopicVideo[] = [];
+
+  (Array.isArray(raw) ? raw : []).slice(0, MAX_TOPIC_VIDEOS).forEach((v: any, i: number) => {
+    const url = asTrimmedString(v?.url, 1000);
+    if (!url) return;
+    const duration = Number(v?.durationSec);
+    list.push({
+      id: asTrimmedString(v?.id, 64) || makeId('v'),
+      title: asTrimmedString(v?.title, MAX_TOPIC_TITLE_LEN) || `Video ${i + 1}`,
+      url,
+      durationSec: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : null,
+      thumbnailUrl: asTrimmedString(v?.thumbnailUrl, 1000) || null,
+    });
+  });
+
+  // Fold the pre-`videos` single URL in, unless it is already one of them, so an
+  // older map keeps playing after the schema grew.
+  if (legacyUrl && !list.some((v) => v.url === legacyUrl)) {
+    list.unshift({ id: makeId('v'), title: 'Video', url: legacyUrl, durationSec: null, thumbnailUrl: null });
+  }
+
+  return list.slice(0, MAX_TOPIC_VIDEOS);
+};
+
 const normalizeTopicNode = (raw: any, allowChildren: boolean): SessionTopic | null => {
   const title = asTrimmedString(raw?.title, MAX_TOPIC_TITLE_LEN);
   if (!title) return null;
 
+  const legacyUrl = asTrimmedString(raw?.videoUrl, 1000) || null;
   const node: SessionTopic = {
     id: asTrimmedString(raw?.id, 64) || makeId('t'),
     title,
     summary: asTrimmedString(raw?.summary, MAX_TOPIC_SUMMARY_LEN) || null,
     details: asTrimmedString(raw?.details, MAX_TOPIC_DETAILS_LEN) || null,
-    videoUrl: asTrimmedString(raw?.videoUrl, 1000) || null,
+    videoUrl: legacyUrl,
+    videos: normalizeTopicVideos(raw?.videos, legacyUrl),
     resourceUrl: asTrimmedString(raw?.resourceUrl, 1000) || null,
   };
 
@@ -431,6 +478,73 @@ export const effectiveSessionTopics = (value: unknown): SessionTopic[] => {
   } catch {
     return [];
   }
+};
+
+// ── Cross-service media grants ────────────────────────────────
+// Recordings live in integration-service; who is allowed to watch a given class
+// is known only to auth-service, which owns the student/parent/mentor graph.
+//
+// Rather than have integration-service call back to ask — or, worse, hand every
+// portal the full recordings list and filter in the browser, which is how the
+// admin scheduler works and is exactly what must not happen for parents —
+// auth-service signs a short-lived grant naming one class, and
+// integration-service verifies the signature. No cross-service round trip, and
+// the authorisation decision stays in the service that can actually make it.
+
+const GRANT_VERSION = 'v1';
+
+const grantKey = (): Buffer =>
+  crypto
+    .createHmac('sha256', process.env.JWT_ACCESS_SECRET || 'dev-access-secret-change-in-production')
+    .update(`finquo-class-media-grant-${GRANT_VERSION}`)
+    .digest();
+
+/** Long enough to browse a term's classes without re-fetching. */
+export const CLASS_MEDIA_GRANT_TTL_SECONDS = 2 * 60 * 60;
+
+export interface ClassMediaGrant {
+  classId: string;
+  /** Meet room code, so integration-service can match without a DB join. */
+  meetCode: string;
+}
+
+const grantSig = (classId: string, meetCode: string, exp: number): string =>
+  crypto.createHmac('sha256', grantKey()).update(`${classId}:${meetCode}:${exp}`).digest('hex');
+
+export const createClassMediaGrant = (
+  classId: string,
+  meetCode: string,
+  ttlSeconds: number = CLASS_MEDIA_GRANT_TTL_SECONDS
+): string => {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  return `${classId}.${meetCode}.${exp}.${grantSig(classId, meetCode, exp)}`;
+};
+
+/** Returns the grant's contents, or null for anything malformed, expired or forged. */
+export const verifyClassMediaGrant = (token: unknown): ClassMediaGrant | null => {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 4) return null;
+
+  const [classId, meetCode, expRaw, sig] = parts;
+  const exp = Number(expRaw);
+  if (!classId || !meetCode || !Number.isFinite(exp)) return null;
+  if (exp <= Math.floor(Date.now() / 1000)) return null;
+
+  const expected = grantSig(classId, meetCode, exp);
+  const a = Buffer.from(sig, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return null;
+  if (!crypto.timingSafeEqual(a, b)) return null;
+
+  return { classId, meetCode };
+};
+
+/** Pull the 3-4-3 room code out of a Meet URL. Mirrors the frontend helper. */
+export const extractMeetCode = (meetUrl: string | null | undefined): string | null => {
+  if (!meetUrl) return null;
+  const code = meetUrl.trim().split('?')[0].split('#')[0].split('/').pop() || '';
+  return /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(code) ? code : null;
 };
 
 // ── Attendance ────────────────────────────────────────────────

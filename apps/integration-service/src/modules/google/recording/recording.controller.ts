@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { GoogleRecordingService } from './recording.service';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
 import * as fs from 'fs';
@@ -9,7 +9,30 @@ import * as path from 'path';
 import { createStreamToken, verifyStreamToken } from './stream-token';
 
 export class GoogleRecordingController {
+  /**
+   * Roles allowed to see the whole recording archive.
+   *
+   * Everyone else — students, parents — reaches their own class media through
+   * `/for-class`, which is scoped by a signed grant. Before this guard existed a
+   * parent could call `GET /google/recordings` and receive every recording in the
+   * system, including other families' classes.
+   */
+  private static readonly ARCHIVE_ROLES = new Set(['ADMIN', 'INSTRUCTOR', 'TEACHER', 'QA_AUDITOR', 'SCHEDULER']);
+
+  private static canBrowseArchive(req: Request): boolean {
+    return GoogleRecordingController.ARCHIVE_ROLES.has((req.headers['x-user-role'] as string) || '');
+  }
+
   static async list(req: Request, res: Response) {
+    if (!GoogleRecordingController.canBrowseArchive(req)) {
+      return res
+        .status(HTTP_STATUS.FORBIDDEN)
+        .json(errorResponse('You can only access recordings for your own classes.'));
+    }
+    return GoogleRecordingController.listInternal(req, res);
+  }
+
+  private static async listInternal(req: Request, res: Response) {
     try {
       const recordings = await GoogleRecordingService.listRecordings();
       return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Recordings retrieved successfully.'));
@@ -105,6 +128,58 @@ export class GoogleRecordingController {
     } catch (err: any) {
       logger.error(`Error issuing stream token: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse('Could not issue a stream token.'));
+    }
+  }
+
+  /**
+   * The recordings for ONE class, unlocked by a signed grant from auth-service.
+   *
+   * Exists so a parent or student can watch their own class without the client
+   * first downloading the entire recordings list and filtering in the browser —
+   * which is how the admin scheduler finds recordings, and is fine for an admin
+   * but would hand every family every other family's sessions.
+   *
+   * Each result carries a ready-to-play signed stream link, so the caller does
+   * not need a second authenticated round trip per recording.
+   */
+  static async forClass(req: Request, res: Response) {
+    try {
+      const grant = verifyClassMediaGrant(req.query.grant);
+      if (!grant) {
+        return res
+          .status(HTTP_STATUS.UNAUTHORIZED)
+          .json(errorResponse('This media link is missing, invalid, or has expired.'));
+      }
+
+      const all = await GoogleRecordingService.listRecordings();
+      const matches = all.filter((r: any) => extractMeetCode(r.meeting?.meetUrl) === grant.meetCode);
+
+      const payload = matches.map((r: any) => {
+        const { token, expiresAt } = createStreamToken(r.id);
+        return {
+          id: r.id,
+          fileName: r.fileName,
+          fileSize: r.fileSize,
+          duration: r.duration,
+          driveFileId: r.driveFileId,
+          downloadStatus: r.downloadStatus,
+          createdAt: r.createdAt,
+          streamToken: token,
+          streamTokenExpiresAt: expiresAt,
+          // Only present for real Drive files; pending placeholders have no page.
+          driveViewUrl:
+            r.driveFileId && !String(r.driveFileId).startsWith('pending_') && !String(r.driveFileId).startsWith('mock_')
+              ? `https://drive.google.com/file/d/${r.driveFileId}/view`
+              : null,
+        };
+      });
+
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(successResponse(payload, `Recordings for class ${grant.classId}`));
+    } catch (err: any) {
+      logger.error(`Error listing class recordings: ${err.message}`);
+      return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse('Could not load recordings.'));
     }
   }
 

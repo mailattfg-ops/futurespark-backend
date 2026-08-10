@@ -335,9 +335,32 @@ model Session {
   reflectionQuiz Json?
   // Mind map of what this session covers. Shape: SessionTopic[].
   topics        Json?
+  resources     SessionResource[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
+  @@schema("learning")
+}
+
+/// Mentor-contributed teaching aids for a curriculum session. Owned by
+/// learning-service; mirrored here because this schema is the one that runs
+/// `prisma db push`, and a model missing from it would be dropped from the DB.
+model SessionResource {
+  id          String   @id @default(uuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  url         String
+  kind        String   @default("LINK")
+  topic       String?
+  addedById   String
+  addedByName String
+  addedByRole String   @default("TEACHER")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([sessionId])
   @@schema("learning")
 }
 

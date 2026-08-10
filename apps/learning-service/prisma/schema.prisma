@@ -85,9 +85,36 @@ model Session {
   reflectionQuiz Json?
   // Mind map of what this session covers. Shape: SessionTopic[].
   topics        Json?
+  resources     SessionResource[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
+  @@schema("learning")
+}
+
+/// A teaching aid a mentor attaches to a curriculum session: a link, an uploaded
+/// file, a video. Separate from Session.slidesUrl/guideUrl/worksheetUrl, which
+/// are the three fixed admin-owned slots — this is an open-ended list any mentor
+/// can contribute to and everyone teaching that session can read.
+model SessionResource {
+  id          String   @id @default(uuid())
+  sessionId   String
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  url         String
+  /// "LINK" | "FILE" | "VIDEO" | "SLIDES" | "WORKSHEET" | "OTHER"
+  kind        String   @default("LINK")
+  /// Free-text topic label so a resource can be tied to one part of the session
+  /// without hard-coupling to a topic id inside the mind map's JSON.
+  topic       String?
+  addedById   String
+  addedByName String
+  addedByRole String   @default("TEACHER")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([sessionId])
   @@schema("learning")
 }
 
@@ -131,6 +158,18 @@ model Lead {
   updatedAt           DateTime   @updatedAt
 
   @@schema("learning")
+}
+
+/// Read-only stub of the auth-schema User, so this service can resolve the name
+/// of whoever is adding a resource instead of trusting one the client sends.
+/// Never written to from here, and never pushed — auth-service owns this table.
+model User {
+  id        String  @id
+  email     String  @unique
+  firstName String?
+  lastName  String?
+
+  @@schema("auth")
 }
 
 model ScheduledClass {
