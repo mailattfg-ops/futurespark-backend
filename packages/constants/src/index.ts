@@ -576,21 +576,47 @@ export const ATTENDANCE_LABELS: Record<AttendanceState, string> = {
 };
 
 /**
+ * Is this class considered "attended" for quiz purposes?
+ *
+ * Stricter than `deriveAttendance`: we require the mentor to have explicitly
+ * marked the class COMPLETED (or, as a fallback, both the Meet room to have
+ * emptied AND the scheduled slot to have ended). This prevents the quiz
+ * appearing mid-session just because everyone briefly left the room.
+ */
+const isAttendedForQuiz = (cls: AttendanceInput, nowMs: number): boolean => {
+  // Prefer the pre-computed field the server stamps on every schedule row.
+  if (cls.attendance) return cls.attendance === 'ATTENDED';
+  // Mentor explicitly marked it done — the definitive signal.
+  if (cls.status === 'COMPLETED') return true;
+  // Meet room emptied AND the slot has fully elapsed → treat as attended.
+  if (cls.actualEndedAt) {
+    const end = cls.endTime
+      ? new Date(cls.endTime).getTime()
+      : new Date(cls.startTime).getTime() + 90 * 60 * 1000;
+    return end <= nowMs;
+  }
+  return false;
+};
+
+/**
  * Does this class still owe a reflection quiz?
  *
  * Only classes the student actually attended. A missed class has nothing to
  * reflect on, and answers about a lesson the student was not in would be
  * worthless to the mentor reading them.
  *
- * The practical consequence is that the quiz appears once the mentor marks the
- * class complete, not the moment the slot ends — until then nothing in the data
- * distinguishes "the student did not turn up" from "the mentor has not marked
- * it yet", and guessing wrong in that direction is the worse failure.
+ * The quiz appears once:
+ *   1. The mentor marks the class COMPLETE in the admin panel, OR
+ *   2. The Meet room has emptied AND the scheduled slot has fully elapsed.
+ *
+ * This prevents the quiz from popping up mid-session if participants
+ * briefly leave and rejoin the Google Meet room.
  */
 export const owesReflection = (
   cls: AttendanceInput & { reflectionSubmittedAt?: Date | string | null },
   nowMs: number = Date.now()
-): boolean => !cls.reflectionSubmittedAt && deriveAttendance(cls, nowMs) === 'ATTENDED';
+): boolean => !cls.reflectionSubmittedAt && isAttendedForQuiz(cls, nowMs);
+
 
 export const deriveAttendance = (cls: AttendanceInput, nowMs: number = Date.now()): AttendanceState => {
   if (cls.status === 'CANCELLED') return 'CANCELLED';
