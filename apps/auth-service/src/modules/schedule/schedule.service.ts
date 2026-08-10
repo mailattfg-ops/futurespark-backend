@@ -909,11 +909,15 @@ export const scheduleService = {
       if (scheduledClass.status === 'CANCELLED') {
         throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
       }
-      if (deriveAttendance(scheduledClass) !== 'ATTENDED') {
+      // Mirrors `owesReflection`: only a class the mentor has marked COMPLETE can
+      // take answers. `deriveAttendance` is deliberately not used here — it also
+      // reports ATTENDED once the Meet room empties, which would let a student
+      // submit against a class the mentor has not closed out yet.
+      if (scheduledClass.status !== 'COMPLETED') {
         throw new AppError(
           scheduledClass.endTime.getTime() > Date.now()
             ? 'This class has not finished yet'
-            : 'This class is not recorded as attended yet',
+            : 'Your mentor has not marked this class complete yet — the quiz opens once they do',
           HTTP_STATUS.BAD_REQUEST
         );
       }

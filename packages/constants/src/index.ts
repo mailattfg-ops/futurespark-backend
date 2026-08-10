@@ -583,39 +583,29 @@ export const ATTENDANCE_LABELS: Record<AttendanceState, string> = {
  * emptied AND the scheduled slot to have ended). This prevents the quiz
  * appearing mid-session just because everyone briefly left the room.
  */
-const isAttendedForQuiz = (cls: AttendanceInput, nowMs: number): boolean => {
-  // Prefer the pre-computed field the server stamps on every schedule row.
-  if (cls.attendance) return cls.attendance === 'ATTENDED';
-  // Mentor explicitly marked it done — the definitive signal.
-  if (cls.status === 'COMPLETED') return true;
-  // Meet room emptied AND the slot has fully elapsed → treat as attended.
-  if (cls.actualEndedAt) {
-    const end = cls.endTime
-      ? new Date(cls.endTime).getTime()
-      : new Date(cls.startTime).getTime() + 90 * 60 * 1000;
-    return end <= nowMs;
-  }
-  return false;
-};
+const isAttendedForQuiz = (cls: AttendanceInput): boolean => cls.status === 'COMPLETED';
 
 /**
  * Does this class still owe a reflection quiz?
  *
- * Only classes the student actually attended. A missed class has nothing to
- * reflect on, and answers about a lesson the student was not in would be
- * worthless to the mentor reading them.
+ * The mentor marking the class COMPLETE is the ONLY trigger. Nothing else opens
+ * the quiz — not the slot elapsing, and deliberately not `actualEndedAt` either.
  *
- * The quiz appears once:
- *   1. The mentor marks the class COMPLETE in the admin panel, OR
- *   2. The Meet room has emptied AND the scheduled slot has fully elapsed.
+ * An empty Meet room is weaker evidence than it looks: the pair can finish the
+ * video call and keep working, or drop out and rejoin, and the poller sees the
+ * same thing in both cases. Asking a student to reflect on a lesson their mentor
+ * has not yet closed out produces answers about a half-finished class, and the
+ * mentor then reviews them without knowing that. Completion is a decision, so it
+ * should be made by the person who was in the room.
  *
- * This prevents the quiz from popping up mid-session if participants
- * briefly leave and rejoin the Google Meet room.
+ * `deriveAttendance` is intentionally more generous — a class whose room emptied
+ * still shows as ATTENDED in the register, because that is a record of what
+ * happened rather than a prompt for the student to act on.
  */
 export const owesReflection = (
   cls: AttendanceInput & { reflectionSubmittedAt?: Date | string | null },
-  nowMs: number = Date.now()
-): boolean => !cls.reflectionSubmittedAt && isAttendedForQuiz(cls, nowMs);
+  _nowMs: number = Date.now()
+): boolean => !cls.reflectionSubmittedAt && isAttendedForQuiz(cls);
 
 
 export const deriveAttendance = (cls: AttendanceInput, nowMs: number = Date.now()): AttendanceState => {
