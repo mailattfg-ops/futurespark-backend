@@ -281,7 +281,7 @@ export class GoogleRecordingService {
       throw new Error(`Recording metadata with ID ${recordingId} not found.`);
     }
 
-    if (recording.driveFileId.startsWith('pending_')) {
+    if (!recording.driveFileId || recording.driveFileId.startsWith('pending_')) {
       logger.info(`[GoogleRecordingService] Cannot download placeholder recording ${recordingId} - waiting for real Google Drive file matching.`);
       return null;
     }

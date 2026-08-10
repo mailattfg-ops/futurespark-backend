@@ -12,6 +12,14 @@ import googlePresenceRouter from './modules/google/presence/presence.routes';
 import { startPresencePolling } from './modules/google/presence/presence.service';
 import storageRouter from './modules/storage/storage.routes';
 
+// Zoom modules
+import zoomAuthRouter from './modules/zoom/auth/auth.routes';
+import zoomMeetingsRouter from './modules/zoom/meetings/meetings.routes';
+import zoomRecordingsRouter from './modules/zoom/recording/recording.routes';
+import zoomPresenceRouter from './modules/zoom/presence/presence.routes';
+import { startZoomPresencePolling } from './modules/zoom/presence/presence.service';
+import zoomWebhooksRouter from './modules/zoom/webhooks/webhooks.routes';
+
 const app = express();
 
 app.use(cors());
@@ -22,23 +30,32 @@ app.use((req, res, next) => {
   next();
 });
 
-// Start background cron worker
+// Start background cron workers
 startSyncCron();
-// Poll Meet for who is actually in each room during its join window
 startPresencePolling();
+startZoomPresencePolling();
 
 // Register Google module endpoints
 app.use('/google/auth', googleAuthRouter);
 app.use('/google/meetings', googleMeetingsRouter);
 app.use('/google/recordings', googleRecordingsRouter);
 app.use('/google/presence', googlePresenceRouter);
+
+// Register Zoom module endpoints
+app.use('/zoom/auth', zoomAuthRouter);
+app.use('/zoom/meetings', zoomMeetingsRouter);
+app.use('/zoom/recordings', zoomRecordingsRouter);
+app.use('/zoom/presence', zoomPresenceRouter);
+app.use('/zoom/webhooks', zoomWebhooksRouter);
+
+// Storage module
 app.use('/storage', storageRouter);
 
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'integration-service is healthy'));
 });
 
-app.use((req, res) => {
+app.use((_req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Route not found'));
 });
 

@@ -10,8 +10,14 @@ import {
   deriveAttendance,
   owesReflection,
   stripAnswerKey,
+  createClassMediaGrant,
+  extractMeetCode,
   ReflectionResponse,
 } from '@futurespark/constants';
+
+/** A class is finished if it was completed, the room emptied, or its slot ran out. */
+const isOver = (c: { status: string; endTime: Date; actualEndedAt: Date | null }, nowMs: number): boolean =>
+  c.status === 'COMPLETED' || Boolean(c.actualEndedAt) || c.endTime.getTime() <= nowMs;
 import { logger } from '@futurespark/logger';
 import { sendNotification } from '../notification-helper';
 import { rescheduleCalendarEvent } from '../calendar-helper';
@@ -1058,6 +1064,17 @@ export const scheduleService = {
         mentor: c.mentor,
         meetingLink: c.meetingLink,
         recordingUrl: c.recordingUrl,
+        // Parents read the AI summary of a finished class here; it is the one
+        // view of the lesson they get without sitting through the recording.
+        classSummary: c.classSummary,
+        transcriptionStatus: c.transcriptionStatus,
+        // Lets the caller fetch this one class's recordings from
+        // integration-service without ever being handed the full archive.
+        // Only issued for classes that have actually finished.
+        mediaGrant:
+          isOver(c, now) && extractMeetCode(c.meetingLink)
+            ? createClassMediaGrant(c.id, extractMeetCode(c.meetingLink) as string)
+            : null,
         reflection: {
           submittedAt: c.reflectionSubmittedAt,
           score: c.reflectionScore,
