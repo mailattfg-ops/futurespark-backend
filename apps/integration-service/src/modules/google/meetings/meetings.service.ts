@@ -71,6 +71,10 @@ export class GoogleMeetingsService {
         // Same teacher + same student + same instant is the same booking, not a clash.
         const sameBooking = await tx.meeting.findFirst({
           where: {
+            // Provider matters: the same pair can hold a Google room and a Zoom
+            // room for the same slot, and without this the Google path would hand
+            // back a Zoom join URL (or the reverse) as though it had created it.
+            provider: 'GOOGLE_MEET',
             startTime: start,
             status: { not: 'CANCELLED' },
             teacherId: input.teacherId,
@@ -119,6 +123,9 @@ export class GoogleMeetingsService {
         if (REUSE_ROOM_PER_PROGRAM && input.programId && !input.forceNewRoom) {
           const programRoom = await tx.meeting.findFirst({
             where: {
+              // Provider-scoped for the same reason as the slot lookup above:
+              // reusing "the programme's room" must never cross vendors.
+              provider: 'GOOGLE_MEET',
               status: { not: 'CANCELLED' },
               teacherId: input.teacherId,
               studentId: input.studentId,

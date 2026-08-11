@@ -38,33 +38,34 @@ app.get('/health', (_req, res) => {
   );
 });
 
-// ── WhatsApp Webhook Verification (Handled Directly in Gateway) ───
-// Meta calls GET /api/whatsapp/webhook to verify the callback URL
-app.get('/api/whatsapp/webhook', (req, res) => {
-  const mode = req.query['hub.mode'] as string;
-  const token = req.query['hub.verify_token'] as string;
-  const challenge = req.query['hub.challenge'] as string;
-  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'futurespark-webhook-secret';
-
-  logger.info(`[WhatsApp Webhook] Verify request — mode: ${mode}, token: ${token}`);
-
-  if (mode === 'subscribe' && token === verifyToken) {
-    logger.info('[WhatsApp Webhook] ✅ Verified by Meta');
-    return res.status(200).send(challenge);
-  }
-  logger.error('[WhatsApp Webhook] ❌ Verification failed — token mismatch');
-  return res.status(403).json({ error: 'Forbidden' });
-});
-
-// Meta sends incoming message events via POST
-app.post('/api/whatsapp/webhook', express.json(), (req, res) => {
-  const body = req.body;
-  if (body?.object === 'whatsapp_business_account') {
-    logger.info(`[WhatsApp Webhook] Incoming event received`);
-    return res.sendStatus(200);
-  }
-  return res.sendStatus(404);
-});
+/* ──────────────────────────────────────────────────────────────────────────
+ * NOTE: /api/whatsapp/webhook is deliberately NOT handled here.
+ *
+ * It is proxied verbatim to communication-service at the bottom of this file,
+ * which owns the hardened implementation (verify-token handshake with no
+ * insecure fallback, X-Hub-Signature-256 HMAC verification, inbound
+ * persistence, idempotency, auto-reply).
+ *
+ * Two rules for that route, both load-bearing:
+ *
+ *   1. Register NOTHING for this path above the proxy. Express matches layers
+ *      in registration order, so any app.get/app.post/app.use here wins and
+ *      the proxy becomes unreachable — the failure is silent (Meta gets its
+ *      200 ack and the event is discarded).
+ *
+ *   2. Never run a body parser in front of it. Meta's X-Hub-Signature-256 is
+ *      an HMAC over the EXACT raw request bytes. With no parser mounted, the
+ *      proxy pipes the untouched request stream straight to the upstream
+ *      socket, so the bytes and Content-Length arrive unchanged. Adding a
+ *      global express.json() — or any parser scoped to this path — drains that
+ *      stream first. http-proxy-middleware v4 does not re-emit a consumed body
+ *      unless you opt into its fixRequestBody handler, so the proxied request
+ *      never ends and the webhook HANGS until Meta times out (measured, not
+ *      assumed). Even with fixRequestBody it would only 401 forever, because an
+ *      HMAC cannot be recomputed from a re-serialised object — key order,
+ *      unicode escaping and whitespace all differ from Meta's byte stream.
+ *      This gateway mounts NO body parser at all; keep it that way.
+ * ────────────────────────────────────────────────────────────────────────── */
 
 // ── Public Routes (No Auth Required) ──────────────────────────
 // Auth flows: register, login, refresh are public
@@ -412,13 +413,30 @@ app.use('/api/notifications',
   })
 );
 
-// ── WhatsApp Webhook (Public — Meta Cloud API calls this) ───────
-// GET: Webhook verification handshake from Meta
-// POST: Incoming messages and status updates
+/* ── WhatsApp Webhook (Public — Meta Cloud API calls this) ──────────────────
+ * GET:  verification handshake from Meta (hub.mode / hub.verify_token / hub.challenge)
+ * POST: incoming messages and delivery status updates, signed with X-Hub-Signature-256
+ *
+ * RAW-BODY CONTRACT — do not break it:
+ *   No body parser runs anywhere ahead of this middleware (cors, requestId and
+ *   the request logger all touch headers only), so http-proxy-middleware pipes
+ *   the request stream directly into the upstream socket and forwards the
+ *   headers verbatim — Content-Type, Content-Length and X-Hub-Signature-256
+ *   included. communication-service re-reads those exact bytes via
+ *   express.raw() and verifies the HMAC against them. Introducing express.json()
+ *   (globally or on this path) drains the stream and every webhook starts
+ *   failing signature verification.
+ *
+ * Nothing may be registered for this path above this line — see the note next
+ * to the health check. Express matches in registration order and an earlier
+ * layer silently swallows every inbound message.
+ * ────────────────────────────────────────────────────────────────────────── */
 app.use('/api/whatsapp/webhook',
   createProxyMiddleware({
     target: COMMUNICATION_SERVICE_URL,
     changeOrigin: true,
+    // app.use() strips the mount path, leaving req.url === '/' (plus any query
+    // string), which this rewrites to the service-side '/whatsapp/webhook'.
     pathRewrite: { '^/': '/whatsapp/webhook' },
     on: {
       error: (err, _req, res: any) => {
