@@ -273,8 +273,20 @@ export const normalizeReflectionQuiz = (value: unknown): ReflectionQuestion[] =>
 export const stripAnswerKey = (quiz: ReflectionQuestion[]): (ReflectionQuestion & { graded: boolean })[] =>
   quiz.map(({ correctOptionId, ...rest }) => ({ ...rest, graded: Boolean(correctOptionId) }));
 
-/** Roles allowed to see which option is correct. */
-const ANSWER_KEY_ROLES = new Set(['ADMIN', 'INSTRUCTOR']);
+/**
+ * Roles allowed to see which option is correct.
+ *
+ * A mentor reaches us under either role string: `TEACHER` is what auth-service
+ * stores and issues (`VALID_ROLES` in user.schema.ts has no `INSTRUCTOR` at
+ * all), `INSTRUCTOR` is what the curriculum side uses. Both name the same
+ * person, so listing only `INSTRUCTOR` here denied the answer key to every
+ * mentor who actually exists. Any gate that accepts one must accept both.
+ *
+ * A mentor is never the person sitting the quiz, so this reveals nothing to
+ * whoever is being graded — `getReflection` strips the key unconditionally on
+ * the endpoint students and mentors read the quiz from.
+ */
+const ANSWER_KEY_ROLES = new Set(['ADMIN', 'TEACHER', 'INSTRUCTOR']);
 
 export const canSeeAnswerKey = (role: string | undefined): boolean => ANSWER_KEY_ROLES.has(role ?? '');
 
@@ -362,6 +374,119 @@ export const gradeReflection = (
       pointsEarned,
       pointsPossible: points,
     });
+  });
+
+  return { entries, score, maxScore, answeredCount, badge: badgeForScore(score, maxScore) };
+};
+
+/**
+ * Did the student actually answer this stored question, or skip it?
+ *
+ * A skipped question is still stored — blank answer, zero points — so the
+ * presence of an entry proves nothing on its own. Mirrors what
+ * `gradeReflection` counts: a choice question needs a selected option,
+ * everything else needs non-empty text.
+ *
+ * Legacy rows carry no `type`; they fall to the text test, which is right
+ * because their `answer` holds the chosen label when there was a choice.
+ */
+export const isAnsweredEntry = (entry: Partial<ReflectionAnswerEntry> | null | undefined): boolean => {
+  if (!entry) return false;
+  if (entry.type === 'MCQ' || entry.type === 'IMAGE_CHOICE') return Boolean(entry.selectedOptionId);
+  return Boolean(entry.answer && entry.answer.trim());
+};
+
+/**
+ * Finds a question's previous answer. Matched on id first and prompt text
+ * second, so an admin reordering the quiz between attempts cannot shuffle a
+ * stored answer onto the wrong question; positional matching is the last
+ * resort and only for pre-`questionId` rows, where there is nothing else to go
+ * on. Same precedence the student portal uses to prefill the form.
+ */
+const findPreviousEntry = (
+  previous: ReflectionAnswerEntry[],
+  questionId: string,
+  prompt: string,
+  index: number
+): ReflectionAnswerEntry | undefined =>
+  previous.find((e) => e.questionId && e.questionId === questionId) ??
+  previous.find((e) => e.question === prompt) ??
+  (previous.some((e) => e.questionId) ? undefined : previous[index]);
+
+/**
+ * Folds a re-submission into what the student already answered: **the first
+ * answer to a question stands, and only questions left blank can still be
+ * filled in.**
+ *
+ * Resubmission has to stay open — the portal deliberately lets a student who
+ * sent a half-finished quiz go back and complete it rather than raise a support
+ * ticket. But a submission response names `correct` per question, so an
+ * unrestricted overwrite turns the endpoint into an answer oracle: submit
+ * anything, read which entries came back false, resubmit those with a different
+ * option, repeat until every question is right. A four-option question falls in
+ * at most three retries and the student takes a Gold medal for it.
+ *
+ * Locking each question the moment it is answered closes that loop without
+ * closing the quiz: there is no second guess at a question whose verdict you
+ * have already seen, and nothing about finishing an unanswered one changes.
+ *
+ * Score, max and badge are recomputed from the merged entries — carrying the
+ * fresh pass's totals over kept answers is what would let the oracle pay out
+ * anyway. Requires no new column: the previous attempt is already stored in
+ * `reflectionAnswers`.
+ */
+export const mergeReflectionAttempt = (
+  previous: ReflectionAnswerEntry[] | null | undefined,
+  fresh: GradedReflection
+): GradedReflection => {
+  const prior = Array.isArray(previous) ? previous : [];
+  if (prior.length === 0) return fresh;
+
+  const entries: ReflectionAnswerEntry[] = [];
+  let score = 0;
+  let maxScore = 0;
+  let answeredCount = 0;
+
+  fresh.entries.forEach((entry, index) => {
+    const before = findPreviousEntry(prior, entry.questionId, entry.question, index);
+    const carry = Boolean(before) && isAnsweredEntry(before);
+
+    if (!carry || !before) {
+      entries.push(entry);
+      score += entry.pointsEarned;
+      maxScore += entry.pointsPossible;
+      if (isAnsweredEntry(entry)) answeredCount++;
+      return;
+    }
+
+    // Legacy rows predate scoring and ids. Repair them from the current
+    // question rather than dropping the answer or scoring it zero: back then
+    // every prompt was free text, and answered free text earns full marks — so
+    // the question's present value is what it was always worth.
+    const pointsPossible = Number.isFinite(before.pointsPossible as number)
+      ? (before.pointsPossible as number)
+      : entry.pointsPossible;
+    const pointsEarned = Number.isFinite(before.pointsEarned as number)
+      ? (before.pointsEarned as number)
+      : pointsPossible;
+
+    entries.push({
+      questionId: entry.questionId,
+      // The wording they were shown when they answered, not today's wording.
+      question: before.question || entry.question,
+      type: before.type ?? entry.type,
+      answer: before.answer ?? '',
+      selectedOptionId: before.selectedOptionId ?? null,
+      correct: before.correct ?? null,
+      pointsEarned,
+      pointsPossible,
+    });
+    score += pointsEarned;
+    maxScore += pointsPossible;
+    // Counted from the row we matched, not from the row we wrote: a legacy
+    // answer to what is now a choice question stores its label and no option
+    // id, and re-testing the repaired row would read that as a skip.
+    answeredCount++;
   });
 
   return { entries, score, maxScore, answeredCount, badge: badgeForScore(score, maxScore) };
@@ -583,39 +708,29 @@ export const ATTENDANCE_LABELS: Record<AttendanceState, string> = {
  * emptied AND the scheduled slot to have ended). This prevents the quiz
  * appearing mid-session just because everyone briefly left the room.
  */
-const isAttendedForQuiz = (cls: AttendanceInput, nowMs: number): boolean => {
-  // Prefer the pre-computed field the server stamps on every schedule row.
-  if (cls.attendance) return cls.attendance === 'ATTENDED';
-  // Mentor explicitly marked it done — the definitive signal.
-  if (cls.status === 'COMPLETED') return true;
-  // Meet room emptied AND the slot has fully elapsed → treat as attended.
-  if (cls.actualEndedAt) {
-    const end = cls.endTime
-      ? new Date(cls.endTime).getTime()
-      : new Date(cls.startTime).getTime() + 90 * 60 * 1000;
-    return end <= nowMs;
-  }
-  return false;
-};
+const isAttendedForQuiz = (cls: AttendanceInput): boolean => cls.status === 'COMPLETED';
 
 /**
  * Does this class still owe a reflection quiz?
  *
- * Only classes the student actually attended. A missed class has nothing to
- * reflect on, and answers about a lesson the student was not in would be
- * worthless to the mentor reading them.
+ * The mentor marking the class COMPLETE is the ONLY trigger. Nothing else opens
+ * the quiz — not the slot elapsing, and deliberately not `actualEndedAt` either.
  *
- * The quiz appears once:
- *   1. The mentor marks the class COMPLETE in the admin panel, OR
- *   2. The Meet room has emptied AND the scheduled slot has fully elapsed.
+ * An empty Meet room is weaker evidence than it looks: the pair can finish the
+ * video call and keep working, or drop out and rejoin, and the poller sees the
+ * same thing in both cases. Asking a student to reflect on a lesson their mentor
+ * has not yet closed out produces answers about a half-finished class, and the
+ * mentor then reviews them without knowing that. Completion is a decision, so it
+ * should be made by the person who was in the room.
  *
- * This prevents the quiz from popping up mid-session if participants
- * briefly leave and rejoin the Google Meet room.
+ * `deriveAttendance` is intentionally more generous — a class whose room emptied
+ * still shows as ATTENDED in the register, because that is a record of what
+ * happened rather than a prompt for the student to act on.
  */
 export const owesReflection = (
   cls: AttendanceInput & { reflectionSubmittedAt?: Date | string | null },
-  nowMs: number = Date.now()
-): boolean => !cls.reflectionSubmittedAt && isAttendedForQuiz(cls, nowMs);
+  _nowMs: number = Date.now()
+): boolean => !cls.reflectionSubmittedAt && isAttendedForQuiz(cls);
 
 
 export const deriveAttendance = (cls: AttendanceInput, nowMs: number = Date.now()): AttendanceState => {

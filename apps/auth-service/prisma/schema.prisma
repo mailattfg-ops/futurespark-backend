@@ -198,6 +198,12 @@ model ScheduledClass {
   reflectionScore       Int?
   reflectionMaxScore    Int?
   reflectionBadge       String?   // "GOLD" | "SILVER" | "BRONZE"
+  // Mentor sign-off on the submitted quiz. Grading is automatic, but a score
+  // alone does not tell a parent whether the mentor actually read the answers —
+  // these do, and the note is where the mentor replies to what the student wrote.
+  reflectionReviewedAt   DateTime?
+  reflectionReviewedById String?
+  reflectionMentorNote   String?   @db.Text
   rescheduledCount    Int       @default(0)
   actualEndedAt       DateTime?
   autoRecording       Boolean   @default(true)
@@ -206,9 +212,37 @@ model ScheduledClass {
   classSummary        String?   @db.Text
   interactionMetrics  Json?
   transcriptionStatus String    @default("NOT_STARTED")
+  doubts              ClassDoubt[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @default(now()) @updatedAt
 
+  @@schema("auth")
+}
+
+/// A question the student had after a class, and the mentor's reply.
+///
+/// Deliberately tied to a class rather than free-floating: "I didn't follow the
+/// compound-interest bit" is only answerable if the mentor knows which lesson it
+/// came from, and it gives the mentor the recording and the quiz answers as
+/// context when they sit down to reply.
+model ClassDoubt {
+  id             String         @id @default(uuid())
+  classId        String
+  class          ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  studentId      String
+  question       String         @db.Text
+  /// "OPEN" until a mentor replies, then "ANSWERED".
+  status         String         @default("OPEN")
+  answer         String?        @db.Text
+  answeredAt     DateTime?
+  answeredById   String?
+  answeredByName String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @default(now()) @updatedAt
+
+  @@index([classId])
+  @@index([studentId])
+  @@index([status])
   @@schema("auth")
 }
 
