@@ -36,10 +36,22 @@ router.get('/doubts/inbox', asyncHandler(scheduleController.listDoubtInbox));
 router.post('/doubts/:doubtId/answer', asyncHandler(scheduleController.answerDoubt));
 router.get('/',       asyncHandler(scheduleController.list));
 router.post('/',      asyncHandler(scheduleController.create));
+// Gated: ADMIN, or the mentor who teaches this class. Body-free — it records
+// that the lesson happened and unlocks the quiz, and awards nothing. The points
+// are decided per answer on /:id/reflection/review.
 router.put('/:id/complete', asyncHandler(scheduleController.completeClass));
 router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
+// Gated: the student, their parent, or the mentor who taught — and the payload
+// is tiered inside. Only `canSeeAnswerKey` roles get `correctOptionId` on the
+// quiz; the student sitting it and their parent get it stripped.
 router.get('/:id/reflection', asyncHandler(scheduleController.getReflection));
+// Gated: the student whose class it is (ADMIN for support fixes). Stores the
+// answers unmarked and unscored — nothing here can award anything.
 router.post('/:id/reflection', asyncHandler(scheduleController.submitReflection));
+// Gated: ADMIN, or the mentor who teaches this class — the same predicate as
+// /complete, because this is the endpoint that now pays. `{ note }` alone is
+// the old sign-off; add `marks` and it scores the quiz, badges it, and moves
+// the student's credit balance by the difference against what it last awarded.
 router.post('/:id/reflection/review', asyncHandler(scheduleController.reviewReflection));
 router.get('/:id/doubts', asyncHandler(scheduleController.listDoubts));
 router.post('/:id/doubts', asyncHandler(scheduleController.createDoubt));
