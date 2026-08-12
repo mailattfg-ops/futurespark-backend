@@ -10,6 +10,10 @@ out/
 .env
 .env.local
 .env.*
+# ...except the documented template. It carries only placeholders, and it is the
+# only record of which variables the services actually read — it is no use to
+# anyone if it never leaves this machine.
+!.env.example
 
 # Local downloaded media recordings cache
 downloads/

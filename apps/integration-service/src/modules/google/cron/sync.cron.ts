@@ -21,9 +21,25 @@ async function runSyncCheck() {
   try {
     logger.info('[Google Sync Cron] Auditing ended meetings to auto-sync recordings & AI summaries...');
     
-    // Find all meetings whose end time has passed and have no recording file linked yet
+    // Find all meetings whose end time has passed and have no recording file linked yet.
+    //
+    // `provider` is mandatory. This sweep hands every row it selects to
+    // GoogleRecordingService.syncMeetingRecording, which searches Drive and — when
+    // it finds nothing, as it always will for a Zoom room — writes a
+    // `pending_<id>` placeholder MeetingRecording. That placeholder is permanent
+    // (nothing deletes it) and it makes the meeting invisible to the Zoom sweep,
+    // which filters on `recordings: { none: {} }`. Without this filter the Google
+    // cron silently disqualifies every Zoom meeting from ever being synced.
+    // Meeting.provider is non-nullable with a "GOOGLE_MEET" default, so this
+    // cannot drop pre-existing Google rows.
+    //
+    // `status` mirrors ZoomRecordingService.syncAllEndedRecordings: a cancelled
+    // meeting has no recording to find, so scanning it only burns Drive quota and
+    // leaves a placeholder behind.
     const pastMeetings = await db.meeting.findMany({
       where: {
+        provider: 'GOOGLE_MEET',
+        status: { not: 'CANCELLED' },
         endTime: { lt: new Date() },
         recordings: {
           none: {},
