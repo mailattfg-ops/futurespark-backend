@@ -152,7 +152,9 @@ export class GoogleRecordingService {
 
       if (existingForMeeting) {
         logger.info(`Syncing meeting recording (${existingForMeeting.id}) with latest Google Drive file ${selectedFile.id}`);
-        return await withDbRetry(() => db.meetingRecording.update({
+        const wasPlaceholder = String(existingForMeeting.driveFileId ?? '').startsWith('pending_');
+
+        const resolved = await withDbRetry(() => db.meetingRecording.update({
           where: { id: existingForMeeting.id },
           data: {
             driveFileId: selectedFile.id,
@@ -162,6 +164,26 @@ export class GoogleRecordingService {
           },
           include: { meeting: true },
         }));
+
+        // Resolving a placeholder is the same event as discovering the recording
+        // for the first time, and it has to kick off the same chain. Only the
+        // `create` path below did that, so a placeholder that finally found its
+        // Drive file just sat at READY: no download, so no audio, so no
+        // transcript, so no summary — and the operator had to press "extract"
+        // and then "re-run Groq" by hand to get what should have been automatic.
+        if (wasPlaceholder) {
+          logger.info(
+            `[GoogleRecordingService] Placeholder ${resolved.id} resolved to Drive file ${selectedFile.id} — ` +
+              `auto-triggering download, audio extraction and Groq transcription.`
+          );
+          GoogleRecordingService.downloadRecordingFile(resolved.id).catch((err) => {
+            logger.error(
+              `[GoogleRecordingService] Auto download after placeholder resolve failed for ${resolved.id}: ${err.message}`
+            );
+          });
+        }
+
+        return resolved;
       }
 
       const existingReal = await withDbRetry(() => db.meetingRecording.findUnique({

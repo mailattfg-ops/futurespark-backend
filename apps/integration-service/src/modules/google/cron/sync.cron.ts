@@ -36,13 +36,31 @@ async function runSyncCheck() {
     // `status` mirrors ZoomRecordingService.syncAllEndedRecordings: a cancelled
     // meeting has no recording to find, so scanning it only burns Drive quota and
     // leaves a placeholder behind.
+    // Meetings still waiting on a Drive file — either none at all, or nothing but
+    // unresolved `pending_` placeholders.
+    //
+    // `recordings: { none: {} }` alone was the reason nothing was ever automatic.
+    // Google publishes a Meet recording to Drive 10-30 minutes after the call
+    // ends, but this sweep runs two minutes after, finds nothing, and writes a
+    // placeholder. The meeting then HAS a recording, so it never matched `none`
+    // again and was abandoned — no download, no audio, no transcript, no summary,
+    // until someone pressed "scan Drive" by hand. 33 of 36 rows were stuck this
+    // way.
+    //
+    // `every` is vacuously true for a meeting with no recordings, so this one
+    // condition covers both cases.
+    const RETRY_WINDOW_MS = Number(process.env.RECORDING_SYNC_WINDOW_HOURS ?? 48) * 60 * 60 * 1000;
+
     const pastMeetings = await db.meeting.findMany({
       where: {
         provider: 'GOOGLE_MEET',
         status: { not: 'CANCELLED' },
         endTime: { lt: new Date() },
+        // Bounded so a class that was genuinely never recorded is not re-searched
+        // against Drive every two minutes for the rest of the year.
+        AND: [{ endTime: { gt: new Date(Date.now() - RETRY_WINDOW_MS) } }],
         recordings: {
-          none: {},
+          every: { driveFileId: { startsWith: 'pending_' } },
         },
       },
       orderBy: { endTime: 'desc' },
