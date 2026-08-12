@@ -6,7 +6,9 @@ import {
   effectiveReflectionQuestions,
   effectiveReflectionQuiz,
   effectiveSessionTopics,
-  gradeReflection,
+  snapshotReflection,
+  applyMentorMarks,
+  mentorAwardedTotal,
   deriveAttendance,
   owesReflection,
   stripAnswerKey,
@@ -14,6 +16,8 @@ import {
   createClassMediaGrant,
   extractMeetCode,
   ReflectionResponse,
+  ReflectionMentorMark,
+  ReflectionAnswerEntry,
 } from '@futurespark/constants';
 
 /** A class is finished if it was completed, the room emptied, or its slot ran out. */
@@ -46,13 +50,6 @@ const isUnscopedStaffRole = (role?: string): boolean => role === 'ADMIN' || role
  * whole platform's transcripts to whoever books the timetable.
  */
 const isClassAuditorRole = (role?: string): boolean => role === 'ADMIN' || role === 'QA_AUDITOR';
-
-/**
- * Ceiling on credits awarded for one class. A session is worth single digits, so
- * this is generous — it exists to stop a body-supplied number from being a
- * balance-editing primitive, not to express curriculum policy.
- */
-const MAX_CLASS_CREDITS = 100;
 
 /**
  * Strip the marking scheme out of a curriculum session before it leaves for a
@@ -141,7 +138,7 @@ const MENTOR_CLASS_SELECT = {
  * queue (`qa/page.tsx`). Between them they need the lesson's slot, its programme
  * and the names of the two people in the room — nothing else. It used to be an
  * `include`, which selects *every* ScheduledClass scalar: `reflectionAnswers`
- * (the `{ selectedOptionId, correct }` answer key), `transcript`,
+ * (a child's own words, and the mentor's marks on them), `transcript`,
  * `classSummary`, `studentFeedback` and `recordingUrl` all rode out on the back
  * of a report row.
  *
@@ -220,8 +217,9 @@ type ClassRecord = Awaited<ReturnType<typeof loadClassRecord>>;
  * withheld until someone deliberately adds it here, which is the opposite of
  * what `include` does. Four fields are held back on purpose:
  *
- *  - `reflectionAnswers` — each entry carries `selectedOptionId` + `correct`,
- *    which is the answer key for that session under another name.
+ *  - `reflectionAnswers` — a child's own answers, plus the mentor's per-answer
+ *    marks and remarks on them. `getReflection` is the one endpoint that serves
+ *    those, and it gates on the same three-way relationship.
  *  - `transcript` — the verbatim record of a child speaking in a lesson.
  *  - `qaFeedback` — QA's internal notes on how the mentor performed.
  *  - `interactionMetrics` — the same audit material in derived form.
@@ -647,10 +645,13 @@ export const scheduleService = {
    *    the SCHEDULED ⇄ RESCHEDULE_REQUESTED pair.
    *
    * The mentor of the class is intentionally *not* granted `status` or
-   * `creditsAwarded` here. Marking a class complete and awarding points is
-   * `completeClass`, which refuses an already-completed class and so cannot be
-   * replayed; letting the same act in through this route would hand back the
-   * unbounded repeat that made the original hole worth exploiting.
+   * `creditsAwarded` here. Marking a class complete is `completeClass`, which
+   * refuses an already-completed class and so cannot be replayed; letting the
+   * same act in through this route would hand back the unbounded repeat that
+   * made the original hole worth exploiting. Points reach a student by one
+   * other door only — `reviewReflection`, where the mentor marks the quiz — and
+   * that one moves the difference against what it already awarded rather than
+   * the whole total. `creditsAwarded` here stays an admin correction tool.
    */
   async updateSchedule(id: string, input: UpdateScheduleInput, callerId?: string, callerRole?: string) {
     const classSession = await loadClassRecord(id);
@@ -1106,7 +1107,18 @@ export const scheduleService = {
     return updatedReport;
   },
 
-  async completeClass(classId: string, credits: number, callerId?: string, callerRole?: string) {
+  /**
+   * The mentor's "this class happened" button. It marks the class COMPLETED and
+   * nothing else.
+   *
+   * It used to mint credits from a number on the request body. Points are now a
+   * mentor's judgement on the *work*, awarded per answer in `reviewReflection`
+   * once the student has actually submitted the quiz — so completing a class
+   * awards nothing at all, and there is no amount to send here. The admin
+   * correction path (`updateSchedule`'s `creditsAwarded`) is a separate thing
+   * and still writes the column.
+   */
+  async completeClass(classId: string, callerId?: string, callerRole?: string) {
     const classSession = await db.scheduledClass.findUnique({
       where: { id: classId },
       include: {
@@ -1118,11 +1130,11 @@ export const scheduleService = {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
     }
 
-    // Completing a class mints credits from a body-supplied amount, and it is
-    // what unlocks the reflection quiz. Only the mentor who taught the class may
-    // say it happened; ADMIN is allowed through for support fixes. Without this
-    // a student could close out a class they never attended and then claim the
-    // quiz credit for it.
+    // Completion no longer carries an award, but it is still what unlocks the
+    // reflection quiz — and the quiz is what the points hang off. Only the
+    // mentor who taught the class may say it happened; ADMIN is allowed through
+    // for support fixes. Without this a student could close out a class they
+    // never attended and open the quiz they get paid for.
     if (callerRole !== 'ADMIN') {
       if (!callerId) {
         throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
@@ -1132,23 +1144,11 @@ export const scheduleService = {
       }
     }
 
-    // The award is a number straight off the request body, so it needs a real
-    // bound and not just a type check. Negative values ran through
-    // `credits: { increment: n }` unchanged and drained a student's balance;
-    // a non-integer or NaN reached Prisma's Int column and blew up mid-transaction
-    // as an unhandled 500 rather than a clean rejection.
-    if (!Number.isInteger(credits) || credits < 0 || credits > MAX_CLASS_CREDITS) {
-      throw new AppError(
-        `Credits must be a whole number between 0 and ${MAX_CLASS_CREDITS}`,
-        HTTP_STATUS.BAD_REQUEST
-      );
-    }
-
     if (classSession.status === 'COMPLETED') {
       throw new AppError('Class session has already been completed', HTTP_STATUS.BAD_REQUEST);
     }
     if (new Date(classSession.startTime) > new Date()) {
-      throw new AppError('Cannot complete or award points to a future class session', HTTP_STATUS.BAD_REQUEST);
+      throw new AppError('Cannot complete a future class session', HTTP_STATUS.BAD_REQUEST);
     }
 
     let session = null;
@@ -1158,51 +1158,41 @@ export const scheduleService = {
       });
     }
 
-    return db.$transaction(async (tx) => {
-      const updatedClass = await tx.scheduledClass.update({
-        where: { id: classId },
-        data: {
-          status: 'COMPLETED',
-          creditsAwarded: credits,
-        },
-        include: {
-          student: { select: STUDENT_CLASS_SELECT },
-          mentor: { select: MENTOR_CLASS_SELECT },
-        },
-      });
-
-      if (updatedClass.studentId) {
-        await tx.student.update({
-          where: { id: updatedClass.studentId },
-          data: {
-            credits: { increment: credits },
-          },
-        });
-
-        // 1. Notify Student
-        await sendNotification(
-          updatedClass.studentId,
-          'Class Completed & Credits Awarded!',
-          `You earned +${credits} credit points for completing "${session?.title || 'Session'}"!`,
-          'MEDIUM'
-        );
-
-        // 2. Notify Parent
-        if (updatedClass.student?.parentAccountId) {
-          await sendNotification(
-            updatedClass.student.parentAccountId,
-            'Student Completed Session',
-            `${updatedClass.student.firstName} completed the session "${session?.title || 'Session'}" and was awarded +${credits} credit points.`,
-            'LOW'
-          );
-        }
-      }
-
-      return {
-        ...updatedClass,
-        session,
-      };
+    // A single write, so no transaction: the student balance update that needed
+    // one has moved to `reviewReflection`, where the points are now decided.
+    const updatedClass = await db.scheduledClass.update({
+      where: { id: classId },
+      data: { status: 'COMPLETED' },
+      include: {
+        student: { select: STUDENT_CLASS_SELECT },
+        mentor: { select: MENTOR_CLASS_SELECT },
+      },
     });
+
+    if (updatedClass.studentId) {
+      // 1. Notify Student — the quiz is what is waiting for them, not a payout.
+      await sendNotification(
+        updatedClass.studentId,
+        'Class Completed — Quiz Unlocked',
+        `Your mentor marked "${session?.title || 'Session'}" complete. Answer the quiz to earn your points.`,
+        'MEDIUM'
+      );
+
+      // 2. Notify Parent
+      if (updatedClass.student?.parentAccountId) {
+        await sendNotification(
+          updatedClass.student.parentAccountId,
+          'Student Completed Session',
+          `${updatedClass.student.firstName} completed the session "${session?.title || 'Session'}". Points follow once the mentor marks the reflection quiz.`,
+          'LOW'
+        );
+      }
+    }
+
+    return {
+      ...updatedClass,
+      session,
+    };
   },
 
   /**
@@ -1341,11 +1331,10 @@ export const scheduleService = {
     }
 
     // The same three-way ownership test `listDoubts` runs. Two separate things
-    // ride on it: `answers` holds the child's free text, and each stored entry
-    // carries `selectedOptionId` + `correct`, which is the answer key for that
-    // session under another name. A classmate reading a submitted class would
-    // learn which option id scores on the very quiz they are about to sit —
-    // the option ids are the same ones `stripAnswerKey` hands them.
+    // ride on it: `answers` holds the child's free text, and — for a caller who
+    // clears `canSeeAnswerKey` below — the payload carries the marking scheme
+    // for a quiz other children have not sat yet. It also carries the mentor's
+    // per-answer points and remarks about this one child.
     assertClassAccess(scheduledClass, callerId, callerRole);
 
     const session = scheduledClass.sessionId
@@ -1366,17 +1355,26 @@ export const scheduleService = {
       // `questions` keeps the plain-string shape older clients read; `quiz`
       // carries the typed version with images, options and points.
       //
-      // The answer key is stripped unconditionally here: this endpoint exists to
-      // serve the person about to sit the quiz. Reviewers read the graded
-      // answers instead, which already carry correct/incorrect per question.
+      // The answer key used to be stripped unconditionally, on the grounds that
+      // reviewers read the graded answers instead — but nothing is graded at
+      // submit any more, so the mentor marking an MCQ has no other way to know
+      // which option was intended and cannot mark it fairly. `canSeeAnswerKey`
+      // is the shared rule: staff and mentors keep the key, the student sitting
+      // the quiz and their parent still get it stripped. The ownership gate
+      // above already refused everyone who was not in this room.
       questions: effectiveReflectionQuestions(session?.reflectionQuestions ?? null),
-      quiz: stripAnswerKey(quiz),
-      topics: effectiveSessionTopics(session?.topics),
+      quiz: canSeeAnswerKey(callerRole) ? quiz : stripAnswerKey(quiz),
+      // Each entry carries the mentor's award and remark for that answer once
+      // they have marked it, which is how the student is shown *why* they got
+      // the points. Never the answer key — see `ReflectionAnswerEntry`.
       answers: (scheduledClass.reflectionAnswers as ReflectionEntry[] | null) ?? null,
       submittedAt: scheduledClass.reflectionSubmittedAt,
+      // Null until a mentor marks the quiz. Submitting scores nothing, so
+      // "submitted, waiting for your mentor" is submittedAt set with these null.
       score: scheduledClass.reflectionScore,
       maxScore: scheduledClass.reflectionMaxScore,
       badge: scheduledClass.reflectionBadge,
+      awaitingReview: Boolean(scheduledClass.reflectionSubmittedAt && !scheduledClass.reflectionReviewedAt),
       // The mentor's sign-off, and the reply they wrote to what the student
       // said. `reviewReflection` has always stored these, but until now no
       // student-facing endpoint returned them, so the note was written and
@@ -1389,12 +1387,16 @@ export const scheduleService = {
   },
 
   /**
-   * Stores and grades a student's reflection.
+   * Stores a student's reflection. It scores nothing.
    *
-   * Grading happens against the server's copy of the quiz and the question text
-   * is snapshotted alongside each answer, so a client cannot invent prompts,
-   * award itself points, or have a later admin edit silently reword what it was
-   * asked.
+   * The snapshot is taken against the server's copy of the quiz — question text,
+   * type and worth are copied in — so a client cannot invent prompts, inflate
+   * what a question was worth, or have a later admin edit silently reword what
+   * it was asked. What it deliberately does *not* do is mark any of it:
+   * `reflectionScore`, `reflectionMaxScore` and `reflectionBadge` are left null
+   * and every answer is stored unmarked, because the points are the mentor's
+   * judgement and the badge follows their total. The student sees "submitted,
+   * waiting for your mentor" until `reviewReflection` runs.
    */
   async submitReflection(
     classId: string,
@@ -1422,11 +1424,13 @@ export const scheduleService = {
 
     // One attempt per class.
     //
-    // The graded response hands back `correct` per question, so unlimited
-    // resubmission was a per-question oracle: answer, see which entries came back
-    // false, resubmit those. Any multiple-choice quiz converges on GOLD in a few
-    // rounds, which makes the badge meaningless and the mentor's review of the
-    // answers misleading. ADMIN can still overwrite to fix a genuine mistake.
+    // The lock predates mentor marking — a graded response used to hand back
+    // `correct` per question, which made unlimited resubmission an answer
+    // oracle. Nothing is graded at submit any more, so that particular loop is
+    // closed either way, but the lock stays for a plainer reason: the mentor
+    // marks these exact answers, and a student who could overwrite them after
+    // the marking started would be revising work someone is part-way through
+    // paying for. ADMIN can still overwrite to fix a genuine mistake.
     if (callerRole !== 'ADMIN' && scheduledClass.reflectionSubmittedAt) {
       throw new AppError(
         'You have already submitted this quiz — ask your mentor if you need it reopened',
@@ -1477,47 +1481,107 @@ export const scheduleService = {
       : null;
 
     const quiz = effectiveReflectionQuiz(session?.reflectionQuiz, session?.reflectionQuestions);
-    const graded = gradeReflection(quiz, responses);
+    const snapshot = snapshotReflection(quiz, responses);
 
-    if (graded.answeredCount === 0) {
+    if (snapshot.answeredCount === 0) {
       throw new AppError('Answer at least one question before submitting', HTTP_STATUS.BAD_REQUEST);
     }
 
-    const updated = await db.scheduledClass.update({
-      where: { id: classId },
-      data: {
-        reflectionAnswers: graded.entries as any,
-        reflectionSubmittedAt: new Date(),
-        reflectionScore: graded.score,
-        reflectionMaxScore: graded.maxScore,
-        reflectionBadge: graded.badge?.id ?? null,
-      },
-      select: {
-        id: true,
-        reflectionAnswers: true,
-        reflectionSubmittedAt: true,
-        reflectionScore: true,
-        reflectionMaxScore: true,
-        reflectionBadge: true,
-      },
+    const updated = await db.$transaction(async (tx) => {
+      // Only ADMIN reaches this with a submission already on the row, and
+      // replacing the answers throws away the marks attached to them. Whatever
+      // the mentor had already paid out for those answers is taken back with
+      // them: leaving the credits behind while zeroing the record of them would
+      // make the next evaluation award the full amount a second time, which is
+      // the unbounded-minting bug this whole path is written to avoid.
+      const current = await tx.scheduledClass.findUnique({
+        where: { id: classId },
+        select: { studentId: true, reflectionAnswers: true },
+      });
+      const clawback = mentorAwardedTotal(current?.reflectionAnswers as ReflectionAnswerEntry[] | null);
+
+      const row = await tx.scheduledClass.update({
+        where: { id: classId },
+        data: {
+          reflectionAnswers: snapshot.entries as any,
+          reflectionSubmittedAt: new Date(),
+          // Score, max and badge stay null on purpose. Writing 0 here would make
+          // "not marked yet" indistinguishable from "marked and scored nothing" —
+          // `getStudentOverview` counts any number as a marked quiz.
+          reflectionScore: null,
+          reflectionMaxScore: null,
+          reflectionBadge: null,
+          // A sign-off belongs to the answers it was given for. These are new
+          // answers, so the class goes back into the marking queue.
+          reflectionReviewedAt: null,
+          reflectionReviewedById: null,
+          reflectionMentorNote: null,
+        },
+        select: {
+          id: true,
+          reflectionAnswers: true,
+          reflectionSubmittedAt: true,
+          reflectionScore: true,
+          reflectionMaxScore: true,
+          reflectionBadge: true,
+        },
+      });
+
+      if (clawback > 0 && current?.studentId) {
+        await tx.student.update({
+          where: { id: current.studentId },
+          data: { credits: { decrement: clawback } },
+        });
+        logger.warn(
+          `[Reflection] Class ${classId} resubmitted over a marked reflection — reclaimed ${clawback} credit points`
+        );
+      }
+
+      return row;
     });
 
     logger.info(
       `[Reflection] Student ${scheduledClass.studentId} submitted reflection for class ${classId} ` +
-      `— ${graded.score}/${graded.maxScore}${graded.badge ? ` (${graded.badge.id})` : ''}`
+      `— ${snapshot.answeredCount}/${snapshot.entries.length} answered, awaiting mentor marking`
     );
-    return { ...updated, badge: graded.badge, answeredCount: graded.answeredCount };
+    // The score/max/badge keys are kept (null) so the client shape does not
+    // change; `awaitingReview` is what it should actually be reading.
+    return {
+      ...updated,
+      badge: null,
+      answeredCount: snapshot.answeredCount,
+      pointsAvailable: snapshot.maxScore,
+      awaitingReview: true,
+    };
   },
 
   /**
-   * The mentor's sign-off on a submitted reflection, plus an optional reply to
-   * what the student wrote.
+   * The mentor's evaluation of a submitted reflection: points per answer, an
+   * optional remark on each, an optional overall note, and the sign-off.
    *
-   * Grading is automatic, so a score on its own proves nothing about whether
-   * anyone read the answers. This is what a parent looks at to tell the two
-   * apart, which is why it can only be stamped by the mentor who taught.
+   * This is where a reflection is actually marked. Nothing scores the quiz at
+   * submit, so the mentor's per-answer awards *are* the score: their sum is
+   * `reflectionScore`, the sum of what the questions are worth is
+   * `reflectionMaxScore`, and the badge follows from the two on the same
+   * Gold/Silver/Bronze thresholds as before. The awarded total is then added to
+   * the student's credit balance — the points are the reward, and completing a
+   * class no longer pays anything on its own.
+   *
+   * `marks` is optional. Omitting it keeps the endpoint's original behaviour —
+   * a sign-off and a note, no score and no credits — which is what an older
+   * client posting only `{ note }` gets.
+   *
+   * Re-marking is expected: a mentor may fix a number they got wrong, or mark
+   * the quiz in passes. So the credit movement is a *difference* against what
+   * the entries were already carrying, never the whole total again.
    */
-  async reviewReflection(classId: string, note?: string, callerId?: string, callerRole?: string) {
+  async reviewReflection(
+    classId: string,
+    note?: string,
+    marks?: ReflectionMentorMark[],
+    callerId?: string,
+    callerRole?: string
+  ) {
     const scheduledClass = await db.scheduledClass.findUnique({
       where: { id: classId },
       select: {
@@ -1526,15 +1590,17 @@ export const scheduleService = {
         mentorId: true,
         sessionId: true,
         reflectionSubmittedAt: true,
+        student: { select: { firstName: true, parentAccountId: true } },
       },
     });
     if (!scheduledClass) {
       throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
     }
 
-    // Only the mentor who taught this class may sign it off. ADMIN is allowed
+    // Only the mentor who taught this class may mark it. ADMIN is allowed
     // through for support fixes; every other role — including other mentors on
-    // the platform — is rejected outright.
+    // the platform — is rejected outright. Unchanged by the move to
+    // mentor-awarded points: the same person who signs off is the one who pays.
     if (callerRole !== 'ADMIN') {
       if (!callerId) {
         throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
@@ -1544,43 +1610,149 @@ export const scheduleService = {
       }
     }
 
+    // Marks have nothing to attach to before the student has answered.
     if (!scheduledClass.reflectionSubmittedAt) {
       throw new AppError('There is no submitted reflection to review yet', HTTP_STATUS.BAD_REQUEST);
     }
 
     const trimmedNote = typeof note === 'string' ? note.trim() : '';
+    const evaluating = Array.isArray(marks) && marks.length > 0;
+    const reviewedAt = new Date();
 
-    const updated = await db.scheduledClass.update({
-      where: { id: classId },
-      data: {
-        reflectionReviewedAt: new Date(),
+    const { updated, awarded, creditsDiff } = await db.$transaction(async (tx) => {
+      // Read inside the transaction. The baseline for the credit difference has
+      // to be the row as it is at the moment of the write — reading it before
+      // the transaction and incrementing after is the race a double-clicked
+      // Save wins, and it pays twice.
+      const current = await tx.scheduledClass.findUnique({
+        where: { id: classId },
+        select: { studentId: true, reflectionAnswers: true, reflectionScore: true },
+      });
+      if (!current) {
+        throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+      }
+
+      const data: Record<string, unknown> = {
+        reflectionReviewedAt: reviewedAt,
         reflectionReviewedById: callerId ?? null,
         // Reviewing with an empty note clears the old one: leaving a previous
         // reply attached to a fresh sign-off would misattribute it.
         reflectionMentorNote: trimmedNote || null,
-      },
-      select: {
-        id: true,
-        reflectionSubmittedAt: true,
-        reflectionReviewedAt: true,
-        reflectionReviewedById: true,
-        reflectionMentorNote: true,
-      },
+      };
+
+      let evaluated: ReturnType<typeof applyMentorMarks> | null = null;
+      if (evaluating) {
+        try {
+          // Validation lives in the shared helper and reads the ceiling off the
+          // *stored* entries, which the server wrote at submit. A ceiling taken
+          // from the request would be a number the client chooses.
+          evaluated = applyMentorMarks(
+            current.reflectionAnswers as ReflectionAnswerEntry[] | null,
+            marks as ReflectionMentorMark[],
+            reviewedAt
+          );
+        } catch (err) {
+          throw new AppError((err as Error).message, HTTP_STATUS.BAD_REQUEST);
+        }
+        data.reflectionAnswers = evaluated.entries as any;
+        data.reflectionScore = evaluated.score;
+        data.reflectionMaxScore = evaluated.maxScore;
+        data.reflectionBadge = evaluated.badge?.id ?? null;
+      }
+
+      // Compare-and-set on the score this evaluation was computed against, so a
+      // second concurrent save of the same marking finds the row already moved
+      // and is refused rather than crediting on top of the first.
+      const applied = await tx.scheduledClass.updateMany({
+        where: { id: classId, reflectionScore: current.reflectionScore },
+        data: data as any,
+      });
+      if (applied.count === 0) {
+        throw new AppError(
+          'This reflection was marked by someone else a moment ago — reload it and try again',
+          HTTP_STATUS.CONFLICT
+        );
+      }
+
+      const row = await tx.scheduledClass.findUnique({
+        where: { id: classId },
+        select: {
+          id: true,
+          reflectionAnswers: true,
+          reflectionSubmittedAt: true,
+          reflectionScore: true,
+          reflectionMaxScore: true,
+          reflectionBadge: true,
+          reflectionReviewedAt: true,
+          reflectionReviewedById: true,
+          reflectionMentorNote: true,
+        },
+      });
+      if (!row) {
+        throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+      }
+
+      // The difference, never the total. `previousScore` is what the stored
+      // entries were already marked at, so re-saving an unchanged evaluation
+      // moves 0, raising an answer from 3 to 5 moves +2, and lowering it moves
+      // -2. Awarding `evaluated.score` here instead would mint the whole quiz
+      // again on every edit — the same shape of bug the admin `creditsAwarded`
+      // path was fixed for.
+      const diff = evaluated ? evaluated.score - evaluated.previousScore : 0;
+      if (diff !== 0 && current.studentId) {
+        await tx.student.update({
+          where: { id: current.studentId },
+          data: { credits: { increment: diff } },
+        });
+      }
+
+      return { updated: row, awarded: evaluated, creditsDiff: diff };
     });
 
     if (scheduledClass.studentId) {
+      const scoreLine = awarded ? ` You scored ${awarded.score}/${awarded.maxScore}.` : '';
+      const pointsLine =
+        creditsDiff > 0
+          ? ` +${creditsDiff} credit points have been added to your balance.`
+          : creditsDiff < 0
+            ? ` Your balance was corrected by ${creditsDiff} credit points.`
+            : '';
       await sendNotification(
         scheduledClass.studentId,
-        'Your mentor reviewed your quiz',
-        trimmedNote
+        awarded ? 'Your mentor marked your quiz' : 'Your mentor reviewed your quiz',
+        (trimmedNote
           ? `Your mentor left you a note: "${trimmedNote}"`
-          : 'Your mentor has gone through your reflection answers.',
-        'LOW'
+          : 'Your mentor has gone through your reflection answers.') + scoreLine + pointsLine,
+        awarded ? 'MEDIUM' : 'LOW'
       );
+
+      // The parent used to hear about points when the class was completed. That
+      // notification was removed with the award, so this is where they hear now.
+      if (awarded && creditsDiff !== 0 && scheduledClass.student?.parentAccountId) {
+        await sendNotification(
+          scheduledClass.student.parentAccountId,
+          'Quiz Marked',
+          `${scheduledClass.student.firstName ?? 'Your child'} scored ${awarded.score}/${awarded.maxScore} on their reflection quiz (${creditsDiff > 0 ? '+' : ''}${creditsDiff} credit points).`,
+          'LOW'
+        );
+      }
     }
 
-    logger.info(`[Reflection] Class ${classId} signed off by ${callerId ?? 'unknown caller'}`);
-    return updated;
+    logger.info(
+      `[Reflection] Class ${classId} ${awarded ? 'marked' : 'signed off'} by ${callerId ?? 'unknown caller'}` +
+        (awarded
+          ? ` — ${awarded.score}/${awarded.maxScore}${awarded.badge ? ` (${awarded.badge.id})` : ''}, ` +
+            `${awarded.markedCount}/${awarded.totalCount} answers marked, credits ${creditsDiff >= 0 ? '+' : ''}${creditsDiff}`
+          : '')
+    );
+
+    return {
+      ...updated,
+      badge: awarded?.badge ?? null,
+      creditsAwarded: creditsDiff,
+      markedCount: awarded?.markedCount ?? 0,
+      totalCount: awarded?.totalCount ?? 0,
+    };
   },
 
   // ── Class doubts ────────────────────────────────────────────────────────────
@@ -1962,8 +2134,12 @@ export const scheduleService = {
           badge: c.reflectionBadge,
           answers,
           pending: owesReflection(c, now),
-          // The mentor's sign-off: whether anyone actually read the answers the
-          // grader scored, and what they said back.
+          // Submitted and nobody has marked it yet. Score/badge are null in that
+          // state — nothing is scored until a mentor says so — so this is what
+          // tells "waiting for the mentor" apart from "marked and scored zero".
+          awaitingReview: Boolean(c.reflectionSubmittedAt && !c.reflectionReviewedAt),
+          // The mentor's sign-off: it is also when the points were decided, so
+          // this doubles as "has this quiz been marked".
           reviewedAt: c.reflectionReviewedAt,
           reviewedById: c.reflectionReviewedById,
           mentorNote: c.reflectionMentorNote,
@@ -2017,10 +2193,16 @@ export const scheduleService = {
         reflectionsSubmitted: reflectionsDone.length,
         reflectionsPending: timeline.filter((t) => t.reflection.pending).length,
         reflectionsReviewed: reflectionsDone.filter((t) => t.reflection.reviewedAt).length,
+        // A real queue now, not a formality: an unmarked quiz has earned the
+        // student nothing yet, so this is the count of work owed to them.
+        reflectionsAwaitingReview: reflectionsDone.filter((t) => t.reflection.awaitingReview).length,
         doubtsTotal: timeline.reduce((sum, t) => sum + t.doubts.total, 0),
         doubtsOpen: timeline.reduce((sum, t) => sum + t.doubts.open, 0),
         // Average of the score percentages, not of the raw scores — quizzes can
         // be worth different totals, so raw averages would be meaningless.
+        // Over *marked* quizzes only: a submitted-but-unmarked one has a null
+        // score and no percentage to average, and counting it as zero would
+        // punish the student for the mentor not having got to it yet.
         averageQuizPercent: scored.length
           ? Math.round(
               scored.reduce(
@@ -2044,11 +2226,14 @@ export const scheduleService = {
 };
 
 /**
- * One answered prompt, snapshotted at submit time.
+ * One answered prompt, snapshotted at submit time and marked afterwards.
  *
- * Rows written before the quiz existed hold only `question` and `answer`; the
- * rest is optional so those still deserialise. Readers must treat every
- * optional field as possibly absent.
+ * The read-side, tolerant twin of `ReflectionAnswerEntry` in
+ * `@futurespark/constants` — kept because rows written before the quiz existed
+ * hold only `question` and `answer`, and rows written before mentor marking
+ * carry the old auto-grader's `correct` and `pointsEarned`. Everything else is
+ * optional so all of them still deserialise, and readers must treat every
+ * optional field as possibly absent. Keep it in step with the constants type.
  */
 export interface ReflectionEntry {
   question: string;
@@ -2056,7 +2241,11 @@ export interface ReflectionEntry {
   questionId?: string;
   type?: string;
   selectedOptionId?: string | null;
-  correct?: boolean | null;
-  pointsEarned?: number;
   pointsPossible?: number;
+  /** The mentor's award. null or absent means this answer is not marked yet. */
+  pointsEarned?: number | null;
+  mentorComment?: string | null;
+  mentorMarkedAt?: string | null;
+  /** Legacy auto-grade verdict. Nothing writes it any more. */
+  correct?: boolean | null;
 }

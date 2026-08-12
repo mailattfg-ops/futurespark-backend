@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { successResponse } from '@futurespark/response';
-import { HTTP_STATUS, ReflectionResponse } from '@futurespark/constants';
+import { HTTP_STATUS, ReflectionResponse, ReflectionMentorMark } from '@futurespark/constants';
 import { scheduleService } from './schedule.service';
 import { validateCreateSchedule, validateUpdateSchedule } from './schedule.schema';
 
@@ -130,15 +130,22 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(report, 'Session report updated successfully'));
   },
 
+  /**
+   * Marks the class complete. Takes no body.
+   *
+   * It used to read `credits` from the request and award them. Points are the
+   * mentor's judgement on the quiz now, awarded per answer through
+   * `reviewReflection`, so a `credits` field here is ignored rather than
+   * honoured — an older client still posting one gets a completed class and no
+   * award, which is the intended outcome.
+   */
   async completeClass(req: Request, res: Response) {
-    const { credits } = req.body;
     const classSession = await scheduleService.completeClass(
       req.params.id,
-      Number(credits || 0),
       req.headers['x-user-id'] as string | undefined,
       req.headers['x-user-role'] as string | undefined
     );
-    return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class session completed and credits awarded successfully'));
+    return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class session marked complete'));
   },
 
   async rateClass(req: Request, res: Response) {
@@ -206,21 +213,85 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection submitted successfully'));
   },
 
+  /**
+   * The mentor's evaluation of a submitted quiz:
+   *   { note?: string, marks?: [{ questionId, points, comment? }] }
+   *
+   * Both halves are optional and independent. `{ note }` alone is the original
+   * sign-off and still behaves exactly as it did — no score, no credits — so
+   * the existing mentor drawer keeps working untouched. Send `marks` and the
+   * quiz is scored from them, badged from the total, and the student's balance
+   * moves by the difference.
+   *
+   * Only the shape is checked here, in the same hand-rolled style as the rest of
+   * this controller. The rules that matter — a mark per question that was
+   * actually asked, points inside that question's own ceiling — are enforced in
+   * the service against the stored answers, because those are the only copy the
+   * client cannot edit.
+   */
   async reviewReflection(req: Request, res: Response) {
-    const { note } = req.body;
+    const { note, marks } = req.body;
     if (note !== undefined && note !== null && typeof note !== 'string') {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({
         success: false,
         message: '"note" must be text.',
       });
     }
+
+    let normalizedMarks: ReflectionMentorMark[] | undefined;
+    if (marks !== undefined && marks !== null) {
+      if (!Array.isArray(marks)) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json({
+          success: false,
+          message: '"marks" must be an array, one entry per answer you are marking.',
+        });
+      }
+      for (const mark of marks) {
+        if (!mark || typeof mark !== 'object') {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({
+            success: false,
+            message: 'Each mark must be an object of { questionId, points, comment? }.',
+          });
+        }
+        if (typeof mark.questionId !== 'string' || !mark.questionId.trim()) {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({
+            success: false,
+            message: 'Each mark needs the "questionId" of the answer it applies to.',
+          });
+        }
+        // Rejected here rather than coerced: `Number(undefined)` is NaN and
+        // `Number(null)` is 0, so a missing field would otherwise silently
+        // become a real mark of zero on a real answer.
+        if (typeof mark.points !== 'number' || !Number.isInteger(mark.points) || mark.points < 0) {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({
+            success: false,
+            message: `"points" for ${mark.questionId} must be a whole number of 0 or more.`,
+          });
+        }
+        if (mark.comment !== undefined && mark.comment !== null && typeof mark.comment !== 'string') {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({
+            success: false,
+            message: `"comment" for ${mark.questionId} must be text.`,
+          });
+        }
+      }
+      normalizedMarks = marks.map((m: any) => ({
+        questionId: m.questionId,
+        points: m.points,
+        comment: typeof m.comment === 'string' ? m.comment : null,
+      }));
+    }
+
     const result = await scheduleService.reviewReflection(
       req.params.id,
       typeof note === 'string' ? note : undefined,
+      normalizedMarks,
       req.headers['x-user-id'] as string | undefined,
       req.headers['x-user-role'] as string | undefined
     );
-    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Reflection reviewed successfully'));
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse(result, normalizedMarks?.length ? 'Reflection marked successfully' : 'Reflection reviewed successfully')
+    );
   },
 
   async createDoubt(req: Request, res: Response) {

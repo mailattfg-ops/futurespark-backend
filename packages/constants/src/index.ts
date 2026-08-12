@@ -97,7 +97,21 @@ export interface ReflectionQuestion {
   points: number;
 }
 
-/** One answered question, snapshotted at submit time. */
+/**
+ * One answered question: snapshotted when the student submits, marked by the
+ * mentor afterwards.
+ *
+ * Submitting scores nothing. The entry is written with `pointsPossible` — what
+ * the question is worth — and no award at all; `pointsEarned` stays null until a
+ * mentor decides it. `mentorMarkedAt` is the flag that tells the two apart, and
+ * it is what the credit arithmetic counts as "already paid for": an entry
+ * carrying a mark has been awarded, an entry without one has not, whatever
+ * number happens to sit in `pointsEarned` (see `mentorAwardedTotal`).
+ *
+ * Everything here is handed to the student and their parent verbatim by
+ * `getReflection` and `getStudentOverview`, so the answer key must never be
+ * snapshotted into it — not `correctOptionId`, and no longer `correct` either.
+ */
 export interface ReflectionAnswerEntry {
   questionId: string;
   question: string;
@@ -105,10 +119,20 @@ export interface ReflectionAnswerEntry {
   /** Free text for TEXT, the chosen option's label for the rest. */
   answer: string;
   selectedOptionId?: string | null;
-  /** true/false for graded questions, null when there is no right answer. */
-  correct: boolean | null;
-  pointsEarned: number;
+  /** What the question is worth. Server-written at submit, from `q.points`. */
   pointsPossible: number;
+  /** What the mentor awarded. null or absent means nobody has marked it yet. */
+  pointsEarned?: number | null;
+  /** The mentor's remark on this one answer. Optional, and shown to the student. */
+  mentorComment?: string | null;
+  /** ISO stamp of the mark. Its presence *is* "this answer has been marked". */
+  mentorMarkedAt?: string | null;
+  /**
+   * Legacy auto-grade verdict, kept so rows written before mentor marking still
+   * deserialise. Nothing writes it any more: points are a mentor's judgement,
+   * and a stored right/wrong flag was also the answer key under another name.
+   */
+  correct?: boolean | null;
 }
 
 export interface ReflectionBadge {
@@ -283,8 +307,10 @@ export const stripAnswerKey = (quiz: ReflectionQuestion[]): (ReflectionQuestion 
  * mentor who actually exists. Any gate that accepts one must accept both.
  *
  * A mentor is never the person sitting the quiz, so this reveals nothing to
- * whoever is being graded — `getReflection` strips the key unconditionally on
- * the endpoint students and mentors read the quiz from.
+ * whoever is being marked. `getReflection` serves both audiences from one
+ * payload and switches on this: the mentor who has to mark an MCQ cannot judge
+ * it fairly without seeing which option was intended, and the student and
+ * parent reading the same endpoint still get the stripped quiz.
  */
 const ANSWER_KEY_ROLES = new Set(['ADMIN', 'TEACHER', 'INSTRUCTOR']);
 
@@ -301,33 +327,36 @@ export interface ReflectionResponse {
   selectedOptionId?: string | null;
 }
 
-export interface GradedReflection {
+export interface SnapshotReflection {
   entries: ReflectionAnswerEntry[];
-  score: number;
-  maxScore: number;
   answeredCount: number;
-  badge: ReflectionBadge | null;
+  /** What the quiz is worth in total. Nothing is *earned* until a mentor marks it. */
+  maxScore: number;
 }
 
 /**
- * Grades a submission against the server's copy of the quiz.
+ * Records a submission against the server's copy of the quiz, without scoring
+ * any of it.
  *
- * Question text is copied into each entry so a later admin edit can never
- * reword what a student was actually asked. Only questions with a
- * `correctOptionId` are marked right or wrong; everything else — free text,
- * scales, opinion polls — scores full points for being answered, because the
- * point of a reflection is that the student did it, not that they guessed the
- * answer the admin had in mind.
+ * Question text, type and worth are copied into each entry so a client cannot
+ * invent prompts or inflate what a question was worth, and a later admin edit
+ * cannot silently reword what the student was actually asked. The chosen
+ * option's label is resolved from the server's option list for the same reason.
+ *
+ * It never reads `correctOptionId`. Points are a mentor's judgement now, so
+ * there is nothing here to pre-fill: a marked-up entry would both hand the
+ * mentor a verdict they were supposed to form themselves and, because
+ * `getReflection` returns these entries to the student, leak the answer key to
+ * the person who just sat the quiz.
  */
-export const gradeReflection = (
+export const snapshotReflection = (
   questions: ReflectionQuestion[],
   responses: ReflectionResponse[]
-): GradedReflection => {
+): SnapshotReflection => {
   const byId = new Map(responses.map((r) => [r.questionId, r]));
   const entries: ReflectionAnswerEntry[] = [];
-  let score = 0;
-  let maxScore = 0;
   let answeredCount = 0;
+  let maxScore = 0;
 
   questions.forEach((q, index) => {
     // Positional fallback keeps older clients that post a bare answer list working.
@@ -337,55 +366,41 @@ export const gradeReflection = (
 
     let answer = '';
     let selectedOptionId: string | null = null;
-    let correct: boolean | null = null;
-    let pointsEarned = 0;
 
     if (q.type === 'MCQ' || q.type === 'IMAGE_CHOICE') {
       const chosen = q.options?.find((o) => o.id === response?.selectedOptionId) ?? null;
       selectedOptionId = chosen?.id ?? null;
       answer = chosen?.label ?? '';
-      if (chosen) {
-        answeredCount++;
-        if (q.correctOptionId) {
-          correct = chosen.id === q.correctOptionId;
-          pointsEarned = correct ? points : 0;
-        } else {
-          pointsEarned = points;
-        }
-      } else if (q.correctOptionId) {
-        correct = false;
-      }
     } else {
       answer = typeof response?.answer === 'string' ? response.answer.trim().slice(0, 2000) : '';
-      if (answer) {
-        answeredCount++;
-        pointsEarned = points;
-      }
     }
 
-    score += pointsEarned;
-    entries.push({
+    const entry: ReflectionAnswerEntry = {
       questionId: q.id,
       question: q.prompt,
       type: q.type,
       answer,
       selectedOptionId,
-      correct,
-      pointsEarned,
       pointsPossible: points,
-    });
+      // Explicitly unmarked, so "submitted but not yet marked" is a state the
+      // reader can see rather than infer from a missing key.
+      pointsEarned: null,
+      mentorComment: null,
+      mentorMarkedAt: null,
+    };
+    if (isAnsweredEntry(entry)) answeredCount++;
+    entries.push(entry);
   });
 
-  return { entries, score, maxScore, answeredCount, badge: badgeForScore(score, maxScore) };
+  return { entries, answeredCount, maxScore };
 };
 
 /**
  * Did the student actually answer this stored question, or skip it?
  *
- * A skipped question is still stored — blank answer, zero points — so the
- * presence of an entry proves nothing on its own. Mirrors what
- * `gradeReflection` counts: a choice question needs a selected option,
- * everything else needs non-empty text.
+ * A skipped question is still stored — blank answer, nothing awarded — so the
+ * presence of an entry proves nothing on its own. A choice question needs a
+ * selected option, everything else needs non-empty text.
  *
  * Legacy rows carry no `type`; they fall to the text test, which is right
  * because their `answer` holds the chosen label when there was a choice.
@@ -396,100 +411,155 @@ export const isAnsweredEntry = (entry: Partial<ReflectionAnswerEntry> | null | u
   return Boolean(entry.answer && entry.answer.trim());
 };
 
-/**
- * Finds a question's previous answer. Matched on id first and prompt text
- * second, so an admin reordering the quiz between attempts cannot shuffle a
- * stored answer onto the wrong question; positional matching is the last
- * resort and only for pre-`questionId` rows, where there is nothing else to go
- * on. Same precedence the student portal uses to prefill the form.
- */
-const findPreviousEntry = (
-  previous: ReflectionAnswerEntry[],
-  questionId: string,
-  prompt: string,
-  index: number
-): ReflectionAnswerEntry | undefined =>
-  previous.find((e) => e.questionId && e.questionId === questionId) ??
-  previous.find((e) => e.question === prompt) ??
-  (previous.some((e) => e.questionId) ? undefined : previous[index]);
+// ── Mentor marking ────────────────────────────────────────────
+// The reward for a reflection is decided by the mentor, one answer at a time,
+// and stored inside the entries themselves — `ScheduledClass.reflectionAnswers`
+// already exists, so none of this needs a column of its own.
+
+/** Long enough for real feedback, short enough that it cannot fill the column. */
+export const MAX_MENTOR_COMMENT_LEN = 1000;
+
+/** One answer's verdict, as the mentor's client posts it. */
+export interface ReflectionMentorMark {
+  questionId: string;
+  /** Whole points, 0..the question's own `pointsPossible`. */
+  points: number;
+  comment?: string | null;
+}
+
+export interface MentorEvaluatedReflection {
+  entries: ReflectionAnswerEntry[];
+  /** Sum of the per-answer awards. */
+  score: number;
+  /** Sum of every answer's `pointsPossible`, marked or not. */
+  maxScore: number;
+  badge: ReflectionBadge | null;
+  /** What the entries already carried before this pass — the credit baseline. */
+  previousScore: number;
+  markedCount: number;
+  totalCount: number;
+}
+
+/** A question's worth, tolerant of legacy rows that predate `pointsPossible`. */
+const entryPointsPossible = (entry: Partial<ReflectionAnswerEntry> | null | undefined): number => {
+  const raw = Number(entry?.pointsPossible);
+  return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : DEFAULT_REFLECTION_POINTS;
+};
+
+/** Has a mentor actually marked this answer, as opposed to it merely having a number on it? */
+const isMarkedEntry = (entry: Partial<ReflectionAnswerEntry> | null | undefined): boolean =>
+  typeof entry?.mentorMarkedAt === 'string' && entry.mentorMarkedAt.length > 0;
 
 /**
- * Folds a re-submission into what the student already answered: **the first
- * answer to a question stands, and only questions left blank can still be
- * filled in.**
+ * What a mentor has already awarded on a stored reflection.
  *
- * Resubmission has to stay open — the portal deliberately lets a student who
- * sent a half-finished quiz go back and complete it rather than raise a support
- * ticket. But a submission response names `correct` per question, so an
- * unrestricted overwrite turns the endpoint into an answer oracle: submit
- * anything, read which entries came back false, resubmit those with a different
- * option, repeat until every question is right. A four-option question falls in
- * at most three retries and the student takes a Gold medal for it.
- *
- * Locking each question the moment it is answered closes that loop without
- * closing the quiz: there is no second guess at a question whose verdict you
- * have already seen, and nothing about finishing an unanswered one changes.
- *
- * Score, max and badge are recomputed from the merged entries — carrying the
- * fresh pass's totals over kept answers is what would let the oracle pay out
- * anyway. Requires no new column: the previous attempt is already stored in
- * `reflectionAnswers`.
+ * The credit ledger has no column of its own, so this *is* the record of what
+ * was paid out: re-marking credits the difference against it rather than the
+ * whole total again. Only entries stamped `mentorMarkedAt` count. Rows written
+ * by the old auto-grader carry a `pointsEarned` that was never worth any
+ * credits, and counting those would silently cancel out the first real award.
  */
-export const mergeReflectionAttempt = (
-  previous: ReflectionAnswerEntry[] | null | undefined,
-  fresh: GradedReflection
-): GradedReflection => {
-  const prior = Array.isArray(previous) ? previous : [];
-  if (prior.length === 0) return fresh;
+export const mentorAwardedTotal = (entries: ReflectionAnswerEntry[] | null | undefined): number =>
+  (Array.isArray(entries) ? entries : []).reduce((sum, entry) => {
+    if (!isMarkedEntry(entry)) return sum;
+    const points = Number(entry?.pointsEarned);
+    if (!Number.isFinite(points) || points <= 0) return sum;
+    return sum + Math.min(Math.round(points), entryPointsPossible(entry));
+  }, 0);
 
-  const entries: ReflectionAnswerEntry[] = [];
-  let score = 0;
-  let maxScore = 0;
-  let answeredCount = 0;
+/**
+ * Folds a mentor's marks into the stored answers and totals the result.
+ *
+ * Marks are a patch, not a replacement: an answer this request does not name
+ * keeps whatever the mentor gave it last time, so marking can be done in
+ * passes and revising one answer cannot silently zero the others. An answer
+ * nobody has marked contributes nothing to the score while still counting
+ * towards the max — an unmarked question is worth what it is worth, it just has
+ * not been earned.
+ *
+ * Every rejection throws a plain `Error` for the caller to wrap in its own HTTP
+ * type; this package stays framework-free. The ceiling comes from the *stored*
+ * `pointsPossible`, which the server wrote at submit — never from the request,
+ * or the mentor's client could name its own ceiling and mint credits with it.
+ */
+export const applyMentorMarks = (
+  stored: ReflectionAnswerEntry[] | null | undefined,
+  marks: ReflectionMentorMark[],
+  markedAt: Date = new Date()
+): MentorEvaluatedReflection => {
+  const entries = (Array.isArray(stored) ? stored : []).filter(Boolean);
+  if (entries.length === 0) {
+    throw new Error('This reflection has no stored answers to mark');
+  }
 
-  fresh.entries.forEach((entry, index) => {
-    const before = findPreviousEntry(prior, entry.questionId, entry.question, index);
-    const carry = Boolean(before) && isAnsweredEntry(before);
-
-    if (!carry || !before) {
-      entries.push(entry);
-      score += entry.pointsEarned;
-      maxScore += entry.pointsPossible;
-      if (isAnsweredEntry(entry)) answeredCount++;
-      return;
-    }
-
-    // Legacy rows predate scoring and ids. Repair them from the current
-    // question rather than dropping the answer or scoring it zero: back then
-    // every prompt was free text, and answered free text earns full marks — so
-    // the question's present value is what it was always worth.
-    const pointsPossible = Number.isFinite(before.pointsPossible as number)
-      ? (before.pointsPossible as number)
-      : entry.pointsPossible;
-    const pointsEarned = Number.isFinite(before.pointsEarned as number)
-      ? (before.pointsEarned as number)
-      : pointsPossible;
-
-    entries.push({
-      questionId: entry.questionId,
-      // The wording they were shown when they answered, not today's wording.
-      question: before.question || entry.question,
-      type: before.type ?? entry.type,
-      answer: before.answer ?? '',
-      selectedOptionId: before.selectedOptionId ?? null,
-      correct: before.correct ?? null,
-      pointsEarned,
-      pointsPossible,
-    });
-    score += pointsEarned;
-    maxScore += pointsPossible;
-    // Counted from the row we matched, not from the row we wrote: a legacy
-    // answer to what is now a choice question stores its label and no option
-    // id, and re-testing the repaired row would read that as a skip.
-    answeredCount++;
+  const byId = new Map<string, ReflectionAnswerEntry>();
+  entries.forEach((entry) => {
+    if (entry.questionId && !byId.has(entry.questionId)) byId.set(entry.questionId, entry);
   });
 
-  return { entries, score, maxScore, answeredCount, badge: badgeForScore(score, maxScore) };
+  const accepted = new Map<string, { points: number; comment: string | null }>();
+  (Array.isArray(marks) ? marks : []).forEach((mark) => {
+    const questionId = typeof mark?.questionId === 'string' ? mark.questionId.trim() : '';
+    const target = questionId ? byId.get(questionId) : undefined;
+    // A mentor cannot award points for a question that was never asked: the id
+    // has to match an answer this student actually submitted.
+    if (!target) {
+      throw new Error(`No submitted answer matches question "${questionId || '(missing id)'}"`);
+    }
+    if (accepted.has(questionId)) {
+      throw new Error(`Question "${questionId}" was marked twice in the same request`);
+    }
+    const points = Number(mark?.points);
+    if (!Number.isInteger(points) || points < 0) {
+      throw new Error(`Points for "${target.question || questionId}" must be a whole number of 0 or more`);
+    }
+    const ceiling = entryPointsPossible(target);
+    if (points > ceiling) {
+      throw new Error(`"${target.question || questionId}" is worth at most ${ceiling} points`);
+    }
+    const comment =
+      typeof mark?.comment === 'string' ? mark.comment.trim().slice(0, MAX_MENTOR_COMMENT_LEN) || null : null;
+    accepted.set(questionId, { points, comment });
+  });
+
+  const stamp = markedAt.toISOString();
+  let score = 0;
+  let maxScore = 0;
+  let markedCount = 0;
+
+  const marked = entries.map((entry) => {
+    const pointsPossible = entryPointsPossible(entry);
+    maxScore += pointsPossible;
+
+    const fresh = entry.questionId ? accepted.get(entry.questionId) : undefined;
+    if (fresh) {
+      score += fresh.points;
+      markedCount++;
+      return { ...entry, pointsPossible, pointsEarned: fresh.points, mentorComment: fresh.comment, mentorMarkedAt: stamp };
+    }
+
+    if (isMarkedEntry(entry)) {
+      const carried = Number(entry.pointsEarned);
+      const kept = Number.isFinite(carried) ? Math.max(0, Math.min(Math.round(carried), pointsPossible)) : 0;
+      score += kept;
+      markedCount++;
+      return { ...entry, pointsPossible, pointsEarned: kept };
+    }
+
+    // Never marked — including rows the old auto-grader scored. Their points are
+    // cleared rather than carried, so nothing awards itself without a mentor.
+    return { ...entry, pointsPossible, pointsEarned: null, mentorComment: null, mentorMarkedAt: null };
+  });
+
+  return {
+    entries: marked,
+    score,
+    maxScore,
+    badge: badgeForScore(score, maxScore),
+    previousScore: mentorAwardedTotal(entries),
+    markedCount,
+    totalCount: entries.length,
+  };
 };
 
 // ── Session mind map ──────────────────────────────────────────
