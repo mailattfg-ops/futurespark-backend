@@ -274,11 +274,21 @@ export const scheduleController = {
             message: `"comment" for ${mark.questionId} must be text.`,
           });
         }
+        if (mark.correction !== undefined && mark.correction !== null && typeof mark.correction !== 'string') {
+          return res.status(HTTP_STATUS.BAD_REQUEST).json({
+            success: false,
+            message: `"correction" for ${mark.questionId} must be text.`,
+          });
+        }
       }
       normalizedMarks = marks.map((m: any) => ({
         questionId: m.questionId,
         points: m.points,
         comment: typeof m.comment === 'string' ? m.comment : null,
+        // The answer the mentor was looking for, in their own words. Carried
+        // explicitly — an allowlist here means a client cannot smuggle extra
+        // fields into the stored entry.
+        correction: typeof m.correction === 'string' ? m.correction : null,
       }));
     }
 

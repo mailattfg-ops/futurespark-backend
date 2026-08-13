@@ -1746,10 +1746,13 @@ export const scheduleService = {
           : '')
     );
 
+    // `creditsDelta`, not `creditsAwarded`: it is how far the balance moved this
+    // time, which on a revision is the difference and can be negative. The
+    // column of that name is the admin correction tool and means something else.
     return {
       ...updated,
       badge: awarded?.badge ?? null,
-      creditsAwarded: creditsDiff,
+      creditsDelta: creditsDiff,
       markedCount: awarded?.markedCount ?? 0,
       totalCount: awarded?.totalCount ?? 0,
     };
