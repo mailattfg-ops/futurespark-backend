@@ -125,6 +125,17 @@ export interface ReflectionAnswerEntry {
   pointsEarned?: number | null;
   /** The mentor's remark on this one answer. Optional, and shown to the student. */
   mentorComment?: string | null;
+  /**
+   * What the answer should have been, written by the mentor when the student got
+   * it wrong. Distinct from `mentorComment` on purpose: a remark explains, a
+   * correction teaches. "Not quite" leaves a child none the wiser; "a need is
+   * something you cannot manage without" is the thing they actually take away.
+   *
+   * Optional per question, and shown to the student alongside their own answer.
+   * It is the mentor's own words — never the configured `correctOptionId`, which
+   * must not reach a student even indirectly.
+   */
+  mentorCorrection?: string | null;
   /** ISO stamp of the mark. Its presence *is* "this answer has been marked". */
   mentorMarkedAt?: string | null;
   /**
@@ -425,6 +436,8 @@ export interface ReflectionMentorMark {
   /** Whole points, 0..the question's own `pointsPossible`. */
   points: number;
   comment?: string | null;
+  /** The answer the mentor was looking for. Optional; see `mentorCorrection`. */
+  correction?: string | null;
 }
 
 export interface MentorEvaluatedReflection {
@@ -497,7 +510,7 @@ export const applyMentorMarks = (
     if (entry.questionId && !byId.has(entry.questionId)) byId.set(entry.questionId, entry);
   });
 
-  const accepted = new Map<string, { points: number; comment: string | null }>();
+  const accepted = new Map<string, { points: number; comment: string | null; correction: string | null }>();
   (Array.isArray(marks) ? marks : []).forEach((mark) => {
     const questionId = typeof mark?.questionId === 'string' ? mark.questionId.trim() : '';
     const target = questionId ? byId.get(questionId) : undefined;
@@ -519,7 +532,9 @@ export const applyMentorMarks = (
     }
     const comment =
       typeof mark?.comment === 'string' ? mark.comment.trim().slice(0, MAX_MENTOR_COMMENT_LEN) || null : null;
-    accepted.set(questionId, { points, comment });
+    const correction =
+      typeof mark?.correction === 'string' ? mark.correction.trim().slice(0, MAX_MENTOR_COMMENT_LEN) || null : null;
+    accepted.set(questionId, { points, comment, correction });
   });
 
   const stamp = markedAt.toISOString();
@@ -535,7 +550,14 @@ export const applyMentorMarks = (
     if (fresh) {
       score += fresh.points;
       markedCount++;
-      return { ...entry, pointsPossible, pointsEarned: fresh.points, mentorComment: fresh.comment, mentorMarkedAt: stamp };
+      return {
+        ...entry,
+        pointsPossible,
+        pointsEarned: fresh.points,
+        mentorComment: fresh.comment,
+        mentorCorrection: fresh.correction,
+        mentorMarkedAt: stamp,
+      };
     }
 
     if (isMarkedEntry(entry)) {
@@ -548,7 +570,14 @@ export const applyMentorMarks = (
 
     // Never marked — including rows the old auto-grader scored. Their points are
     // cleared rather than carried, so nothing awards itself without a mentor.
-    return { ...entry, pointsPossible, pointsEarned: null, mentorComment: null, mentorMarkedAt: null };
+    return {
+      ...entry,
+      pointsPossible,
+      pointsEarned: null,
+      mentorComment: null,
+      mentorCorrection: null,
+      mentorMarkedAt: null,
+    };
   });
 
   return {
