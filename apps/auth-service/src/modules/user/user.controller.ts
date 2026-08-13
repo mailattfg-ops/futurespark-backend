@@ -78,6 +78,37 @@ export const userController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Students fetched successfully'));
   },
 
+  /** Sign one of this parent's children up to another programme. */
+  async addEnrollment(req: Request, res: Response) {
+    const { parentId } = req.params;
+    const { studentId, programId } = req.body;
+    const result = await userService.addEnrollment(parentId, { studentId, programId });
+    logger.info(`[Enrollment] Student ${studentId} enrolled in program ${programId} (parent ${parentId})`);
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Program added'));
+  },
+
+  /** Every programme a child is on, with the payment state that governs them. */
+  async listEnrollments(req: Request, res: Response) {
+    const result = await userService.effectiveEnrollments(req.params.studentId);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Enrollments fetched'));
+  },
+
+  /** Finance's write: approve or withdraw payment on one enrolment. */
+  async updateEnrollment(req: Request, res: Response) {
+    const { paymentApproved, selectedPlanType, paidInstallmentIds } = req.body;
+    const result = await userService.updateEnrollment(req.params.enrollmentId, {
+      paymentApproved,
+      selectedPlanType,
+      paidInstallmentIds,
+    });
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Enrollment updated'));
+  },
+
+  async removeEnrollment(req: Request, res: Response) {
+    const result = await userService.removeEnrollment(req.params.enrollmentId);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Program removed'));
+  },
+
   async createStudent(req: Request, res: Response) {
     const { parentId } = req.params;
     const { email, password, firstName, lastName } = req.body;

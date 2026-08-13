@@ -172,11 +172,170 @@ export const userService = {
     const customers = await db.parentAccount.findMany({
       include: {
         profiles: true,
-        students: true,
+        // Enrolments travel with the student so the admin can see which child is
+        // on which programme without a request per row.
+        students: { include: { enrollments: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
     return customers;
+  },
+
+  /**
+   * Every programme a child is signed up to, with the payment state that
+   * actually governs them.
+   *
+   * Enrolment wins where one exists. Where it does not, this falls back to the
+   * old one-programme-per-family columns, so a household created before
+   * enrolments existed keeps exactly the access it had. The fallback is
+   * deliberate: a reader that silently resolved to "unpaid" would lock a child
+   * out of classes their family has already paid for, which is the failure this
+   * whole model change exists to stop.
+   *
+   * The fallback can be dropped once every parent with a `programId` has been
+   * backfilled and no new writes touch the old columns.
+   */
+  async effectiveEnrollments(studentId: string) {
+    const student = await db.student.findUnique({
+      where: { id: studentId },
+      select: {
+        id: true,
+        paymentApproved: true,
+        parentAccount: {
+          select: {
+            programId: true,
+            paymentApproved: true,
+            selectedPlanType: true,
+            paidInstallmentIds: true,
+          },
+        },
+        enrollments: {
+          select: {
+            id: true,
+            programId: true,
+            paymentApproved: true,
+            selectedPlanType: true,
+            paidInstallmentIds: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!student) return [];
+
+    if (student.enrollments.length > 0) {
+      return student.enrollments.map((e) => ({ ...e, source: 'ENROLLMENT' as const }));
+    }
+
+    const legacyProgramId = student.parentAccount?.programId;
+    if (!legacyProgramId) return [];
+
+    return [
+      {
+        id: `legacy:${student.id}:${legacyProgramId}`,
+        programId: legacyProgramId,
+        // Either tier could hold the approval before enrolments: the parent on a
+        // FULL plan, the student individually on instalments.
+        paymentApproved: Boolean(student.parentAccount?.paymentApproved || student.paymentApproved),
+        selectedPlanType: student.parentAccount?.selectedPlanType ?? null,
+        paidInstallmentIds: student.parentAccount?.paidInstallmentIds ?? [],
+        createdAt: new Date(0),
+        source: 'LEGACY' as const,
+      },
+    ];
+  },
+
+  /**
+   * Sign a child up to another programme.
+   *
+   * Idempotent by the `(studentId, programId)` unique constraint — a
+   * double-submit returns the existing enrolment rather than a duplicate or a
+   * 500. New enrolments always start unpaid: money is Finance's decision, and
+   * an enrolment that arrived pre-approved would let anyone with access to this
+   * screen grant free classes.
+   */
+  async addEnrollment(parentId: string, input: { studentId: string; programId: string }) {
+    const studentId = String(input?.studentId ?? '').trim();
+    const programId = String(input?.programId ?? '').trim();
+    if (!studentId || !programId) {
+      throw new AppError('A student and a programme are both required', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    // The child must belong to this parent. Without this a caller could enrol
+    // any student on the platform by guessing an id.
+    const student = await db.student.findFirst({
+      where: { id: studentId, parentAccountId: parentId },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    if (!student) {
+      throw new AppError('That student does not belong to this parent account', HTTP_STATUS.NOT_FOUND);
+    }
+
+    const program = await db.program.findUnique({ where: { id: programId }, select: { id: true, title: true } });
+    if (!program) throw new AppError('Program not found', HTTP_STATUS.NOT_FOUND);
+
+    const existing = await db.enrollment.findUnique({
+      where: { studentId_programId: { studentId, programId } },
+    });
+    if (existing) return existing;
+
+    return db.enrollment.create({
+      data: { studentId, programId, paymentApproved: false },
+    });
+  },
+
+  /**
+   * Payment state for one enrolment. This is Finance's write.
+   */
+  async updateEnrollment(
+    enrollmentId: string,
+    input: { paymentApproved?: boolean; selectedPlanType?: string | null; paidInstallmentIds?: string[] }
+  ) {
+    const existing = await db.enrollment.findUnique({ where: { id: enrollmentId } });
+    if (!existing) throw new AppError('Enrollment not found', HTTP_STATUS.NOT_FOUND);
+
+    return db.enrollment.update({
+      where: { id: enrollmentId },
+      data: {
+        paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
+        selectedPlanType: input.selectedPlanType !== undefined ? input.selectedPlanType : undefined,
+        paidInstallmentIds: input.paidInstallmentIds !== undefined ? input.paidInstallmentIds : undefined,
+      },
+    });
+  },
+
+  /**
+   * Remove an enrolment.
+   *
+   * Refused once it has been paid for or has classes on the timetable — the
+   * same reasoning as the programme lock on a parent account. Deleting it would
+   * orphan scheduled classes against a programme the child is no longer on, and
+   * silently discard a payment.
+   */
+  async removeEnrollment(enrollmentId: string) {
+    const existing = await db.enrollment.findUnique({ where: { id: enrollmentId } });
+    if (!existing) throw new AppError('Enrollment not found', HTTP_STATUS.NOT_FOUND);
+
+    if (existing.paymentApproved) {
+      throw new AppError(
+        'This programme has been paid for and cannot be removed. Withdraw the payment approval in Finance first.',
+        HTTP_STATUS.CONFLICT
+      );
+    }
+
+    const scheduled = await db.scheduledClass.count({
+      where: { studentId: existing.studentId, programId: existing.programId, status: { not: 'CANCELLED' } },
+    });
+    if (scheduled > 0) {
+      throw new AppError(
+        `This programme already has ${scheduled} class${scheduled === 1 ? '' : 'es'} scheduled. Cancel them before removing it.`,
+        HTTP_STATUS.CONFLICT
+      );
+    }
+
+    await db.enrollment.delete({ where: { id: enrollmentId } });
+    return { id: enrollmentId };
   },
 
   async getCustomerById(id: string) {
@@ -309,6 +468,18 @@ export const userService = {
             paidInstallmentIds: true,
           },
         },
+        // Payment is per programme now, so the portal needs all of them to know
+        // which classes to unlock. The parent fields above stay for households
+        // that predate enrolments.
+        enrollments: {
+          select: {
+            id: true,
+            programId: true,
+            paymentApproved: true,
+            selectedPlanType: true,
+            paidInstallmentIds: true,
+          },
+        },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -395,6 +566,39 @@ export const userService = {
       if (existing) throw new AppError('Email already in use by another parent account', HTTP_STATUS.CONFLICT);
     }
 
+    // A paid programme cannot be swapped for a different one.
+    //
+    // The old behaviour silently reset `paymentApproved` to false on a programme
+    // change, which stranded the family: their classes were already scheduled
+    // against the programme they had paid for, and the student portal went to
+    // "Sessions locked — no payment approved" with nothing they could do about
+    // it. The edit looked harmless and revoked access to something already
+    // bought.
+    //
+    // The programme is what was purchased. Moving to another one is a refund and
+    // re-enrolment decision, not a field edit — so it is refused here rather
+    // than quietly voiding the payment. An admin who genuinely needs to switch a
+    // family withdraws the payment approval first, which makes that the
+    // deliberate act it should be.
+    const programChanging =
+      input.programId !== undefined && (input.programId || null) !== (parent.programId || null);
+
+    if (programChanging) {
+      // Either tier can hold the approval: the parent pays for a FULL plan, but a
+      // student can be approved individually on an instalment plan.
+      const paidStudents = await db.student.count({
+        where: { parentAccountId: parentId, paymentApproved: true },
+      });
+
+      if (parent.paymentApproved || paidStudents > 0) {
+        throw new AppError(
+          'This family has already paid for their current programme, so it cannot be changed. ' +
+            'Withdraw the payment approval first if they are genuinely moving to another programme.',
+          HTTP_STATUS.CONFLICT
+        );
+      }
+    }
+
     const dataToUpdate: any = {
       email: input.email || undefined,
       isActive: input.isActive !== undefined ? input.isActive : undefined,
@@ -406,8 +610,9 @@ export const userService = {
       avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl || null : undefined,
     };
 
-    // If programId is changed and not explicitly setting paymentApproved, reset it to false
-    if (input.programId !== undefined && input.programId !== parent.programId && input.paymentApproved === undefined) {
+    // Unpaid families can still be moved — nothing has been bought yet — but the
+    // approval flag is cleared so the new programme starts from a clean state.
+    if (programChanging && input.paymentApproved === undefined) {
       dataToUpdate.paymentApproved = false;
     }
 

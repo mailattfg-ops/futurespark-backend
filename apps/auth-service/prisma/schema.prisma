@@ -126,6 +126,36 @@ model ParentProfile {
   @@schema("auth")
 }
 
+/// One child signed up to one programme, with the money for it.
+///
+/// Enrolment used to live on ParentAccount: a single `programId` and a single
+/// `paymentApproved` for the whole family. That could not express two siblings
+/// on different programmes, or one child taking two — and changing the field
+/// silently voided a payment the family had already made.
+///
+/// Payment belongs on the enrolment because that is what is bought. The old
+/// ParentAccount and Student payment columns are left in place and still read
+/// as a fallback, so families created before this keep working untouched.
+model Enrollment {
+  id                 String   @id @default(uuid())
+  studentId          String
+  student            Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  programId          String
+  program            Program  @relation(fields: [programId], references: [id], onDelete: Restrict)
+  paymentApproved    Boolean  @default(false)
+  /// "FULL" | "INSTALLMENT"
+  selectedPlanType   String?
+  paidInstallmentIds String[] @default([])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
+
+  /// A child cannot be enrolled in the same programme twice. This is also what
+  /// makes "add programme" idempotent under a double-submit.
+  @@unique([studentId, programId])
+  @@index([programId])
+  @@schema("auth")
+}
+
 model Student {
   id               String           @id @default(uuid())
   studentCode      String?          @unique
@@ -149,6 +179,7 @@ model Student {
   timezone         String           @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
   schedulerGroupId String?
   schedulerGroup   SchedulerGroup?  @relation("GroupStudents", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
+  enrollments      Enrollment[]
 
   @@schema("auth")
 }
@@ -296,6 +327,7 @@ model Program {
   paymentPlans   PaymentPlan[]
   leads          Lead[]
   parentAccounts ParentAccount[]
+  enrollments    Enrollment[]
 
   @@schema("learning")
 }
