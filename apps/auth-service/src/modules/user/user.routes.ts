@@ -15,10 +15,20 @@ router.delete('/customers/students/:id',      asyncHandler(userController.delete
 // Profile Connections Management (must be defined before /customers/:id catch-all)
 router.put('/customers/profiles/:profileId',         asyncHandler(userController.updateParentProfile));
 
+// Enrollments — which child is on which programme, and the money for it.
+// Static prefixes again: all of these must sit above the `/customers/:id`
+// catch-all or "enrollments" is matched as a parent account id.
+router.get('/customers/students/:studentId/enrollments', asyncHandler(userController.listEnrollments));
+router.put('/customers/enrollments/:enrollmentId',       asyncHandler(userController.updateEnrollment));
+router.delete('/customers/enrollments/:enrollmentId',    asyncHandler(userController.removeEnrollment));
+
 // Customer (Parent Account) & Student Creation
 router.get('/customers',                     asyncHandler(userController.listCustomers));
 router.post('/customers',                    asyncHandler(userController.createCustomer));
 router.post('/customers/:parentId/students', asyncHandler(userController.createStudent));
+// Scoped to the parent so the service can verify the child belongs to them —
+// without that, any student id would be enrollable by anyone who can reach here.
+router.post('/customers/:parentId/enrollments', asyncHandler(userController.addEnrollment));
 router.post('/customers/:parentId/profiles', asyncHandler(userController.createParentProfile));
 
 // Customer Account Actions (catch-all parameter routes)

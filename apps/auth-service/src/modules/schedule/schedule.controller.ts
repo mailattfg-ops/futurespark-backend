@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { successResponse } from '@futurespark/response';
 import { HTTP_STATUS, ReflectionResponse, ReflectionMentorMark } from '@futurespark/constants';
 import { scheduleService } from './schedule.service';
+import { reportService } from '../report/report.service';
 import { validateCreateSchedule, validateUpdateSchedule } from './schedule.schema';
 
 export const scheduleController = {
@@ -146,6 +147,80 @@ export const scheduleController = {
       req.headers['x-user-role'] as string | undefined
     );
     return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class session marked complete'));
+  },
+
+  /**
+   * Build and send the parent's session report on demand.
+   *
+   * The cron does this automatically once the recording has been transcribed;
+   * this is the manual handle for the two cases it cannot cover — a report that
+   * failed its five attempts, and a recording that was linked by hand long after
+   * the class. ADMIN only: it messages a real family, and `force` re-sends one
+   * they may already have.
+   */
+  async sendClassReport(req: Request, res: Response) {
+    const role = req.headers['x-user-role'] as string | undefined;
+    if (role !== 'ADMIN') {
+      return res
+        .status(HTTP_STATUS.FORBIDDEN)
+        .json({ success: false, message: 'Only an admin can send a session report.' });
+    }
+
+    const force = String(req.query.force ?? req.body?.force ?? '') === 'true';
+    const outcome = await reportService.sendClassReport(req.params.id, { force });
+
+    if (!outcome.sent) {
+      return res.status(HTTP_STATUS.OK).json(
+        successResponse(
+          outcome,
+          outcome.skippedReason ?? outcome.error ?? 'The report was not delivered.'
+        )
+      );
+    }
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        successResponse(
+          outcome,
+          outcome.documentDelivered
+            ? 'Session report sent to the parent with the PDF attached.'
+            : 'Session report sent, but the PDF could not be attached.'
+        )
+      );
+  },
+
+  /**
+   * Return the parent's report PDF without sending anything.
+   *
+   * The point is that it sends nothing. Before this existed, the only way to see
+   * what a family would receive was to WhatsApp it to them — a bad way to find
+   * out a name is wrong or a summary came out empty. ADMIN only: the document
+   * contains a named child's class transcript summary.
+   */
+  async previewClassReport(req: Request, res: Response) {
+    const role = req.headers['x-user-role'] as string | undefined;
+    if (role !== 'ADMIN') {
+      return res
+        .status(HTTP_STATUS.FORBIDDEN)
+        .json({ success: false, message: 'Only an admin can preview a session report.' });
+    }
+
+    const result = await reportService.renderClassReport(req.params.id);
+
+    if (!result.ok) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: result.reason });
+    }
+
+    // `inline` so it opens in the browser tab rather than downloading — the
+    // whole point is to look at it.
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${result.fileName}"`);
+    res.setHeader('Content-Length', String(result.buffer.length));
+    // The exact template variables this class would send, so the {{1}}..{{n}}
+    // mapping can be checked against Meta without sending a message.
+    res.setHeader('X-Report-Variables', Buffer.from(JSON.stringify(result.variables)).toString('base64'));
+    return res.status(HTTP_STATUS.OK).end(result.buffer);
   },
 
   async rateClass(req: Request, res: Response) {

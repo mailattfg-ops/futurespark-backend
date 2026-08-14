@@ -67,6 +67,18 @@ model Meeting {
   updatedAt          DateTime           @updatedAt
   recordings         MeetingRecording[]
 
+  // ── Post-class recording hunt ────────────────────────────────────────────
+  // Stamped by auth-service when the MENTOR marks the class complete. The Drive
+  // sweep will not look for a recording until this is set and old enough (see
+  // RECORDING_SEARCH_DELAY_MINUTES) — Google publishes a Meet recording to Drive
+  // 10-30 minutes after the call ends, and searching before then is pure quota
+  // burn: the old sweep asked Drive every 2 minutes for 48 hours per meeting.
+  classCompletedAt    DateTime?
+  // How many times the sweep has searched Drive for this meeting, so a class
+  // that was genuinely never recorded gives up instead of retrying forever.
+  recordingSearches   Int       @default(0)
+  recordingSearchedAt DateTime?
+
   // ── Live presence (Google Meet spaces.activeConference or Zoom live status) ──
   presenceIsLive      Boolean   @default(false)
   presenceFirstJoinAt DateTime?

@@ -572,6 +572,14 @@ export class GoogleRecordingService {
           meetUrl: recording.meeting.meetUrl,
           studentId: recording.meeting.studentId,
           teacherId: recording.meeting.teacherId,
+          // Identity of the LESSON, not just the room. One Meet link is reused by
+          // every session of a programme, so learning-service matching on the URL
+          // alone wrote the summary onto whichever of the 40 classes Prisma
+          // happened to return first.
+          sessionId: recording.meeting.sessionId,
+          programId: recording.meeting.programId,
+          startTime: recording.meeting.startTime?.toISOString(),
+          endTime: recording.meeting.endTime?.toISOString(),
         }),
       });
 

@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { logger } from '@futurespark/logger';
 import db from '../../database/datasource';
 
@@ -128,6 +129,49 @@ export const whatsappConfig = {
   /** How many body variables the approved template declares: 1 or 2. */
   get notificationTemplateParamCount(): 1 | 2 {
     return readIntEnv('WHATSAPP_NOTIFICATION_TEMPLATE_PARAM_COUNT', 2, 1, 2) as 1 | 2;
+  },
+
+  // ── Post-class report template (carries the summary PDF) ──
+  /**
+   * The template a parent receives after a class. Separate from the generic
+   * notification template because it is the only one with a DOCUMENT header,
+   * and because its variables are report-specific — reusing the generic
+   * two-variable template here would send Meta the wrong parameter count.
+   */
+  get reportTemplateName(): string | undefined {
+    return readEnv('WHATSAPP_REPORT_TEMPLATE_NAME');
+  },
+  get reportTemplateLanguage(): string {
+    return readEnv('WHATSAPP_REPORT_TEMPLATE_LANGUAGE') || 'en';
+  },
+  /**
+   * Whether the approved template declares a DOCUMENT header. When it does the
+   * PDF rides along with the message; when it does not, the PDF is sent as a
+   * separate document message and this template carries only text.
+   */
+  get reportTemplateHasDocumentHeader(): boolean {
+    return readEnv('WHATSAPP_REPORT_TEMPLATE_HEADER') !== 'none';
+  },
+  /**
+   * Ordered names of the template's {{1}}, {{2}}, ... body variables.
+   *
+   * Meta matches body parameters BY POSITION, and a mismatch in count is a hard
+   * 132000 rather than a partial send — so the order has to be stated somewhere,
+   * and it belongs in configuration rather than in code: the template can be
+   * edited in Meta's console at any time without a deploy. Names are resolved
+   * against the variable map the caller supplies.
+   */
+  get reportTemplateVariables(): string[] {
+    const raw = readEnv('WHATSAPP_REPORT_TEMPLATE_VARIABLES');
+    if (!raw) return ['studentName', 'sessionTitle', 'classDate', 'mentorName'];
+    return raw
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+  },
+  /** Uploading a few hundred KB needs more headroom than a JSON POST. */
+  get mediaUploadTimeoutMs(): number {
+    return readIntEnv('WHATSAPP_MEDIA_TIMEOUT_MS', 60_000, 5_000, 300_000);
   },
 
   // ── Auto-reply content (no placeholders may ever reach a real family) ──
@@ -318,7 +362,7 @@ export interface WhatsAppSendResult {
   /** Meta's message id, present only on success. */
   messageId?: string;
   /** Which channel actually went out. */
-  channel?: 'text' | 'interactive' | 'template';
+  channel?: 'text' | 'interactive' | 'template' | 'document';
   failureKind?: WhatsAppFailureKind;
   /** Human-readable, actionable. Safe to log and to return to an internal caller. */
   error?: string;
@@ -546,6 +590,52 @@ const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * A filename safe to put in a Content-Disposition header and in front of a
+ * parent. Quotes and CR/LF would break the multipart framing outright; the rest
+ * is trimmed because WhatsApp truncates long names in the chat bubble anyway.
+ */
+const sanitizeFileName = (name: string): string => {
+  const cleaned = String(name ?? '')
+    .replace(/[\r\n"\\]/g, '')
+    .replace(/[^\w.\- ]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 120) : 'report.pdf';
+};
+
+type MultipartPart =
+  | { name: string; value: string }
+  | { name: string; filename: string; contentType: string; data: Buffer };
+
+/** Assemble a multipart/form-data body as exact bytes. See `uploadMedia`. */
+const buildMultipartBody = (boundary: string, parts: MultipartPart[]): Buffer => {
+  const chunks: Buffer[] = [];
+
+  for (const part of parts) {
+    chunks.push(Buffer.from(`--${boundary}\r\n`, 'utf8'));
+
+    if ('data' in part) {
+      chunks.push(
+        Buffer.from(
+          `Content-Disposition: form-data; name="${part.name}"; filename="${part.filename}"\r\n` +
+            `Content-Type: ${part.contentType}\r\n\r\n`,
+          'utf8'
+        )
+      );
+      chunks.push(part.data);
+      chunks.push(Buffer.from('\r\n', 'utf8'));
+    } else {
+      chunks.push(
+        Buffer.from(`Content-Disposition: form-data; name="${part.name}"\r\n\r\n${part.value}\r\n`, 'utf8')
+      );
+    }
+  }
+
+  chunks.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'));
+  return Buffer.concat(chunks);
 };
 
 export const whatsappService = {
@@ -867,6 +957,132 @@ export const whatsappService = {
   },
 
   /**
+   * Upload a file to Meta and get back a media id.
+   *
+   * The id is the right way to attach a PDF: the alternative is a `link`, which
+   * requires the file to be publicly readable over HTTPS for as long as Meta
+   * takes to fetch it — and a child's class report is not something to put on an
+   * open URL, even briefly. Ids are usable for 30 days, which comfortably
+   * outlives one send.
+   *
+   * The multipart body is assembled by hand rather than via FormData/Blob so the
+   * exact bytes, boundary and Content-Type are known: Meta rejects a body whose
+   * `file` part has no filename, and a silently different serialisation is
+   * painful to debug through the Graph API's generic error.
+   */
+  async uploadMedia(
+    file: Buffer,
+    fileName: string,
+    mimeType = 'application/pdf'
+  ): Promise<{ success: boolean; mediaId?: string; error?: string; failureKind?: WhatsAppFailureKind }> {
+    if (!isWhatsAppConfigured()) {
+      const missing = REQUIRED_WHATSAPP_ENV.filter((name) => !readEnv(name));
+      const error = `WhatsApp is not configured; refusing to upload media. Missing: ${missing.join(', ') || 'see startup log'}.`;
+      logger.error(`[WhatsApp Service] WHATSAPP_NOT_CONFIGURED — ${error}`);
+      return { success: false, failureKind: 'NOT_CONFIGURED', error };
+    }
+    if (!file || file.length === 0) {
+      return { success: false, failureKind: 'UNKNOWN_META_ERROR', error: 'Refusing to upload an empty file.' };
+    }
+
+    const safeName = sanitizeFileName(fileName);
+    const boundary = `----futurespark${randomBytes(16).toString('hex')}`;
+    const body = buildMultipartBody(boundary, [
+      { name: 'messaging_product', value: 'whatsapp' },
+      { name: 'type', value: mimeType },
+      { name: 'file', filename: safeName, contentType: mimeType, data: file },
+    ]);
+
+    const url = `https://graph.facebook.com/${whatsappConfig.apiVersion}/${whatsappConfig.phoneNumberId}/media`;
+
+    try {
+      logger.info(
+        `[WhatsApp Service] Uploading media "${safeName}" (${(file.length / 1024).toFixed(0)} KB, ${mimeType}) to Meta.`
+      );
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${whatsappConfig.accessToken}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          },
+          // A Buffer is a perfectly valid fetch body at runtime. The cast is
+          // purely a toolchain artefact: TypeScript 5.9 types Uint8Array
+          // generically (`Uint8Array<ArrayBufferLike>`) while @types/node 20
+          // still expects `Uint8Array<ArrayBuffer>`, so no byte-carrying type —
+          // Buffer, Uint8Array or Blob — satisfies BodyInit under this pairing.
+          // Confined to this one boundary; it asserts nothing about the bytes.
+          body: body as unknown as BodyInit,
+        },
+        whatsappConfig.mediaUploadTimeoutMs
+      );
+
+      const responseBody = (await res.json().catch(() => ({}))) as any;
+
+      if (!res.ok || !responseBody?.id) {
+        const metaError = responseBody?.error ?? {};
+        const { kind } = classifyMetaError(res.status, metaError.code, metaError.error_subcode);
+        const detail = metaError?.error_data?.details || metaError?.message || `HTTP ${res.status}`;
+        logger.error(
+          `[WhatsApp Service] WHATSAPP_MEDIA_UPLOAD_FAILED [${kind}] http=${res.status} ` +
+            `code=${metaError.code ?? '-'} fbtrace=${metaError.fbtrace_id ?? '-'} :: ${detail}`
+        );
+        return { success: false, failureKind: kind, error: detail };
+      }
+
+      logger.info(`[WhatsApp Service] Media uploaded. Media ID: ${responseBody.id}`);
+      return { success: true, mediaId: String(responseBody.id) };
+    } catch (err: any) {
+      const aborted = err?.name === 'AbortError';
+      const detail = aborted
+        ? `Media upload timed out after ${whatsappConfig.mediaUploadTimeoutMs}ms`
+        : err?.message || String(err);
+      logger.error(`[WhatsApp Service] WHATSAPP_MEDIA_UPLOAD_FAILED [NETWORK_ERROR] :: ${detail}`);
+      return { success: false, failureKind: 'NETWORK_ERROR', error: detail };
+    }
+  },
+
+  /**
+   * Send a document (our summary PDF) as a free-form message.
+   * Only deliverable inside the 24-hour window — outside it, the document has to
+   * ride on a template header instead. See `sendSessionReport`.
+   */
+  async sendDocumentMessage(
+    to: string,
+    document: { mediaId?: string; link?: string; fileName: string; caption?: string },
+    recipientId?: string
+  ): Promise<WhatsAppSendResult> {
+    const normalized = normalizePhone(to);
+    if (!normalized.ok || !normalized.value) {
+      logger.error(`[WhatsApp Service] WHATSAPP_SEND_REFUSED INVALID_RECIPIENT — ${normalized.reason}`);
+      return { success: false, failureKind: 'INVALID_RECIPIENT', error: normalized.reason, retryable: false };
+    }
+    if (!document.mediaId && !document.link) {
+      return {
+        success: false,
+        failureKind: 'UNKNOWN_META_ERROR',
+        error: 'Refusing to send a document with neither a media id nor a link.',
+        retryable: false,
+      };
+    }
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: normalized.value,
+      type: 'document',
+      document: {
+        ...(document.mediaId ? { id: document.mediaId } : { link: document.link }),
+        filename: sanitizeFileName(document.fileName),
+        ...(document.caption ? { caption: document.caption.slice(0, 1024) } : {}),
+      },
+    };
+
+    return this.sendMetaRequest(payload, 'document', `Document: ${document.fileName}`, recipientId);
+  },
+
+  /**
    * Send a pre-approved template message.
    * `languageCode` has NO default: it must match the approved translation
    * exactly, and a wrong guess fails at send time with 132001.
@@ -1026,7 +1242,14 @@ export const whatsappService = {
       return {
         success: true,
         messageId: metaMessageId,
-        channel: type === 'template' ? 'template' : type === 'button' ? 'interactive' : 'text',
+        channel:
+          type === 'template'
+            ? 'template'
+            : type === 'button'
+              ? 'interactive'
+              : type === 'document'
+                ? 'document'
+                : 'text',
       };
     } catch (err: any) {
       const aborted = err?.name === 'AbortError';

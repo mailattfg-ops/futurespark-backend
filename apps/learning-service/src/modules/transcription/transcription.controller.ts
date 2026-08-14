@@ -8,10 +8,101 @@ import { GroqTranscriptionService } from './groq-transcription.service';
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
 const groqService = new GroqTranscriptionService();
 
+/** ±2h around the meeting's start — see `findClassForRecording`. */
+const SLOT_TOLERANCE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Find the ONE class a finished recording belongs to.
+ *
+ * This used to be `findFirst({ where: { meetingLink: { contains: meetUrl } } })`,
+ * which is wrong in the ordinary case rather than an edge case: a programme
+ * reuses a single Meet link for all 40 of its sessions, so that query returned an
+ * arbitrary row and week 12's summary could be written onto week 3's class. The
+ * parent then gets a report about a lesson their child sat two months ago.
+ *
+ * Identity comes from who sat which lesson — (studentId, sessionId) — with the
+ * slot time as the tie-breaker for a session taught twice after a reschedule.
+ * The link is the last resort, and even then it is time-boxed. A query that
+ * cannot narrow to a single row returns nothing: writing a real summary onto the
+ * wrong child's class is worse than writing none at all.
+ */
+async function findClassForRecording(input: {
+  meetUrl?: string;
+  studentId?: string;
+  sessionId?: string;
+  programId?: string;
+  startTime?: string;
+  endTime?: string;
+}) {
+  const start = input.startTime ? new Date(input.startTime) : null;
+  const validStart = start && !Number.isNaN(start.getTime()) ? start : null;
+
+  const slotWindow = validStart
+    ? {
+        startTime: {
+          gte: new Date(validStart.getTime() - SLOT_TOLERANCE_MS),
+          lte: new Date(validStart.getTime() + SLOT_TOLERANCE_MS),
+        },
+      }
+    : {};
+
+  const cleanMeetUrl = input.meetUrl
+    ? input.meetUrl.replace(/^https?:\/\//, '').split('?')[0].split('#')[0].trim()
+    : null;
+
+  const strategies: Array<{ label: string; where: any }> = [];
+
+  if (input.studentId && input.sessionId) {
+    strategies.push({
+      label: 'studentId+sessionId+slot',
+      where: { studentId: input.studentId, sessionId: input.sessionId, ...slotWindow },
+    });
+  }
+  if (input.studentId && input.programId && validStart) {
+    strategies.push({
+      label: 'studentId+programId+slot',
+      where: { studentId: input.studentId, programId: input.programId, ...slotWindow },
+    });
+  }
+  if (cleanMeetUrl && validStart) {
+    strategies.push({
+      label: 'meetingLink+slot',
+      where: { meetingLink: { contains: cleanMeetUrl }, ...slotWindow },
+    });
+  }
+  if (cleanMeetUrl && !validStart) {
+    // No time to narrow with. Kept only so a caller that sends nothing but a
+    // link still works, and it refuses when the link is ambiguous.
+    strategies.push({ label: 'meetingLink (unbounded)', where: { meetingLink: { contains: cleanMeetUrl } } });
+  }
+
+  for (const strategy of strategies) {
+    const matches = await db.scheduledClass.findMany({
+      where: { status: { not: 'CANCELLED' }, ...strategy.where },
+      orderBy: { startTime: 'desc' },
+      take: 5,
+    });
+
+    if (matches.length === 0) continue;
+    if (matches.length > 1) {
+      logger.warn(
+        `[Transcription Controller] "${strategy.label}" matched ${matches.length} classes — too ` +
+          'ambiguous to attribute a summary to. Trying the next strategy.'
+      );
+      continue;
+    }
+
+    logger.info(`[Transcription Controller] Attributed recording to class ${matches[0].id} via ${strategy.label}.`);
+    return matches[0];
+  }
+
+  return null;
+}
+
 export const transcriptionController = {
   async transcribe(req: Request, res: Response) {
     try {
-      const { audioFilePath, meetUrl, studentId, teacherId } = req.body;
+      const { audioFilePath, meetUrl, studentId, teacherId, sessionId, programId, startTime, endTime } = req.body;
 
       if (!audioFilePath) {
         return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('Parameter "audioFilePath" is required.'));
@@ -71,15 +162,15 @@ export const transcriptionController = {
           `[Transcription Controller] Placeholder output — leaving ScheduledClass.classSummary untouched for meetUrl: ${meetUrl}`
         );
       }
-      if (meetUrl && !result.usedFallback) {
+      if (!result.usedFallback) {
         try {
-          const cleanMeetUrl = meetUrl.replace('https://', '').replace('http://', '').trim();
-          const scheduledClass = await db.scheduledClass.findFirst({
-            where: {
-              meetingLink: {
-                contains: cleanMeetUrl,
-              },
-            },
+          const scheduledClass = await findClassForRecording({
+            meetUrl,
+            studentId,
+            sessionId,
+            programId,
+            startTime,
+            endTime,
           });
 
           if (scheduledClass) {
@@ -94,7 +185,11 @@ export const transcriptionController = {
               },
             });
           } else {
-            logger.warn(`[Transcription Controller] No matching ScheduledClass found for meetUrl: ${meetUrl}`);
+            logger.warn(
+              `[Transcription Controller] No matching ScheduledClass found (meetUrl: ${meetUrl ?? '-'}, ` +
+                `student: ${studentId ?? '-'}, session: ${sessionId ?? '-'}). The summary was generated ` +
+                'but has nowhere to live, so no parent report will go out for it.'
+            );
           }
         } catch (dbErr: any) {
           logger.error(`[Transcription Controller] Failed to update ScheduledClass in DB: ${dbErr.message}`);
