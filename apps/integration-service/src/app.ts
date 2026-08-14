@@ -11,6 +11,7 @@ import { startSyncCron } from './modules/google/cron/sync.cron';
 import googlePresenceRouter from './modules/google/presence/presence.routes';
 import { startPresencePolling } from './modules/google/presence/presence.service';
 import storageRouter from './modules/storage/storage.routes';
+import classLifecycleRouter from './modules/classes/lifecycle.routes';
 
 // Zoom modules
 import zoomAuthRouter from './modules/zoom/auth/auth.routes';
@@ -51,6 +52,9 @@ app.use('/zoom/webhooks', zoomWebhooksRouter);
 
 // Storage module
 app.use('/storage', storageRouter);
+
+// Provider-neutral class lifecycle (auth-service tells us a class was signed off)
+app.use('/classes', classLifecycleRouter);
 
 app.get('/health', (_req, res) => {
   res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'integration-service is healthy'));

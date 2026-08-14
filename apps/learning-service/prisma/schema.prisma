@@ -243,6 +243,18 @@ model ScheduledClass {
   classSummary        String?   @db.Text
   interactionMetrics  Json?
   transcriptionStatus String    @default("NOT_STARTED")
+
+  // ── Post-class parent report ──────────────────────────────────────────
+  // `completedAt` is the moment the mentor pressed "Completed", and it is the
+  // only anchor the recording hunt may use. `updatedAt` moves on every write,
+  // and `endTime` is when the slot was *booked* to end rather than when the
+  // class was signed off — a mentor who marks a class complete the next
+  // morning would otherwise have the search window expire before it ran.
+  completedAt         DateTime?
+  reportPdfPath       String?   // S3 key (or local path) of the rendered PDF
+  reportSentAt        DateTime? // Meta accepted the WhatsApp report — the idempotency latch
+  reportAttempts      Int       @default(0)
+  reportLastError     String?   @db.Text
   doubts              ClassDoubt[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @default(now()) @updatedAt

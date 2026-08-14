@@ -170,7 +170,7 @@ const DOUBT_QUESTION_MAX = 2000;
 const DOUBT_ANSWER_MAX = 5000;
 import { logger } from '@futurespark/logger';
 import { sendNotification } from '../notification-helper';
-import { rescheduleCalendarEvent } from '../calendar-helper';
+import { rescheduleCalendarEvent, markMeetingClassCompleted } from '../calendar-helper';
 
 /**
  * The raw class row, with no authorization of any kind.
@@ -1160,13 +1160,32 @@ export const scheduleService = {
 
     // A single write, so no transaction: the student balance update that needed
     // one has moved to `reviewReflection`, where the points are now decided.
+    //
+    // `completedAt` is stamped here and nowhere else. It is the anchor for the
+    // whole post-class pipeline: the recording is searched for a fixed delay
+    // after this instant, never after `endTime` (which is when the slot was
+    // booked to end) and never after `updatedAt` (which moves whenever anything
+    // on the row changes, including the report cron's own writes).
+    const completedAt = new Date();
     const updatedClass = await db.scheduledClass.update({
       where: { id: classId },
-      data: { status: 'COMPLETED' },
+      data: { status: 'COMPLETED', completedAt },
       include: {
         student: { select: STUDENT_CLASS_SELECT },
         mentor: { select: MENTOR_CLASS_SELECT },
       },
+    });
+
+    // Starts the recording clock in integration-service. Deliberately not
+    // awaited for its result path — see markMeetingClassCompleted; if it fails
+    // the report cron re-drives it on its next pass.
+    void markMeetingClassCompleted({
+      meetingLink: updatedClass.meetingLink,
+      studentId: updatedClass.studentId,
+      sessionId: updatedClass.sessionId,
+      programId: updatedClass.programId,
+      startTime: updatedClass.startTime,
+      completedAt,
     });
 
     if (updatedClass.studentId) {

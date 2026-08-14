@@ -6,14 +6,14 @@ dist/
 .next/
 out/
 
-# Environment files (ignored)
+# Environment files — ALL of them, with no exceptions.
+# There was an `!.env.example` un-ignore here for a committed placeholder
+# template. It was removed along with the file: with no exception rule, any
+# .env* that appears in future is ignored by default, so a real credential
+# cannot be committed by pasting it into a file that looked like a template.
 .env
 .env.local
 .env.*
-# ...except the documented template. It carries only placeholders, and it is the
-# only record of which variables the services actually read — it is no use to
-# anyone if it never leaves this machine.
-!.env.example
 
 # Local downloaded media recordings cache
 downloads/

@@ -40,6 +40,15 @@ router.post('/',      asyncHandler(scheduleController.create));
 // that the lesson happened and unlocks the quiz, and awards nothing. The points
 // are decided per answer on /:id/reflection/review.
 router.put('/:id/complete', asyncHandler(scheduleController.completeClass));
+// Gated: ADMIN only. Renders the parent's PDF report and WhatsApps it. The cron
+// does this by itself once the recording has been transcribed; this is the
+// manual handle for a report that failed, or a recording linked in by hand.
+// `?force=true` re-sends one the parent may already have.
+router.post('/:id/send-report', asyncHandler(scheduleController.sendClassReport));
+// Gated: ADMIN only. Renders the SAME PDF the parent would receive and returns
+// it inline — sends nothing, writes nothing. Use it to check a report before
+// any family sees one.
+router.get('/:id/report-preview', asyncHandler(scheduleController.previewClassReport));
 router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
 // Gated: the student, their parent, or the mentor who taught — and the payload
 // is tiered inside. Only `canSeeAnswerKey` roles get `correctOptionId` on the

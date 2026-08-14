@@ -8,6 +8,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 
 import { notificationRoutes } from './modules/notification/notification.routes';
 import { whatsappWebhookRoutes } from './modules/whatsapp/whatsapp.routes';
+import { whatsappReportRoutes } from './modules/whatsapp/report.routes';
 import { assertWhatsAppStartupConfig } from './modules/whatsapp/whatsapp.service';
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -56,6 +57,20 @@ app.use(
   express.raw({ type: 'application/json', limit: '1mb' }),
   whatsappWebhookRoutes
 );
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Session report — also mounted before the global express.json().
+ *
+ * The body carries a base64-encoded PDF, which blows straight through the
+ * 100kb ceiling below. The larger limit is scoped to this one route rather than
+ * raised globally, so the endpoints that only ever receive small JSON keep the
+ * body ceiling they have always had. 12mb is far above the ~200kb a real report
+ * weighs; it exists so an unusually long class does not silently 413.
+ *
+ * Not reachable from the internet: the gateway proxies only /api/notifications
+ * and /api/whatsapp/webhook on this service.
+ * ────────────────────────────────────────────────────────────────────────── */
+app.use('/whatsapp', express.json({ limit: '12mb' }), whatsappReportRoutes);
 
 // Explicitly the previous default; not raised, so the authenticated routes keep
 // the same body ceiling they always had.

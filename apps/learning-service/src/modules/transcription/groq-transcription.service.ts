@@ -6,6 +6,56 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * GROQ MODEL IDS
+ *
+ * Read from the environment, because Groq retires models on a few weeks'
+ * notice and a hardcoded id turns that into an outage that needs a deploy to
+ * fix. `llama-3.3-70b-versatile` — the model this pipeline used to name
+ * directly — was announced for shutdown on 2026-06-17 and stopped being served
+ * on 2026-08-16, which would have silently killed every parent report.
+ *
+ * Check https://console.groq.com/docs/deprecations before pinning a new one.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/** Speech-to-text. $0.04/hr of audio, 216x realtime, multilingual. */
+const DEFAULT_TRANSCRIPTION_MODEL = 'whisper-large-v3-turbo';
+/** Groq's own recommended successor to llama-3.3-70b-versatile. */
+const DEFAULT_SUMMARY_MODEL = 'openai/gpt-oss-120b';
+
+/**
+ * Upload ceiling per request.
+ *
+ * Groq's free tier rejects anything over 25 MB (dev tier: 100 MB). At the
+ * 16 kHz mono 32 kbps this pipeline encodes to, 25 MB is about 104 minutes —
+ * so a 90-minute class fits with little to spare, and a class that overruns
+ * does not. Default 24 to leave headroom for MP3 framing overhead.
+ */
+const DEFAULT_MAX_UPLOAD_MB = 24;
+
+/** Length of each piece when an audio file has to be split. */
+const DEFAULT_CHUNK_SECONDS = 900; // 15 min ≈ 3.6 MB at 32 kbps
+
+const readNumberEnv = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/** Resolve the ffmpeg binary once, the same way the rest of the pipeline does. */
+const resolveFfmpeg = (): string => {
+  try {
+    return require('@ffmpeg-installer/ffmpeg').path || require('ffmpeg-static') || 'ffmpeg';
+  } catch (e) {
+    try {
+      return require('ffmpeg-static') || 'ffmpeg';
+    } catch (_) {
+      return 'ffmpeg';
+    }
+  }
+};
+
 export class GroqTranscriptionService {
   // Read lazily, not as a captured field. This class is instantiated at module
   // scope by transcription.controller, which can run before dotenv populates
@@ -13,6 +63,22 @@ export class GroqTranscriptionService {
   // downgrade every job to the offline fallback template.
   private get groqApiKey(): string {
     return process.env.GROQ_API_KEY || '';
+  }
+
+  private get transcriptionModel(): string {
+    return process.env.GROQ_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
+  }
+
+  private get summaryModel(): string {
+    return process.env.GROQ_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL;
+  }
+
+  private get maxUploadBytes(): number {
+    return readNumberEnv('GROQ_MAX_UPLOAD_MB', DEFAULT_MAX_UPLOAD_MB) * 1024 * 1024;
+  }
+
+  private get chunkSeconds(): number {
+    return readNumberEnv('GROQ_CHUNK_SECONDS', DEFAULT_CHUNK_SECONDS);
   }
 
   /**
@@ -155,23 +221,145 @@ export class GroqTranscriptionService {
 [00:04:50] Instructor: Excellent progress today! For your assignment before our next session, review the key formulas and practice the remaining exercises. See you next class!`;
     }
 
-    const formData = new FormData();
-    formData.append('model', 'whisper-large-v3-turbo');
-    formData.append('file', fs.createReadStream(filePath));
+    const sizeBytes = fs.statSync(filePath).size;
 
-    const response = await axios.post(
-      'https://api.groq.com/openai/v1/audio/transcriptions',
-      formData,
-      {
-        headers: {
-          Authorization: `Bearer ${this.groqApiKey}`,
-          ...formData.getHeaders(),
-        },
-        maxBodyLength: Infinity,
-      },
+    // Small enough to send whole — the common case for a 60-90 minute class.
+    if (sizeBytes <= this.maxUploadBytes) {
+      return this.uploadForTranscription(filePath);
+    }
+
+    /* ── Too big for one request ──────────────────────────────────────────
+     * Groq's free tier hard-rejects anything over 25 MB. Before this, a class
+     * that ran long simply failed with an opaque API error, no transcript, no
+     * summary and therefore no parent report — and nothing said why.
+     *
+     * Splitting is preferable to encoding at a lower bitrate: dropping below
+     * 32 kbps starts costing word accuracy, and the ceiling would only move,
+     * not disappear. Chunks are cut with `-c copy`, so there is no re-encode
+     * and no second generation of quality loss.
+     * ─────────────────────────────────────────────────────────────────── */
+    const sizeMb = (sizeBytes / (1024 * 1024)).toFixed(1);
+    logger.info(
+      `[GroqTranscriptionService] Audio is ${sizeMb}MB, over the ${(this.maxUploadBytes / (1024 * 1024)).toFixed(0)}MB ` +
+        `per-request limit. Splitting into ${this.chunkSeconds / 60}-minute chunks and transcribing in sequence.`
     );
 
-    return response.data.text;
+    const chunks = this.splitAudio(filePath);
+    if (chunks.length === 0) {
+      throw new Error(
+        `Audio is ${sizeMb}MB, above Groq's ${(this.maxUploadBytes / (1024 * 1024)).toFixed(0)}MB request limit, ` +
+          'and it could not be split (ffmpeg failed). Raise GROQ_MAX_UPLOAD_MB if you are on the paid ' +
+          'dev tier (100MB), or check that ffmpeg is available.'
+      );
+    }
+
+    const parts: string[] = [];
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        logger.info(`[GroqTranscriptionService] Transcribing chunk ${i + 1}/${chunks.length}...`);
+        // The tail of the previous chunk is passed as `prompt` so Whisper keeps
+        // spelling and terminology consistent across a cut — otherwise a name
+        // established in chunk 1 can come back spelled differently in chunk 2.
+        const carryOver = parts.length > 0 ? parts[parts.length - 1].slice(-200) : undefined;
+        parts.push(await this.uploadForTranscription(chunks[i], carryOver));
+      }
+    } finally {
+      for (const chunk of chunks) {
+        try { fs.unlinkSync(chunk); } catch (_) { /* best effort */ }
+      }
+    }
+
+    return parts.join(' ').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  /** One file, one request to Groq. */
+  private async uploadForTranscription(filePath: string, promptContext?: string): Promise<string> {
+    const formData = new FormData();
+    formData.append('model', this.transcriptionModel);
+    formData.append('file', fs.createReadStream(filePath));
+    if (promptContext) formData.append('prompt', promptContext);
+
+    try {
+      const response = await axios.post(
+        'https://api.groq.com/openai/v1/audio/transcriptions',
+        formData,
+        {
+          headers: {
+            Authorization: `Bearer ${this.groqApiKey}`,
+            ...formData.getHeaders(),
+          },
+          maxBodyLength: Infinity,
+        },
+      );
+
+      return response.data.text;
+    } catch (err: any) {
+      // Groq's raw errors do not say which limit was hit, and the two that
+      // actually bite here have completely different fixes.
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.error?.message || err.message;
+
+      if (status === 413) {
+        throw new Error(
+          `Groq rejected the audio as too large: ${detail}. The free tier caps a request at 25MB ` +
+            '(dev tier 100MB). Lower GROQ_MAX_UPLOAD_MB so the file is split into more pieces.'
+        );
+      }
+      if (status === 429) {
+        throw new Error(
+          `Groq rate limit hit: ${detail}. The free tier allows 7,200 audio-seconds per HOUR and ` +
+            '28,800 per DAY — about five 90-minute classes a day. Upgrade to the pay-as-you-go dev ' +
+            'tier (whisper-large-v3-turbo is $0.04 per hour of audio) or spread the classes out.'
+        );
+      }
+      if (status === 404 || /decommission|deprecat|does not exist/i.test(detail)) {
+        throw new Error(
+          `Groq does not recognise the transcription model "${this.transcriptionModel}": ${detail}. ` +
+            'It has probably been retired — check https://console.groq.com/docs/deprecations and set ' +
+            'GROQ_TRANSCRIPTION_MODEL to the replacement.'
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Cut an audio file into fixed-length pieces with ffmpeg.
+   * Returns the chunk paths in order, or an empty array if ffmpeg failed.
+   */
+  private splitAudio(filePath: string): string[] {
+    const ext = path.extname(filePath) || '.mp3';
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath, ext);
+    const pattern = path.join(dir, `${base}.chunk-%03d${ext}`);
+
+    // Clear any chunks left behind by a previous crashed run, so a stale piece
+    // from an earlier class cannot be picked up and transcribed into this one.
+    for (const stale of fs.readdirSync(dir)) {
+      if (stale.startsWith(`${base}.chunk-`)) {
+        try { fs.unlinkSync(path.join(dir, stale)); } catch (_) { /* best effort */ }
+      }
+    }
+
+    const { execFileSync } = require('child_process');
+    try {
+      execFileSync(
+        resolveFfmpeg(),
+        ['-y', '-i', filePath, '-f', 'segment', '-segment_time', String(this.chunkSeconds), '-c', 'copy', pattern],
+        { stdio: 'pipe' }
+      );
+    } catch (err: any) {
+      logger.error(`[GroqTranscriptionService] ffmpeg could not split the audio: ${err.message}`);
+      return [];
+    }
+
+    // Sorted, because transcribing chunk 10 before chunk 2 produces a transcript
+    // that reads as nonsense — and readdir order is not guaranteed.
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.startsWith(`${base}.chunk-`) && name.endsWith(ext))
+      .sort()
+      .map((name) => path.join(dir, name));
   }
 
   /**
@@ -226,7 +414,40 @@ export class GroqTranscriptionService {
   }
 
   /**
-   * 3. Groq Llama 3.3 (70B) Master Summary API
+   * How much of the transcript the summariser actually reads.
+   *
+   * This was a hard `slice(0, 12000)`. At ~130 words a minute a 90-minute class
+   * transcribes to roughly 70,000 characters, so 12,000 was the FIRST FIFTEEN
+   * MINUTES and nothing else. Every summary was written from the opening of the
+   * lesson: the homework section had to be invented or left empty, because
+   * homework is set at the end of a class and the model never saw it.
+   *
+   * The ceiling existed for llama-3.3-70b's budget. gpt-oss-120b has a 131,072
+   * token context — about 500,000 characters — so 120,000 (a ~2.5 hour class)
+   * is comfortable, and the tail is what gets kept when a class runs longer:
+   * the end of a lesson carries the homework and the next steps, which is the
+   * part a parent acts on.
+   */
+  private transcriptForPrompt(transcript: string): string {
+    const limit = readNumberEnv('GROQ_SUMMARY_TRANSCRIPT_CHARS', 120_000);
+    if (transcript.length <= limit) return transcript;
+
+    // Keep the opening (what the class was about) and the ending (what was set
+    // as homework), and say plainly that the middle was dropped so the model
+    // does not narrate over a gap it cannot see.
+    const head = Math.floor(limit * 0.55);
+    const tail = limit - head;
+    logger.warn(
+      `[GroqTranscriptionService] Transcript is ${transcript.length} chars, over the ${limit} limit — ` +
+        'summarising the opening and the closing, with the middle omitted.'
+    );
+    return (
+      `${transcript.slice(0, head)}\n\n[... middle of the session omitted for length ...]\n\n${transcript.slice(-tail)}`
+    );
+  }
+
+  /**
+   * 3. Groq master summary (model set by GROQ_SUMMARY_MODEL)
    */
   private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise<string> {
     if (!this.groqApiKey || this.groqApiKey.length < 5) {
@@ -322,25 +543,49 @@ Structure the document EXACTLY like this:
 
 TRANSCRIPT:
 --------------------------------------------------
-${transcript.slice(0, 12000)}
+${this.transcriptForPrompt(transcript)}
 --------------------------------------------------`;
 
-    const response = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
-      {
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 3500,
-        temperature: 0.3,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${this.groqApiKey}`,
-          'Content-Type': 'application/json',
+    try {
+      const response = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model: this.summaryModel,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 3500,
+          temperature: 0.3,
         },
-      },
-    );
+        {
+          headers: {
+            Authorization: `Bearer ${this.groqApiKey}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
 
-    return response.data.choices[0].message.content;
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        throw new Error(
+          `Groq returned an empty summary from "${this.summaryModel}". Reasoning models can put their ` +
+            'output in a different field — check the raw response shape if this persists.'
+        );
+      }
+      return content;
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.error?.message || err.message;
+
+      if (status === 404 || /decommission|deprecat|does not exist|not supported/i.test(detail)) {
+        throw new Error(
+          `Groq does not recognise the summary model "${this.summaryModel}": ${detail}. Groq retires ` +
+            'models on a few weeks\' notice — check https://console.groq.com/docs/deprecations and set ' +
+            'GROQ_SUMMARY_MODEL to the replacement. No code change is needed.'
+        );
+      }
+      if (status === 429) {
+        throw new Error(`Groq rate limit hit while summarising: ${detail}. The summary will be retried.`);
+      }
+      throw err;
+    }
   }
 }
