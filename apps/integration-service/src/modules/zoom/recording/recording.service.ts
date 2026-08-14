@@ -60,26 +60,78 @@ export class ZoomRecordingService {
     const zoomId = meeting.zoomMeetingId;
     if (!zoomId) throw new Error(`Meeting ${meetingId} has no associated Zoom meeting ID.`);
 
+    logger.info(`[ZoomRecording] Fetching recordings from Zoom API for zoomMeetingId=${zoomId} (meeting ${meetingId})`);
+
     const accessToken = await ZoomAuthService.getAccessToken(meeting.organizerEmail);
-    const res = await fetch(`https://api.zoom.us/v2/meetings/${zoomId}/recordings`, {
+
+    // Zoom cloud recordings API
+    // 3xx → redirected (Zoom sometimes returns a UUID-encoded URL for past meetings)
+    // 400 → meeting has not ended yet OR the meeting ID format is wrong
+    // 404 → meeting does not exist on Zoom, or no recording was created
+    const res = await fetch(`https://api.zoom.us/v2/meetings/${encodeURIComponent(zoomId)}/recordings`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      logger.warn(`[ZoomRecording] Fetch recordings for ${zoomId} returned ${res.status}: ${errText}`);
-      throw new Error(`Could not fetch Zoom recordings: ${res.statusText}`);
+      let errBody = '';
+      try { errBody = await res.text(); } catch (_) { errBody = '(could not read body)'; }
+
+      logger.warn(`[ZoomRecording] Zoom API returned ${res.status} for meeting ${zoomId}: ${errBody}`);
+
+      // Surface a helpful message instead of the opaque "Bad Request"
+      if (res.status === 404) {
+        throw new Error(
+          `No Zoom recording found for meeting ${zoomId}. The recording may not have been created ` +
+          `(check that auto_recording=cloud was set on the meeting) or has been deleted from the Zoom cloud.`
+        );
+      }
+
+      if (res.status === 400) {
+        // Parse Zoom's JSON error if present
+        let zoomMsg = res.statusText;
+        try {
+          const parsed = JSON.parse(errBody);
+          zoomMsg = parsed.message || parsed.error_description || zoomMsg;
+        } catch (_) { /* errBody was not JSON */ }
+
+        throw new Error(
+          `Zoom returned 400 Bad Request for meeting ${zoomId}: "${zoomMsg}". ` +
+          `This usually means the meeting has not ended yet, or the Zoom meeting ID is not valid. ` +
+          `Zoom details: ${errBody.slice(0, 300)}`
+        );
+      }
+
+      throw new Error(
+        `Could not fetch Zoom recordings (HTTP ${res.status}): ${errBody.slice(0, 300)}`
+      );
     }
 
-    const data = await res.json();
-    const recordingFiles = data.recording_files || [];
+    const data = await res.json() as any;
+    const recordingFiles: any[] = data.recording_files || [];
     if (recordingFiles.length === 0) {
       logger.info(`[ZoomRecording] No recording files found on Zoom cloud for meeting ${zoomId}`);
       return null;
     }
 
-    // Find primary MP4 video file or audio
-    const videoFile = recordingFiles.find((f: any) => f.file_type === 'MP4' || f.file_extension === 'MP4') || recordingFiles[0];
+    logger.info(`[ZoomRecording] Found ${recordingFiles.length} recording file(s) for ${zoomId}: ${recordingFiles.map((f: any) => `${f.file_type}(${f.status})`).join(', ')}`);
+
+    // Only process files that have finished processing on Zoom's side
+    const readyFiles = recordingFiles.filter((f: any) => f.status === 'completed');
+    if (readyFiles.length === 0) {
+      logger.warn(`[ZoomRecording] ${recordingFiles.length} file(s) found but none are "completed" yet (statuses: ${recordingFiles.map((f: any) => f.status).join(', ')}). Try again in a few minutes.`);
+      throw new Error(
+        `Zoom has ${recordingFiles.length} recording file(s) but they are still processing ` +
+        `(status: ${recordingFiles.map((f: any) => f.status).join(', ')}). ` +
+        `Please wait 5–10 minutes for Zoom to finish processing and try again.`
+      );
+    }
+
+    // Find primary MP4 video file
+    const videoFile =
+      readyFiles.find((f: any) => f.file_type === 'MP4') ||
+      readyFiles.find((f: any) => f.file_extension === 'MP4') ||
+      readyFiles[0];
+
     const recIdStr = String(videoFile.id || `${zoomId}-video`);
     const fileName = `${meeting.title.replace(/[^a-zA-Z0-9_-]/g, '_')}_${recIdStr}.mp4`;
     const fileSize = videoFile.file_size || 0;
@@ -112,7 +164,7 @@ export class ZoomRecordingService {
 
     logger.info(`[ZoomRecording] Synced recording metadata for meeting ${meeting.id} (rec ID: ${recording.id})`);
 
-    // Kick off async download and audio extraction
+    // Kick off async download → audio extract → transcription chain
     this.downloadRecording(recording.id).catch((err: any) => {
       logger.warn(`[ZoomRecording] Background download failed for ${recording.id}: ${err.message}`);
     });
@@ -212,6 +264,12 @@ export class ZoomRecordingService {
             data: { audioPath: localAudioPath, extractedAudioStatus: 'COMPLETED' },
           })
         );
+
+        logger.info(`[ZoomRecording] Audio exists. Auto-triggering transcription for recording ID: ${recordingId}`);
+        ZoomRecordingService.transcribeRecording(recordingId).catch(err => {
+          logger.error(`[ZoomRecording] Auto transcription failed for ${recordingId}: ${err.message}`);
+        });
+
         return localAudioPath;
       }
 
@@ -245,9 +303,103 @@ export class ZoomRecordingService {
         );
 
         logger.info(`[ZoomRecording] Audio extraction complete for ${recordingId}`);
+
+        logger.info(`[ZoomRecording] Auto-triggering transcription for recording ID: ${recordingId}`);
+        ZoomRecordingService.transcribeRecording(recordingId).catch(err => {
+          logger.error(`[ZoomRecording] Auto transcription failed for ${recordingId}: ${err.message}`);
+        });
+
         return localAudioPath;
       });
     });
+  }
+
+  static async transcribeRecording(recordingId: string) {
+    try {
+      const recording = await db.meetingRecording.findUnique({
+        where: { id: recordingId },
+        include: { meeting: true },
+      });
+
+      if (!recording || !recording.meeting || !recording.audioPath) {
+        throw new Error(`Recording metadata, meeting information, or audio path is missing.`);
+      }
+
+      logger.info(`[ZoomRecordingService] Sending transcription request to learning-service for recording ${recordingId}`);
+      
+      const learnServiceUrl = process.env.LEARN_SERVICE_URL || 'http://localhost:3002';
+      
+      let audioPathToSend = recording.audioPath;
+      if (S3Storage.isS3Enabled() && !fs.existsSync(recording.audioPath)) {
+        logger.info(`[ZoomRecordingService] Generating presigned URL for S3 key: ${recording.audioPath}`);
+        audioPathToSend = await S3Storage.getPresignedUrl(recording.audioPath, 3600); // 1 hour expiration
+      }
+
+      const transcribeRes = await fetch(`${learnServiceUrl}/transcription/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioFilePath: audioPathToSend,
+          meetUrl: recording.meeting.meetUrl,
+          studentId: recording.meeting.studentId,
+          teacherId: recording.meeting.teacherId,
+          sessionId: recording.meeting.sessionId,
+          programId: recording.meeting.programId,
+          startTime: recording.meeting.startTime?.toISOString(),
+          endTime: recording.meeting.endTime?.toISOString(),
+        }),
+      });
+
+      if (!transcribeRes.ok) {
+        const errText = await transcribeRes.text();
+        throw new Error(`learning-service transcription returned status ${transcribeRes.status}: ${errText}`);
+      }
+
+      const body = await transcribeRes.json() as any;
+      const result = body?.data;
+
+      if (result && result.transcript) {
+        logger.info(`[ZoomRecordingService] Transcription completed. Writing transcript...`);
+        if (!recording.videoPath) {
+          throw new Error('No videoPath found on meetingRecording to write the transcript alongside.');
+        }
+
+        if (S3Storage.isS3Enabled()) {
+          const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'transcript');
+          logger.info(`[ZoomRecordingService] S3 is enabled. Uploading transcript directly to S3: ${s3Key}`);
+          await S3Storage.uploadBuffer(result.transcript, s3Key, 'text/plain');
+        } else {
+          const transcriptPath = recording.videoPath + '.transcript.txt';
+          fs.writeFileSync(transcriptPath, result.transcript);
+          logger.info(`[ZoomRecordingService] Successfully saved transcript at: ${transcriptPath}`);
+        }
+
+        if (result.classSummary && !result.usedFallback) {
+          try {
+            if (S3Storage.isS3Enabled()) {
+              const s3Key = getS3KeyForRecording(recording.id, recording.fileName, 'summary');
+              await S3Storage.uploadBuffer(result.classSummary, s3Key, 'text/plain');
+              logger.info(`[ZoomRecordingService] Pre-generated AI summary uploaded to S3: ${s3Key}`);
+            } else {
+              const summaryPath = recording.videoPath + '.summary.txt';
+              fs.writeFileSync(summaryPath, result.classSummary, 'utf-8');
+              logger.info(`[ZoomRecordingService] Pre-generated AI summary saved at: ${summaryPath}`);
+            }
+          } catch (summaryErr: any) {
+            logger.warn(`[ZoomRecordingService] Could not persist AI summary: ${summaryErr.message}`);
+          }
+        } else if (result.usedFallback) {
+          logger.error(
+            `[ZoomRecordingService] learning-service returned placeholder output for ${recordingId} — not caching a fake summary.`
+          );
+        }
+      } else {
+        throw new Error('No transcript text returned in the learning-service response data.');
+      }
+    } catch (err: any) {
+      logger.error(`[ZoomRecordingService] Transcription background job failed: ${err.message}`);
+      throw err;
+    }
   }
 
   /**

@@ -51,8 +51,8 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
     errors.push('Invalid email format');
   }
 
-  if (data.phone !== undefined && typeof data.phone !== 'string') {
-    errors.push('Phone must be a string');
+  if (!data.phone || typeof data.phone !== 'string' || !data.phone.trim()) {
+    errors.push('Phone number is required');
   }
   if (data.source !== undefined && typeof data.source !== 'string') {
     errors.push('Source must be a string');
@@ -126,7 +126,9 @@ export const validateUpdateLead = (data: any): UpdateLeadInput => {
     if (typeof data.email !== 'string') errors.push('Email must be a string');
     else if (!isValidEmail(data.email)) errors.push('Invalid email format');
   }
-  if (data.phone !== undefined && typeof data.phone !== 'string') errors.push('Phone must be a string');
+  if (data.phone !== undefined && (typeof data.phone !== 'string' || !data.phone.trim())) {
+    errors.push('Phone number cannot be empty');
+  }
   if (data.source !== undefined && typeof data.source !== 'string') errors.push('Source must be a string');
   if (data.status !== undefined && (typeof data.status !== 'string' || !VALID_STATUSES.includes(data.status))) {
     errors.push('Invalid lead status');
