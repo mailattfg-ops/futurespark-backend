@@ -466,6 +466,15 @@ export const userService = {
             paymentApproved: true,
             selectedPlanType: true,
             paidInstallmentIds: true,
+            profiles: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+                relationship: true,
+              },
+            },
           },
         },
         // Payment is per programme now, so the portal needs all of them to know

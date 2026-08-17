@@ -174,8 +174,8 @@ export const reportService = {
    * does NOT bypass the missing-summary check: there is nothing to re-send when
    * no summary was ever produced.
    */
-  async sendClassReport(classId: string, options: { force?: boolean } = {}): Promise<SendReportOutcome> {
-    const prepared = await prepareReport(classId, { ignoreSentLatch: options.force === true });
+  async sendClassReport(classId: string, options: { force?: boolean; customPhone?: string } = {}): Promise<SendReportOutcome> {
+    const prepared = await prepareReport(classId, { ignoreSentLatch: options.force === true, customPhone: options.customPhone });
     if (!prepared.ok) {
       return { classId, sent: false, skippedReason: prepared.reason };
     }
@@ -228,12 +228,14 @@ type PreparedReport = {
  */
 const prepareReport = async (
   classId: string,
-  options: { ignoreSentLatch: boolean }
+  options: { ignoreSentLatch: boolean; customPhone?: string }
 ): Promise<PreparedReport | { ok: false; reason: string }> => {
   const classSession = await db.scheduledClass.findUnique({
     where: { id: classId },
     include: CLASS_FOR_REPORT,
   });
+
+  logger.info(`[PrepareReport] classId=${classId} found=${!!classSession} status=${classSession?.status} classSummaryLength=${classSession?.classSummary?.length || 0}`);
 
   if (!classSession) {
     return { ok: false, reason: 'Class not found' };
@@ -258,7 +260,7 @@ const prepareReport = async (
 
   const parent = student.parentAccount;
   const parentProfile = parent?.profiles?.find((p) => p.phone) ?? parent?.profiles?.[0];
-  const phone = parentProfile?.phone ?? null;
+  const phone = options.customPhone || parentProfile?.phone || null;
 
   if (!parent) {
     return { ok: false, reason: 'Student has no parent account' };
@@ -277,13 +279,13 @@ const prepareReport = async (
   ]);
 
   const { date, dateLong, time } = formatInTimezone(classSession.startTime, student.timezone);
-  const brandName = process.env.WHATSAPP_BRAND_NAME || 'FutureSpark';
+  const brandName = process.env.WHATSAPP_BRAND_NAME || 'Finquo Junior';
 
   const ctx: ReportContext = {
     studentName: fullName(student.firstName, student.lastName) || 'Your child',
     parentName: fullName(parentProfile?.firstName, parentProfile?.lastName) || null,
     mentorName: fullName(classSession.mentor?.firstName, classSession.mentor?.lastName) || 'Your mentor',
-    programName: program?.title || 'FutureSpark Programme',
+    programName: program?.title || 'Finquo Junior Programme',
     sessionTitle: session?.title || 'Class session',
     sessionNumber: session?.order ?? null,
     classDate: date,
@@ -346,6 +348,12 @@ const deliverPreparedReport = async (
   prepared: PreparedReport
 ): Promise<SendReportOutcome> => {
   const { rendered, parentId, phone, variables, caption } = prepared;
+  if (!phone || phone.trim().length === 0) {
+    const message = 'No phone number found for parent account';
+    logger.error(`[Report] Send failed for class ${classId} — ${message}`);
+    await recordFailure(classId, 'NO_PHONE_NUMBER', message, true);
+    return { classId, sent: false, failureKind: 'NO_PHONE_NUMBER', error: message };
+  }
   const storedPath = await persistPdf(classId, rendered.fileName, rendered.buffer);
 
   try {
