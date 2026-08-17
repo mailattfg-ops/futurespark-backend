@@ -62,14 +62,15 @@ const asTemplateParameter = (value: unknown): string => {
  */
 const buildComponents = (
   variables: SessionReportRequest['variables'],
-  mediaId?: string
+  mediaId?: string,
+  fileName?: string
 ): { components: any[]; resolved: Array<{ name: string; value: string }> } => {
   const components: any[] = [];
 
   if (whatsappConfig.reportTemplateHasDocumentHeader && mediaId) {
     components.push({
       type: 'header',
-      parameters: [{ type: 'document', document: { id: mediaId } }],
+      parameters: [{ type: 'document', document: { id: mediaId, filename: fileName || 'Report.pdf' } }],
     });
   }
 
@@ -182,7 +183,7 @@ export const sessionReportService = {
     }
 
     // 3. The normal path: the approved template, carrying the PDF in its header.
-    const { components, resolved } = buildComponents(request.variables, mediaId);
+    const { components, resolved } = buildComponents(request.variables, mediaId, request.document?.fileName);
 
     logger.info(
       `[Session Report] Sending template "${templateName}" (${whatsappConfig.reportTemplateLanguage}) to ` +

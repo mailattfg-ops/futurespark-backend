@@ -161,7 +161,9 @@ const tick = async (): Promise<void> => {
 
   try {
     await redriveCompletionSignals();
-    await sendDueReports();
+    // Disabled: Do not send parent report / transcript whatsapp message automatically.
+    // Dispatch is now handled manually by the admin from the dashboard.
+    // await sendDueReports();
     await markExpiredReports();
   } catch (err: any) {
     logger.error(`[Report Cron] Pass failed: ${err.message}`);

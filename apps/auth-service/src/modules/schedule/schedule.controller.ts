@@ -167,7 +167,13 @@ export const scheduleController = {
     }
 
     const force = String(req.query.force ?? req.body?.force ?? '') === 'true';
-    const outcome = await reportService.sendClassReport(req.params.id, { force });
+    const customPhone = typeof req.body?.phone === 'string'
+      ? req.body.phone.trim()
+      : typeof req.query?.phone === 'string'
+        ? req.query.phone.trim()
+        : undefined;
+
+    const outcome = await reportService.sendClassReport(req.params.id, { force, customPhone });
 
     if (!outcome.sent) {
       return res.status(HTTP_STATUS.OK).json(
