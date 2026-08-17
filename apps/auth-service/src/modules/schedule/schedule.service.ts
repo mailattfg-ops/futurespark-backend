@@ -426,10 +426,38 @@ export const scheduleService = {
       select: { id: true, title: true, order: true, credits: true, topics: true },
     });
 
+    /* ── Who is attending a demo ─────────────────────────────────────────────
+     * A demo class carries a bare `leadId` and no student, so every portal
+     * printed a placeholder — the mentor's timetable said "Demo Prospect
+     * Student" for a real child they were about to teach for ninety minutes.
+     *
+     * Resolved here rather than by each portal fetching the CRM: a mentor has
+     * no business listing the sales pipeline, and this is already scoped to the
+     * classes they are entitled to see. NAMES ONLY — deliberately no email or
+     * phone, which is contact data the admin owns and a mentor does not need.
+     * `Lead` has no relation to `ScheduledClass` (different schema, bare id),
+     * hence the follow-up query rather than an `include`.
+     * ───────────────────────────────────────────────────────────────────── */
+    const leadIds = [...new Set(schedules.map((s) => s.leadId).filter(Boolean))] as string[];
+    const leads =
+      leadIds.length > 0
+        ? await db.lead.findMany({
+            where: { id: { in: leadIds } },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              studentFirstName: true,
+              studentLastName: true,
+            },
+          })
+        : [];
+
     const now = Date.now();
     return schedules.map((s) => ({
       ...s,
       session: sessions.find((sess) => sess.id === s.sessionId) || null,
+      lead: s.leadId ? leads.find((l) => l.id === s.leadId) || null : null,
       // Derived here rather than in each portal, so the student's attendance
       // tab and the mentor's student record can never disagree about whether a
       // class was missed.

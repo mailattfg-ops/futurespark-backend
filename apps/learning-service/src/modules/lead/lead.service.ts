@@ -42,6 +42,8 @@ export const leadService = {
         lastName: input.lastName,
         email: input.email,
         phone: input.phone,
+        studentFirstName: input.studentFirstName,
+        studentLastName: input.studentLastName,
         source: input.source,
         status: input.status as any,
         programId: input.programId,
@@ -77,6 +79,14 @@ export const leadService = {
         lastName: input.lastName !== undefined ? input.lastName : undefined,
         email: input.email !== undefined ? input.email : undefined,
         phone: input.phone !== undefined ? input.phone : undefined,
+        // Empty string means "clear it", which has to reach the column as NULL.
+        // Passing '' through would leave a name that is present but blank, and
+        // every reader's "does this lead name a child?" check would then pass
+        // and render nothing.
+        studentFirstName:
+          input.studentFirstName !== undefined ? input.studentFirstName || null : undefined,
+        studentLastName:
+          input.studentLastName !== undefined ? input.studentLastName || null : undefined,
         source: input.source !== undefined ? input.source : undefined,
         status: input.status !== undefined ? (input.status as any) : undefined,
         programId: input.programId !== undefined ? input.programId : undefined,
