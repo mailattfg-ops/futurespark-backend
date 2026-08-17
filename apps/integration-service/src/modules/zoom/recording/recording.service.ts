@@ -393,6 +393,11 @@ export class ZoomRecordingService {
             `[ZoomRecordingService] learning-service returned placeholder output for ${recordingId} — not caching a fake summary.`
           );
         }
+
+        // Returned so a caller that is WAITING on this — the "generate
+        // transcript" button in the admin — can show the result immediately
+        // instead of polling for the file this just wrote.
+        return result as { transcript: string; classSummary?: string; usedFallback?: boolean };
       } else {
         throw new Error('No transcript text returned in the learning-service response data.');
       }

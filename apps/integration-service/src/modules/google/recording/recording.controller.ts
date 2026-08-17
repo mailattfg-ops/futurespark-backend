@@ -452,14 +452,28 @@ export class GoogleRecordingController {
         });
       }
 
-      // If video exists locally on disk, invoke GroqTranscriptionService pipeline
+      /* ── Run the transcription pipeline ─────────────────────────────────
+       * Through learning-service over HTTP. This carried the same broken
+       * cross-service `require()` of learning-service's TypeScript SOURCE that
+       * the Zoom controller did — see the note there. It cannot resolve in a
+       * deployed build (separate `dist/` per service, no TS loader in
+       * production), so on the server it always threw and the failure was
+       * swallowed into the "AI Transcription pending" banner below.
+       *
+       * Locally it DID work — ts-node-dev resolves the .ts — which is why this
+       * only ever failed in production, and looked like a Groq problem there.
+       * ─────────────────────────────────────────────────────────────────── */
       if (recording.videoPath && fs.existsSync(recording.videoPath)) {
         try {
-          logger.info(`[GoogleRecordingController] Running GroqTranscriptionService pipeline for: ${recording.videoPath}`);
-          const groqModulePath = '../../../../../learning-service/src/modules/transcription/groq-transcription.service';
-          const { GroqTranscriptionService } = require(groqModulePath);
-          const groqService = new GroqTranscriptionService();
-          const result = await groqService.processClassAudio(recording.videoPath, studentName, mentorName);
+          // Groq is sent audio, never the source video.
+          if (!recording.audioPath) {
+            logger.info(`[GoogleRecordingController] No audio track yet for ${recording.id} — extracting first.`);
+            await GoogleRecordingService.extractAudioFromRecording(recording.id);
+          }
+
+          logger.info(`[GoogleRecordingController] Requesting transcription from learning-service for ${recording.id}`);
+          const result = await GoogleRecordingService.transcribeRecording(recording.id);
+
           if (result && result.classSummary) {
             // Only cache genuine AI output. Caching the placeholder is what pinned
             // stale "mentor Instructor / student Student" summaries permanently.
