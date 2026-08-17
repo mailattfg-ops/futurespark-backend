@@ -5,6 +5,31 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
+import { parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
+
+/**
+ * Everything known about the lesson before a word of it is analysed.
+ *
+ * `slideContent` is the whole point: without it the model can only describe
+ * what it heard, and financial vocabulary spoken by a child over a phone mic is
+ * exactly the kind of audio Whisper garbles. With the slides in hand it can
+ * recognise "FOBO" rather than transcribing "pho-bo", and can state which of the
+ * planned stops the class actually reached.
+ */
+export interface ClassAnalysisContext {
+  sessionTitle?: string | null;
+  sessionOrder?: number | null;
+  sessionTotal?: number | null;
+  /** The presentation text for this session. See Session.slideContent. */
+  slideContent?: string | null;
+  /** The session's mind-map topics, flattened to titles. */
+  plannedTopics?: string[];
+  classDate?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  /** Real audio length in seconds, when the recording reported one. */
+  audioSeconds?: number | null;
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
  * GROQ MODEL IDS
@@ -84,7 +109,12 @@ export class GroqTranscriptionService {
   /**
    * Main Pipeline: Transcribe audio/video and generate master parent summary & interaction metrics
    */
-  async processClassAudio(audioFilePath: string, studentName: string = 'Student', mentorName: string = 'Instructor') {
+  async processClassAudio(
+    audioFilePath: string,
+    studentName: string = 'Student',
+    mentorName: string = 'Instructor',
+    context: ClassAnalysisContext = {}
+  ) {
     logger.info(`[GroqTranscriptionService] [+] Processing file: ${audioFilePath} for ${studentName} & ${mentorName}`);
 
     let localFilePath = audioFilePath;
@@ -131,9 +161,10 @@ export class GroqTranscriptionService {
       let transcript = '';
       let classSummary = '';
       let metrics: any;
+      let report: SessionReport | null = null;
 
       try {
-        // 1. Transcribe with Groq Whisper Large v3
+        // 1. Transcribe with Groq Whisper
         transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
       } catch (err: any) {
         logger.error(`[GroqTranscriptionService] Groq Whisper API call failed: ${err.message}`);
@@ -143,11 +174,13 @@ export class GroqTranscriptionService {
       metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
 
       try {
-        // 3. Generate Master AI Summary with Llama 3.3 (70B)
-        classSummary = await this.generateMasterSummary(transcript, metrics, studentName, mentorName);
+        // 2. Analyse the recording against the session slides.
+        const built = await this.generateSessionReport(transcript, studentName, mentorName, context);
+        report = built;
+        classSummary = sessionReportToText(built);
       } catch (err: any) {
-        logger.error(`[GroqTranscriptionService] Groq Llama 3.3 Summary API failed: ${err.message}`);
-        throw new Error(`Groq Llama 3.3 Summary API failed: ${err.message}`);
+        logger.error(`[GroqTranscriptionService] Groq session-report call failed: ${err.message}`);
+        throw new Error(`Groq session report failed: ${err.message}`);
       }
 
       // Clean up temporary compressed audio if created
@@ -155,7 +188,7 @@ export class GroqTranscriptionService {
         try { fs.unlinkSync(fileToTranscribe); } catch (_) { }
       }
 
-      return { transcript, classSummary, metrics, usedFallback };
+      return { transcript, classSummary, metrics, report, usedFallback };
     } catch (err: any) {
       logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
       throw err;
@@ -447,7 +480,204 @@ export class GroqTranscriptionService {
   }
 
   /**
-   * 3. Groq master summary (model set by GROQ_SUMMARY_MODEL)
+   * Analyse the recording against the session slides and return a structured
+   * Student Session Report.
+   *
+   * ── Two inputs, two different jobs ──
+   * The SLIDES say what was PLANNED. The RECORDING says what HAPPENED. Keeping
+   * that distinction sharp in the prompt is the whole game: given curriculum
+   * text, a language model will happily describe the lesson as designed and
+   * hand a parent a report about concepts their child never reached. So the
+   * slides are scoped to interpretation — naming, spelling, and deciding which
+   * planned stops were actually covered — and every claim about the CHILD must
+   * come from the audio.
+   *
+   * ── Why JSON and not the formatted report ──
+   * The specification asks for tables, fixed status vocabulary and a visual word
+   * cloud. Models cannot draw, and prose parsed back into tables is exactly the
+   * fragility this pipeline already suffered from. The model returns data; the
+   * PDF renderer owns the layout, so every session's report is identical by
+   * construction.
+   */
+  private async generateSessionReport(
+    transcript: string,
+    studentName: string,
+    mentorName: string,
+    context: ClassAnalysisContext
+  ): Promise<SessionReport> {
+    const slides = (context.slideContent ?? '').trim();
+    const slideLimit = readNumberEnv('GROQ_SLIDE_CONTENT_CHARS', 40_000);
+    const slideBlock = slides
+      ? slides.slice(0, slideLimit)
+      : '(No session material was provided. Derive the learning goals and topics from the recording alone, and keep them conservative.)';
+
+    const plannedTopics = (context.plannedTopics ?? []).filter(Boolean);
+
+    const durationHint = context.audioSeconds
+      ? `The recording is ${Math.round(context.audioSeconds)} seconds long (${Math.floor(context.audioSeconds / 60)}m ${Math.round(context.audioSeconds % 60)}s). Use this as the total session duration.`
+      : 'The exact recording length is unknown. Set duration to "Not available" unless the audio makes it clear.';
+
+    const systemPrompt = `You are an AI Education Session Analyst for a 1:1 Financial Literacy Program.
+
+You receive two inputs:
+  INPUT 1 — SESSION MATERIAL: the standardised slides, key terms, activities, quiz and speaker notes for this session. This is what was PLANNED.
+  INPUT 2 — SESSION TRANSCRIPT: the actual 1:1 conversation between teacher and student. This is what HAPPENED.
+
+HOW TO USE EACH INPUT — this distinction is critical:
+- Use the SESSION MATERIAL to understand what the student was expected to learn, to name and spell concepts the way the curriculum does, and to judge which planned topics were reached.
+- Use the TRANSCRIPT, and ONLY the transcript, for every statement about the student: what they understood, how they participated, how they applied concepts, how independently they answered, what they asked.
+- NEVER describe a concept as covered because it appears in the material. If the transcript does not show it being taught, it belongs in topicsNotReached.
+- NEVER invent a number, a quotation or an observation. If something cannot be established from the transcript, use null for counts and "Not available" for text.
+
+PRIMARY OBJECTIVE
+Evaluate the STUDENT's learning journey. This is not a teacher performance review; never criticise the teacher.
+
+COUNTING RULES
+- A meaningful response explains an idea, gives reasoning, provides an example, makes a financial decision, compares choices, asks a meaningful question, reflects, or self-corrects.
+- "yes", "no", "okay", "hmm" and similar are NOT meaningful unless they demonstrate understanding.
+- An independent response is given without the teacher supplying or leading to the answer; a prompted response needed help.
+- ${durationHint}
+- Talk time may be estimated from the transcript's share of speech, but say so honestly by keeping the split conservative. If speakers cannot be told apart, use null percentages and "Not available".
+
+ASSESSMENT VOCABULARY
+Use exactly one of: "Emerging", "Developing", "Proficient". Never use negative labels such as weak, poor, or low ability. Use null only if there is genuinely no evidence.
+
+WORD CLOUD
+Select 15-25 meaningful LEARNING concepts actually discussed — financial vocabulary, not the most frequently spoken words. Exclude articles, pronouns, auxiliary verbs, fillers (okay, yeah, hmm, like, just), and generic classroom words (teacher, student, class, session, question, answer). Combine related forms (saving/savings -> saving). Weight 1-10 by learning importance and relevance, NOT raw frequency.
+
+SAFETY
+Do not diagnose learning difficulties. Do not make high-stakes judgements. Do not comment on personality, intelligence, accent, gender or any irrelevant characteristic. Do not include the raw transcript. Do not expose your reasoning.
+
+OUTPUT
+Return ONLY a JSON object matching this schema exactly — no markdown, no commentary:
+
+{
+  "student": string,
+  "teacher": string,
+  "sessionTopic": string,
+  "weekNumber": number|null,
+  "weekTotal": number|null,
+  "date": string,
+  "timing": { "startTime": string, "endTime": string, "duration": string },
+  "talkTime": { "teacher": string, "student": string, "teacherPercent": number|null, "studentPercent": number|null },
+  "interactions": {
+    "teacherQuestions": number|null, "studentQuestions": number|null,
+    "meaningfulResponses": number|null, "independentResponses": number|null,
+    "promptedResponses": number|null, "selfCorrections": number|null
+  },
+  "learningGoals": [string],                 // 2-4, parent-friendly, from the session material
+  "assessment": {
+    "conceptUnderstanding": "Emerging"|"Developing"|"Proficient"|null,
+    "application": "Emerging"|"Developing"|"Proficient"|null,
+    "financialReasoning": "Emerging"|"Developing"|"Proficient"|null,
+    "independence": "Emerging"|"Developing"|"Proficient"|null,
+    "highlight": string                      // one short evidence-based observation
+  },
+  "topicsCovered": [string],                 // planned topics the transcript shows were taught
+  "topicsNotReached": [string],              // planned topics the transcript does not show
+  "questionQuality": string,                 // what the student's questions demonstrated
+  "keyLearningMoment": string,               // 1-2 sentences
+  "parentSummary": string,                   // 2-3 sentences, positive and simple
+  "developmentArea": string,                 // one constructive area to practise
+  "nextSessionFocus": string,                // one specific focus
+  "wordCloud": [{ "word": string, "weight": number }]
+}`;
+
+    const userPrompt = `STUDENT: ${studentName}
+TEACHER: ${mentorName}
+SESSION: ${context.sessionTitle ?? 'Not available'}${context.sessionOrder ? ` (Session ${context.sessionOrder}${context.sessionTotal ? ` of ${context.sessionTotal}` : ''})` : ''}
+DATE: ${context.classDate ?? 'Not available'}
+SCHEDULED START: ${context.startTime ?? 'Not available'}
+SCHEDULED END: ${context.endTime ?? 'Not available'}
+${plannedTopics.length > 0 ? `PLANNED TOPICS: ${plannedTopics.join('; ')}` : ''}
+
+===== INPUT 1 — SESSION MATERIAL (what was PLANNED) =====
+${slideBlock}
+
+===== INPUT 2 — SESSION TRANSCRIPT (what actually HAPPENED) =====
+${this.transcriptForPrompt(transcript)}
+===== END OF TRANSCRIPT =====
+
+Return the JSON object now.`;
+
+    try {
+      const response = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model: this.summaryModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          // Forces syntactically valid JSON, so the only failure mode left is a
+          // field with the wrong shape — which parseSessionReport absorbs.
+          response_format: { type: 'json_object' },
+          max_tokens: 6000,
+          temperature: 0.2,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${this.groqApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
+        },
+      );
+
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        throw new Error(`Groq returned an empty analysis from "${this.summaryModel}".`);
+      }
+
+      let raw: any;
+      try {
+        raw = JSON.parse(content);
+      } catch {
+        // Belt and braces: some models still wrap JSON in a fenced block even
+        // under json_object mode.
+        const match = content.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error('Groq did not return parseable JSON.');
+        raw = JSON.parse(match[0]);
+      }
+
+      const report = parseSessionReport(raw, {
+        student: studentName,
+        teacher: mentorName,
+        sessionTopic: context.sessionTitle ?? undefined,
+        weekNumber: context.sessionOrder ?? null,
+        weekTotal: context.sessionTotal ?? null,
+        date: context.classDate ?? undefined,
+      });
+
+      logger.info(
+        `[GroqTranscriptionService] Session report built — ${report.learningGoals.length} goal(s), ` +
+          `${report.topicsCovered.length} topic(s) covered, ${report.topicsNotReached.length} not reached, ` +
+          `${report.wordCloud.length} word-cloud concept(s)${slides ? '' : ' (NO session material was available)'}.`
+      );
+
+      return report;
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.error?.message || err.message;
+
+      if (status === 404 || /decommission|deprecat|does not exist|not supported/i.test(detail)) {
+        throw new Error(
+          `Groq does not recognise the summary model "${this.summaryModel}": ${detail}. Groq retires ` +
+            "models on a few weeks' notice — check https://console.groq.com/docs/deprecations and set " +
+            'GROQ_SUMMARY_MODEL to the replacement. No code change is needed.'
+        );
+      }
+      if (status === 429) {
+        throw new Error(`Groq rate limit hit while analysing the session: ${detail}. It will be retried.`);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * The previous free-text summary. Unused by the pipeline since the structured
+   * report replaced it, and kept only because `GROQ_LEGACY_SUMMARY=true` is a
+   * one-line escape hatch if the new format needs to be backed out in a hurry.
    */
   private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise<string> {
     if (!this.groqApiKey || this.groqApiKey.length < 5) {

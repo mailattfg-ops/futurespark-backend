@@ -314,14 +314,37 @@ export class ZoomRecordingController {
         });
       }
 
-      // If video exists locally, invoke GroqTranscriptionService pipeline
+      /* ── Run the transcription pipeline ─────────────────────────────────
+       * Through learning-service over HTTP, exactly as the Google path does.
+       *
+       * This used to `require()` learning-service's TypeScript SOURCE across
+       * the service boundary:
+       *
+       *   require('../../../../../learning-service/src/modules/transcription/...')
+       *
+       * which cannot work in a deployed build. Each service compiles to its own
+       * `dist/`, Node has no TypeScript loader in production, and the relative
+       * path points at a `.ts` file that is not shipped — so on the server every
+       * Zoom transcript died with "Cannot find module" and the failure was
+       * swallowed into the fallback banner below, which reads like a status
+       * update rather than a crash.
+       *
+       * It also bypassed everything that makes the summary useful: the session
+       * slide material, the structured Student Session Report, and the write
+       * back to ScheduledClass. Going through learning-service gets all three.
+       * ─────────────────────────────────────────────────────────────────── */
       if (recording.videoPath && fs.existsSync(recording.videoPath)) {
         try {
-          logger.info(`[ZoomRecordingController] Running GroqTranscriptionService pipeline for Zoom: ${recording.videoPath}`);
-          const groqModulePath = '../../../../../learning-service/src/modules/transcription/groq-transcription.service';
-          const { GroqTranscriptionService } = require(groqModulePath);
-          const groqService = new GroqTranscriptionService();
-          const result = await groqService.processClassAudio(recording.videoPath, studentName, mentorName);
+          // Groq needs audio, not a 135 MB mp4. extractAudio is idempotent and
+          // returns immediately when the track already exists.
+          if (!recording.audioPath) {
+            logger.info(`[ZoomRecordingController] No audio track yet for ${recording.id} — extracting first.`);
+            await ZoomRecordingService.extractAudio(recording.id);
+          }
+
+          logger.info(`[ZoomRecordingController] Requesting transcription from learning-service for ${recording.id}`);
+          const result = await ZoomRecordingService.transcribeRecording(recording.id);
+
           if (result && result.classSummary) {
             if (summaryPath && !result.usedFallback) {
               try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) { }

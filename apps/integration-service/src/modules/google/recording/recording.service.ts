@@ -637,6 +637,11 @@ export class GoogleRecordingService {
             `[GoogleRecordingService] learning-service returned placeholder output for ${recordingId} — not caching a fake summary.`
           );
         }
+
+        // Returned so a caller WAITING on this — the admin's "generate
+        // transcript" button — can render the result straight away rather than
+        // polling for the file this just wrote.
+        return result as { transcript: string; classSummary?: string; usedFallback?: boolean };
       } else {
         throw new Error('No transcript text returned in the learning-service response data.');
       }

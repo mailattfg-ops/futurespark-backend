@@ -149,6 +149,16 @@ const asBadRequest = <T>(fn: () => T): T => {
   }
 };
 
+/**
+ * Ceiling on stored presentation text.
+ *
+ * A full session deck runs to roughly 10-15k characters; 200k leaves generous
+ * room while still refusing a pasted PDF binary or a runaway paste loop. The
+ * summariser truncates to GROQ_SLIDE_CONTENT_CHARS separately, so this is a
+ * storage guard rather than a prompt-budget one.
+ */
+export const SLIDE_CONTENT_MAX = 200_000;
+
 export interface CreateSessionInput {
   title: string;
   order: number;
@@ -156,6 +166,7 @@ export interface CreateSessionInput {
   slidesUrl?: string | null;
   guideUrl?: string | null;
   worksheetUrl?: string | null;
+  slideContent?: string | null;
   programId?: string | null;
   credits?: number;
   reflectionQuestions?: string[];
@@ -185,6 +196,7 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
     slidesUrl: data.slidesUrl?.trim() || null,
     guideUrl: data.guideUrl?.trim() || null,
     worksheetUrl: data.worksheetUrl?.trim() || null,
+    slideContent: typeof data.slideContent === 'string' ? data.slideContent.trim().slice(0, SLIDE_CONTENT_MAX) || null : null,
     programId: data.programId?.trim() || null,
     credits: typeof data.credits === 'number' ? data.credits : undefined,
     reflectionQuestions:
@@ -221,6 +233,22 @@ export const validateUpdateSession = (data: any): Partial<CreateSessionInput> =>
   }
   for (const key of ['slidesUrl', 'guideUrl', 'worksheetUrl'] as const) {
     if (data[key] !== undefined) out[key] = typeof data[key] === 'string' ? data[key].trim() || null : null;
+  }
+  // The presentation text. Deliberately NOT trimmed to a short field: this is a
+  // whole deck's worth of slides, key terms and speaker notes, and it is what
+  // lets the post-class summariser name concepts correctly and report which
+  // planned topics the class actually reached.
+  if (data.slideContent !== undefined) {
+    if (data.slideContent !== null && typeof data.slideContent !== 'string') {
+      errors.push('Session material must be text');
+    } else {
+      const value = typeof data.slideContent === 'string' ? data.slideContent.trim() : '';
+      if (value.length > SLIDE_CONTENT_MAX) {
+        errors.push(`Session material is too long (${value.length} characters; the limit is ${SLIDE_CONTENT_MAX})`);
+      } else {
+        out.slideContent = value.length > 0 ? value : null;
+      }
+    }
   }
   if (data.programId !== undefined) {
     out.programId = typeof data.programId === 'string' ? data.programId.trim() || null : null;

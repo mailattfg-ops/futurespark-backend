@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from '@futurespark/logger';
+import { parseSessionReport, type SessionReport } from '@futurespark/constants';
 import { S3Storage } from '@futurespark/storage';
 import db from '../../database/datasource';
 import { renderSessionReportPdf, type ReportContext } from './report-pdf';
@@ -56,6 +57,33 @@ const CLASS_FOR_REPORT = {
 
 const fullName = (first?: string | null, last?: string | null): string =>
   [first, last].filter(Boolean).join(' ').trim();
+
+/**
+ * Pull the structured Student Session Report out of `interactionMetrics`.
+ *
+ * It rides in that existing Json column rather than in a new one: the column
+ * already held the word-count metrics, learning-service now writes the report
+ * alongside them under `.report`, and nothing that read the old shape breaks.
+ * Re-validated on the way out because it is JSON from the database — the row
+ * may predate the format, or have been written by an older service.
+ */
+const extractStoredReport = (metrics: unknown): SessionReport | null => {
+  if (!metrics || typeof metrics !== 'object') return null;
+  const raw = (metrics as any).report;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const report = parseSessionReport(raw);
+  // A report with no goals, no assessment and no cloud is an empty husk — most
+  // likely a half-written row. Fall back to the prose layout rather than
+  // rendering a page of "Not available".
+  const hasContent =
+    report.learningGoals.length > 0 ||
+    report.wordCloud.length > 0 ||
+    report.parentSummary.length > 0 ||
+    Boolean(report.assessment.conceptUnderstanding);
+
+  return hasContent ? report : null;
+};
 
 /** 1 -> "1st", 13 -> "13th", 22 -> "22nd". */
 const ordinal = (day: number): string => {
@@ -366,9 +394,14 @@ const prepareReport = async (
       : null,
   };
 
+  // The structured analysis, when the class was processed after the Student
+  // Session Report format landed. Older classes have only prose, and the
+  // renderer falls back to parsing that.
+  const storedReport = extractStoredReport(classSession.interactionMetrics);
+
   let rendered;
   try {
-    rendered = await renderSessionReportPdf(ctx, classSession.classSummary);
+    rendered = await renderSessionReportPdf(ctx, classSession.classSummary, storedReport);
   } catch (err: any) {
     logger.error(`[Report] PDF rendering failed for class ${classId}: ${err.message}`);
     await recordFailure(classId, 'PDF_RENDER_FAILED', err.message);
