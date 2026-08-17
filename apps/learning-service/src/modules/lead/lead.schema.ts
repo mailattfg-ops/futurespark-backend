@@ -2,10 +2,14 @@ import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
 export interface CreateLeadInput {
+  /** The PARENT — the contact who enquired. */
   firstName: string;
   lastName: string;
   email: string;
   phone?: string;
+  /** The CHILD who will attend. Optional: a web enquiry may not name them. */
+  studentFirstName?: string;
+  studentLastName?: string;
   source?: string;
   status?: string;
   programId?: string;
@@ -69,6 +73,12 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
   if (data.demoClass !== undefined && typeof data.demoClass !== 'boolean') {
     errors.push('demoClass must be a boolean');
   }
+  if (data.studentFirstName !== undefined && typeof data.studentFirstName !== 'string') {
+    errors.push("Student's first name must be a string");
+  }
+  if (data.studentLastName !== undefined && typeof data.studentLastName !== 'string') {
+    errors.push("Student's last name must be a string");
+  }
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
@@ -77,6 +87,11 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
     lastName: data.lastName.trim(),
     email: data.email.trim().toLowerCase(),
     phone: data.phone?.trim() || undefined,
+    // Empty string collapses to undefined so a blank form field stores NULL
+    // rather than '' — readers test for a missing student name, and '' would
+    // pass that test and then render as nothing at all.
+    studentFirstName: data.studentFirstName?.trim() || undefined,
+    studentLastName: data.studentLastName?.trim() || undefined,
     source: data.source?.trim() || 'Website',
     status: data.status || 'NEW',
     programId: data.programId || undefined,
@@ -99,6 +114,8 @@ export interface UpdateLeadInput {
   lastName?: string;
   email?: string;
   phone?: string;
+  studentFirstName?: string;
+  studentLastName?: string;
   source?: string;
   status?: string;
   programId?: string;
@@ -136,6 +153,12 @@ export const validateUpdateLead = (data: any): UpdateLeadInput => {
   if (data.programId !== undefined && typeof data.programId !== 'string') errors.push('Program ID must be a string');
   if (data.notes !== undefined && typeof data.notes !== 'string') errors.push('Notes must be a string');
   if (data.demoClass !== undefined && typeof data.demoClass !== 'boolean') errors.push('demoClass must be a boolean');
+  if (data.studentFirstName !== undefined && typeof data.studentFirstName !== 'string') {
+    errors.push("Student's first name must be a string");
+  }
+  if (data.studentLastName !== undefined && typeof data.studentLastName !== 'string') {
+    errors.push("Student's last name must be a string");
+  }
 
   if (errors.length > 0) throw new AppError(errors.join('; '), HTTP_STATUS.BAD_REQUEST);
 
@@ -144,6 +167,11 @@ export const validateUpdateLead = (data: any): UpdateLeadInput => {
     lastName: data.lastName?.trim(),
     email: data.email?.trim().toLowerCase(),
     phone: data.phone?.trim(),
+    // `?? undefined` and not `|| undefined`: clearing the field sends '', and
+    // the service maps '' to null so a wrongly-entered student name can
+    // actually be removed. `||` would silently discard the clear.
+    studentFirstName: data.studentFirstName !== undefined ? data.studentFirstName.trim() : undefined,
+    studentLastName: data.studentLastName !== undefined ? data.studentLastName.trim() : undefined,
     source: data.source?.trim(),
     status: data.status,
     programId: data.programId,

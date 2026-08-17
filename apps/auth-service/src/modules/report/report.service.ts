@@ -253,17 +253,80 @@ const prepareReport = async (
     };
   }
 
-  const student = classSession.student;
-  if (!student) {
-    return { ok: false, reason: 'Class has no student attached' };
-  }
+  /* ── Who sat the class, and who gets the report ──────────────────────────
+   * Two shapes, and they do not overlap.
+   *
+   * REGULAR: an enrolled Student, whose ParentAccount profile carries the phone.
+   * DEMO:    no student and no parent at all — a Lead, who is the prospective
+   *          parent AND the contact. A demo class stores `leadId` and leaves
+   *          `studentId` null, so the student branch below would reject it with
+   *          "Class has no student attached" and no trial family would ever
+   *          receive the report their demo was supposed to sell them on.
+   * ─────────────────────────────────────────────────────────────────────── */
+  const isDemo = classSession.classType === 'DEMO' || (!classSession.studentId && !!classSession.leadId);
 
-  const parent = student.parentAccount;
-  const parentProfile = parent?.profiles?.find((p) => p.phone) ?? parent?.profiles?.[0];
-  const phone = options.customPhone || parentProfile?.phone || null;
+  let attendeeName: string;
+  let recipientName: string | null;
+  let recipientId: string;
+  let phone: string | null;
+  let timezone: string;
 
-  if (!parent) {
-    return { ok: false, reason: 'Student has no parent account' };
+  if (isDemo) {
+    if (!classSession.leadId) {
+      return { ok: false, reason: 'Demo class has no lead attached' };
+    }
+
+    const lead = await db.lead.findUnique({
+      where: { id: classSession.leadId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        studentFirstName: true,
+        studentLastName: true,
+        phone: true,
+        preferredTimezone: true,
+      },
+    });
+    if (!lead) {
+      return { ok: false, reason: 'The lead this demo was booked for no longer exists' };
+    }
+
+    // The report is about the CHILD and addressed to the PARENT — the same two
+    // roles as an enrolled family. A lead names both when the CRM captured them;
+    // when it did not, the single name stands in for the attendee, because a
+    // report headed "Your child" reads worse than one headed with the only name
+    // the family actually gave us.
+    attendeeName =
+      fullName(lead.studentFirstName, lead.studentLastName) ||
+      fullName(lead.firstName, lead.lastName) ||
+      'Your child';
+    recipientName = lead.firstName || null;
+    recipientId = lead.id;
+    phone = options.customPhone || lead.phone || null;
+    timezone = lead.preferredTimezone || 'Asia/Kolkata';
+
+    if (!phone) {
+      return { ok: false, reason: 'This lead has no phone number on record, so there is nowhere to send the report' };
+    }
+  } else {
+    const student = classSession.student;
+    if (!student) {
+      return { ok: false, reason: 'Class has no student attached' };
+    }
+
+    const parent = student.parentAccount;
+    if (!parent) {
+      return { ok: false, reason: 'Student has no parent account' };
+    }
+
+    const parentProfile = parent.profiles?.find((p) => p.phone) ?? parent.profiles?.[0];
+
+    attendeeName = fullName(student.firstName, student.lastName) || 'Your child';
+    recipientName = fullName(parentProfile?.firstName, parentProfile?.lastName) || null;
+    recipientId = parent.id;
+    phone = options.customPhone || parentProfile?.phone || null;
+    timezone = student.timezone;
   }
 
   // Programme and session titles live in the learning schema and are not
@@ -278,15 +341,18 @@ const prepareReport = async (
       : Promise.resolve(null),
   ]);
 
-  const { date, dateLong, time } = formatInTimezone(classSession.startTime, student.timezone);
+  const { date, dateLong, time } = formatInTimezone(classSession.startTime, timezone);
   const brandName = process.env.WHATSAPP_BRAND_NAME || 'Finquo Junior';
 
   const ctx: ReportContext = {
-    studentName: fullName(student.firstName, student.lastName) || 'Your child',
-    parentName: fullName(parentProfile?.firstName, parentProfile?.lastName) || null,
+    studentName: attendeeName,
+    parentName: recipientName,
     mentorName: fullName(classSession.mentor?.firstName, classSession.mentor?.lastName) || 'Your mentor',
     programName: program?.title || 'Finquo Junior Programme',
-    sessionTitle: session?.title || 'Class session',
+    // A demo has no curriculum session — `sessionId` is null — so `session` is
+    // always null here and the generic "Class session" would be the title on
+    // every demo report a prospective family sees.
+    sessionTitle: session?.title || (isDemo ? 'Demo class' : 'Class session'),
     sessionNumber: session?.order ?? null,
     classDate: date,
     classTime: time,
@@ -313,9 +379,9 @@ const prepareReport = async (
   // WHATSAPP_REPORT_TEMPLATE_VARIABLES, so the approved template's {{1}},
   // {{2}}, ... can be re-pointed in configuration without a code change.
   const variables: Record<string, string> = {
-    studentName: student.firstName || ctx.studentName,
+    studentName: ctx.studentName.split(' ')[0] || ctx.studentName,
     studentFullName: ctx.studentName,
-    parentName: parentProfile?.firstName || 'there',
+    parentName: (recipientName ?? '').split(' ')[0] || 'there',
     programName: ctx.programName,
     sessionTitle: ctx.sessionTitle,
     sessionNumber: ctx.sessionNumber ? String(ctx.sessionNumber) : '-',
@@ -338,7 +404,7 @@ const prepareReport = async (
   const caption =
     `${ctx.studentName}'s report for "${ctx.sessionTitle}" (${ctx.classDate}) is attached.`.slice(0, 900);
 
-  return { ok: true, rendered, ctx, parentId: parent.id, phone, variables, caption };
+  return { ok: true, rendered, ctx, parentId: recipientId, phone, variables, caption };
 };
 
 /** Upload, send, and record the outcome. Split from `prepareReport` so the

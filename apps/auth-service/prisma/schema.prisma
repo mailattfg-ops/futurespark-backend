@@ -427,10 +427,21 @@ model SessionResource {
 
 model Lead {
   id                  String     @id @default(uuid())
+  /// The PARENT — the person who fills in the enquiry, takes the calls and
+  /// receives the demo report.
   firstName           String
   lastName            String
   email               String
   phone               String?
+  /// The CHILD who will actually attend.
+  ///
+  /// One name used to stand for both people, so a demo class, the mentor's
+  /// timetable and the demo report all showed the parent where the child
+  /// belonged. Nullable because every lead created before this has a single
+  /// name and there is no way to tell which of the two it referred to —
+  /// readers fall back to the parent name rather than showing a blank.
+  studentFirstName    String?
+  studentLastName     String?
   source              String     @default("Website")
   status              LeadStatus @default(NEW)
   programId           String?
