@@ -1149,17 +1149,26 @@ export const whatsappService = {
 
     const url = `https://graph.facebook.com/${whatsappConfig.apiVersion}/${whatsappConfig.phoneNumberId}/messages`;
 
-    const dbLog = await db.whatsAppMessage.create({
-      data: {
-        from: 'SYSTEM',
-        to: to,
-        direction: 'OUTBOUND',
-        type: type,
-        body: bodyContent,
-        status: 'pending',
-        recipientId: recipientId || null,
-      },
-    });
+    // DB logging is best-effort — if the WhatsAppMessage table hasn't been
+    // migrated on production yet, we still send the message and just warn.
+    let dbLog: { id: string } | null = null;
+    try {
+      dbLog = await db.whatsAppMessage.create({
+        data: {
+          from: 'SYSTEM',
+          to: to,
+          direction: 'OUTBOUND',
+          type: type,
+          body: bodyContent,
+          status: 'pending',
+          recipientId: recipientId || null,
+        },
+      });
+    } catch (dbErr: any) {
+      logger.warn(
+        `[WhatsApp Service] Could not create WhatsAppMessage log row (table may not be migrated yet): ${dbErr?.message ?? dbErr}. Message will still be sent.`
+      );
+    }
 
     try {
       logger.info(`[WhatsApp Service] Sending ${type} message to ${maskPhone(to)}`);
@@ -1212,10 +1221,12 @@ export const whatsappService = {
           logger.error(`[WhatsApp Service] WHATSAPP_SEND_FAILED ${storedError}${remediation ? ` :: ${remediation}` : ''}`);
         }
 
-        await db.whatsAppMessage.update({
-          where: { id: dbLog.id },
-          data: { status: 'failed', error: storedError.slice(0, 1000) },
-        });
+        if (dbLog) {
+          await db.whatsAppMessage.update({
+            where: { id: dbLog.id },
+            data: { status: 'failed', error: storedError.slice(0, 1000) },
+          }).catch(() => {});
+        }
 
         return {
           success: false,
@@ -1231,13 +1242,15 @@ export const whatsappService = {
       const metaMessageId = responseBody?.messages?.[0]?.id;
       logger.info(`[WhatsApp Service] Message sent successfully. Meta ID: ${metaMessageId}`);
 
-      await db.whatsAppMessage.update({
-        where: { id: dbLog.id },
-        data: {
-          status: 'sent',
-          messageId: metaMessageId,
-        },
-      });
+      if (dbLog) {
+        await db.whatsAppMessage.update({
+          where: { id: dbLog.id },
+          data: {
+            status: 'sent',
+            messageId: metaMessageId,
+          },
+        }).catch(() => {});
+      }
 
       return {
         success: true,
@@ -1257,10 +1270,12 @@ export const whatsappService = {
         ? `Request to Meta timed out after ${whatsappConfig.requestTimeoutMs}ms`
         : err?.message || String(err);
       logger.error(`[WhatsApp Service] WHATSAPP_SEND_FAILED [NETWORK_ERROR] :: ${detail}`);
-      await db.whatsAppMessage.update({
-        where: { id: dbLog.id },
-        data: { status: 'failed', error: `[NETWORK_ERROR] ${detail}`.slice(0, 1000) },
-      });
+      if (dbLog) {
+        await db.whatsAppMessage.update({
+          where: { id: dbLog.id },
+          data: { status: 'failed', error: `[NETWORK_ERROR] ${detail}`.slice(0, 1000) },
+        }).catch(() => {});
+      }
       return { success: false, failureKind: 'NETWORK_ERROR', error: detail, retryable: true };
     }
   },
