@@ -174,6 +174,7 @@ export const courseService = {
         slidesUrl: input.slidesUrl ?? null,
         guideUrl: input.guideUrl ?? null,
         worksheetUrl: input.worksheetUrl ?? null,
+        slideContent: input.slideContent ?? null,
         programId: resolvedProgramId ?? null,
         credits: input.credits ?? 10,
         reflectionQuestions: input.reflectionQuestions ?? [],

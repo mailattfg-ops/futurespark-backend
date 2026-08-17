@@ -396,6 +396,16 @@ model Session {
   reflectionQuiz Json?
   // Mind map of what this session covers. Shape: SessionTopic[].
   topics        Json?
+  /// The presentation text for this session: slides, key terms, activities,
+  /// quiz answers and speaker notes, as plain text.
+  ///
+  /// Fed to the summariser ALONGSIDE the class recording. Its job is strictly
+  /// to interpret what was heard — name concepts correctly, spell terms the way
+  /// the curriculum does, and establish which planned topics were reached and
+  /// which were not. It is never a source of content in its own right: a report
+  /// describing what the slides say rather than what the mentor taught would
+  /// tell a parent their child learned things they never got to.
+  slideContent  String?      @db.Text
   resources     SessionResource[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt

@@ -865,3 +865,6 @@ export const isClassOver = (cls: AttendanceInput, nowMs: number = Date.now()): b
   const end = cls.endTime ? new Date(cls.endTime).getTime() : start + 90 * 60 * 1000;
   return end <= nowMs;
 };
+
+/* ── Post-class Student Session Report ────────────────────────────────── */
+export * from "./session-report";

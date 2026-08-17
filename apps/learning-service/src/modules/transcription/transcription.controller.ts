@@ -11,6 +11,87 @@ const groqService = new GroqTranscriptionService();
 /** ±2h around the meeting's start — see `findClassForRecording`. */
 const SLOT_TOLERANCE_MS = 2 * 60 * 60 * 1000;
 
+/** Flatten the mind-map tree to a list of topic titles for the prompt. */
+const flattenTopicTitles = (topics: unknown, depth = 0): string[] => {
+  if (!Array.isArray(topics) || depth > 3) return [];
+  const out: string[] = [];
+  for (const node of topics) {
+    if (!node || typeof node !== 'object') continue;
+    const title = typeof (node as any).title === 'string' ? (node as any).title.trim() : '';
+    if (title) out.push(title);
+    out.push(...flattenTopicTitles((node as any).children, depth + 1));
+  }
+  return out.slice(0, 40);
+};
+
+/**
+ * Assemble what the analysis needs to know about the lesson itself.
+ *
+ * Everything here is best-effort: a session that has no slide text yet still
+ * produces a report, just a more cautious one. A missing session must never
+ * fail the transcription — the recording is the expensive part and it has
+ * already been paid for by the time this runs.
+ */
+async function buildAnalysisContext(input: {
+  sessionId?: string;
+  programId?: string;
+  startTime?: string;
+  endTime?: string;
+}) {
+  const context: any = {
+    classDate: input.startTime ? new Date(input.startTime).toISOString().slice(0, 10) : null,
+    startTime: input.startTime ?? null,
+    endTime: input.endTime ?? null,
+  };
+
+  if (!input.sessionId) {
+    logger.warn(
+      '[Transcription Controller] No sessionId supplied — the report will be built from the recording ' +
+        'alone, with no session material to check it against.'
+    );
+    return context;
+  }
+
+  try {
+    const session = await db.session.findUnique({
+      where: { id: input.sessionId },
+      select: { title: true, order: true, topics: true, slideContent: true, programId: true },
+    });
+
+    if (!session) {
+      logger.warn(`[Transcription Controller] Session ${input.sessionId} not found — no material to analyse against.`);
+      return context;
+    }
+
+    context.sessionTitle = session.title;
+    context.sessionOrder = session.order;
+    context.slideContent = session.slideContent;
+    context.plannedTopics = flattenTopicTitles(session.topics);
+
+    // "Week 3 of 52" — the total comes from how many sessions the programme has.
+    const programId = session.programId ?? input.programId;
+    if (programId) {
+      context.sessionTotal = await db.session.count({ where: { programId } });
+    }
+
+    if (!session.slideContent || session.slideContent.trim().length === 0) {
+      logger.warn(
+        `[Transcription Controller] Session "${session.title}" has no slideContent. The report will be ` +
+          'less precise — add the presentation text so concepts can be named and unreached topics flagged.'
+      );
+    } else {
+      logger.info(
+        `[Transcription Controller] Analysing against "${session.title}" ` +
+          `(${session.slideContent.length} chars of material, ${context.plannedTopics.length} planned topic(s)).`
+      );
+    }
+  } catch (err: any) {
+    logger.error(`[Transcription Controller] Could not load session material: ${err.message}. Continuing without it.`);
+  }
+
+  return context;
+}
+
 /**
  * Find the ONE class a finished recording belongs to.
  *
@@ -151,8 +232,19 @@ export const transcriptionController = {
 
       logger.info(`[Transcription Controller] Resolved participants — student: "${studentName}", mentor: "${mentorName}"`);
 
-      // 2. Process transcription using Groq Pipeline
-      const result = await groqService.processClassAudio(audioFilePath, studentName, mentorName);
+      // 2. Load the session material — the slides, key terms and activities the
+      //    class was built around. This is INPUT 1 to the analysis; without it
+      //    the model can only describe what it heard, and financial vocabulary
+      //    spoken by a child over a phone mic is exactly what Whisper garbles.
+      const analysisContext = await buildAnalysisContext({ sessionId, programId, startTime, endTime });
+
+      // 3. Process transcription using Groq Pipeline
+      const result = await groqService.processClassAudio(
+        audioFilePath,
+        studentName,
+        mentorName,
+        analysisContext
+      );
 
       // 3. Find and update the ScheduledClass record in PostgreSQL (cross-schema).
       // Skipped when the pipeline produced placeholder output — persisting that
@@ -179,8 +271,18 @@ export const transcriptionController = {
               where: { id: scheduledClass.id },
               data: {
                 transcript: result.transcript,
+                // Readable prose, for the admin recording modal and the student
+                // portal — both of which display this column as text, and every
+                // row written before the structured report holds prose.
                 classSummary: result.classSummary,
-                interactionMetrics: result.metrics as any,
+                // The structured report lives alongside the old word-count
+                // metrics rather than replacing them, so nothing that already
+                // reads `interactionMetrics` breaks. The PDF renderer looks for
+                // `.report`; if it is absent it falls back to parsing the text.
+                interactionMetrics: {
+                  ...(result.metrics as any),
+                  report: result.report ?? null,
+                } as any,
                 transcriptionStatus: 'COMPLETED',
               },
             });
