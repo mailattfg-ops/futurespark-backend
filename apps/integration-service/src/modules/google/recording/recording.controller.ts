@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { GoogleRecordingService } from './recording.service';
 import { buildAiFailureBanner, parseAiFailure, hasRealName } from '../../shared/ai-failure-banner';
+import { startTranscriptionJob, isTranscriptionRunning, getTranscriptionState, describeJobState } from '../../shared/transcription-job';
 import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
@@ -470,25 +471,36 @@ export class GoogleRecordingController {
        * ─────────────────────────────────────────────────────────────────── */
       if (recording.videoPath && fs.existsSync(recording.videoPath)) {
         try {
-          // Groq is sent audio, never the source video.
-          if (!recording.audioPath) {
-            logger.info(`[GoogleRecordingController] No audio track yet for ${recording.id} — extracting first.`);
-            await GoogleRecordingService.extractAudioFromRecording(recording.id);
+          /* ── Start the work; do not wait for it ─────────────────────────
+           * See the Zoom controller for the full note: the pipeline outlives
+           * Node's default five-minute request timeout on the Groq free tier,
+           * so awaiting it here returned a bare "Internal Server Error" while
+           * the job carried on unseen.
+           * ───────────────────────────────────────────────────────────── */
+          const state = await getTranscriptionState(recording.id);
+          const running = isTranscriptionRunning(recording.id);
+
+          if (!running && state.status !== 'FAILED') {
+            startTranscriptionJob(recording.id, async () => {
+              const fresh = await GoogleRecordingService.getRecordingById(recording.id);
+              if (!fresh?.audioPath) {
+                logger.info(`[GoogleRecordingController] No audio track yet for ${recording.id} — extracting first.`);
+                await GoogleRecordingService.extractAudioFromRecording(recording.id);
+              }
+              const built = await GoogleRecordingService.transcribeRecording(recording.id);
+              if (built?.classSummary && summaryPath && !built.usedFallback) {
+                try { fs.writeFileSync(summaryPath, built.classSummary, 'utf-8'); } catch (_) { }
+              }
+            });
           }
 
-          logger.info(`[GoogleRecordingController] Requesting transcription from learning-service for ${recording.id}`);
-          const result = await GoogleRecordingService.transcribeRecording(recording.id);
+          return res.status(202).json(
+            successResponse(
+              { content: describeJobState(state, true), processing: true },
+              'Transcription is running.'
+            )
+          );
 
-          if (result && result.classSummary) {
-            // Only cache genuine AI output. Caching the placeholder is what pinned
-            // stale "mentor Instructor / student Student" summaries permanently.
-            if (summaryPath && !result.usedFallback) {
-              try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) { }
-            } else if (result.usedFallback) {
-              logger.error(`[GoogleRecordingController] Groq returned placeholder output for ${recording.id} — not caching to ${summaryPath}`);
-            }
-            return res.status(HTTP_STATUS.OK).json(successResponse({ content: result.classSummary }, 'Master Groq AI Summary loaded successfully.'));
-          }
         } catch (groqErr: any) {
           logger.error(`[GoogleRecordingController] Groq processing error: ${groqErr?.message || groqErr}`);
           // Return a structured session summary fallback instead of 500 Internal Server Error

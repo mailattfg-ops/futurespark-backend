@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { ZoomRecordingService } from './recording.service';
 import { buildAiFailureBanner, parseAiFailure, hasRealName } from '../../shared/ai-failure-banner';
+import { startTranscriptionJob, isTranscriptionRunning, getTranscriptionState, describeJobState } from '../../shared/transcription-job';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
 import { logger } from '@futurespark/logger';
@@ -340,24 +341,40 @@ export class ZoomRecordingController {
        * ─────────────────────────────────────────────────────────────────── */
       if (recording.videoPath && fs.existsSync(recording.videoPath)) {
         try {
-          // Groq needs audio, not a 135 MB mp4. extractAudio is idempotent and
-          // returns immediately when the track already exists.
-          if (!recording.audioPath) {
-            logger.info(`[ZoomRecordingController] No audio track yet for ${recording.id} — extracting first.`);
-            await ZoomRecordingService.extractAudio(recording.id);
+          /* ── Start the work; do not wait for it ─────────────────────────
+           * This used to await the whole pipeline. On the Groq free tier the
+           * analysis runs in paced passes and takes minutes, while Node's
+           * default `server.requestTimeout` is five — so the socket died
+           * mid-job and the browser got a bare "Internal Server Error" while
+           * the work carried on unseen. The caller is told it started; the
+           * result is collected by polling this same endpoint.
+           * ───────────────────────────────────────────────────────────── */
+          const state = await getTranscriptionState(recording.id);
+          const running = isTranscriptionRunning(recording.id);
+
+          if (!running && state.status !== 'FAILED') {
+            startTranscriptionJob(recording.id, async () => {
+              // Groq needs audio, not a 135 MB mp4. extractAudio is idempotent
+              // and returns immediately when the track already exists.
+              const fresh = await ZoomRecordingService.getRecordingById(recording.id);
+              if (!fresh?.audioPath) {
+                logger.info(`[ZoomRecordingController] No audio track yet for ${recording.id} — extracting first.`);
+                await ZoomRecordingService.extractAudio(recording.id);
+              }
+              const result = await ZoomRecordingService.transcribeRecording(recording.id);
+              if (result?.classSummary && summaryPath && !result.usedFallback) {
+                try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) { }
+              }
+            });
           }
 
-          logger.info(`[ZoomRecordingController] Requesting transcription from learning-service for ${recording.id}`);
-          const result = await ZoomRecordingService.transcribeRecording(recording.id);
-
-          if (result && result.classSummary) {
-            if (summaryPath && !result.usedFallback) {
-              try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) { }
-            } else if (result.usedFallback) {
-              logger.error(`[ZoomRecordingController] Groq returned placeholder output for Zoom ${recording.id} — not caching to ${summaryPath}`);
-            }
-            return res.status(HTTP_STATUS.OK).json(successResponse({ content: result.classSummary }, 'Master Groq AI Summary loaded successfully.'));
-          }
+          // 202: accepted, not finished. The admin polls until content appears.
+          return res.status(202).json(
+            successResponse(
+              { content: describeJobState(state, true), processing: true },
+              'Transcription is running.'
+            )
+          );
         } catch (groqErr: any) {
           logger.error(`[ZoomRecordingController] Groq processing error: ${groqErr?.message || groqErr}`);
           const fallbackSummary = buildAiFailureBanner({
