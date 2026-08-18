@@ -480,7 +480,15 @@ export class GoogleRecordingController {
           const state = await getTranscriptionState(recording.id);
           const running = isTranscriptionRunning(recording.id);
 
-          if (!running && state.status !== 'FAILED') {
+          /* A FAILED recording restarts only on an EXPLICIT refresh. The admin
+           * polls this endpoint every few seconds, so restarting FAILED
+           * unconditionally would re-run a permanently broken file forever —
+           * but refusing it always (the previous rule) left a class dead with
+           * no way back: the button did nothing, the retry daemon skips
+           * FAILED, and the 202 below claimed it was "running". */
+          const shouldStart = !running && (state.status !== 'FAILED' || forceRefresh);
+
+          if (shouldStart) {
             startTranscriptionJob(recording.id, async () => {
               const fresh = await GoogleRecordingService.getRecordingById(recording.id);
               if (!fresh?.audioPath) {
@@ -494,9 +502,21 @@ export class GoogleRecordingController {
             });
           }
 
+          if (!shouldStart && !running && state.status === 'FAILED') {
+            // Tell the truth: the job is dead until someone presses Refresh.
+            // Returning 202 "running" here is what left the admin staring at a
+            // progress bar for a class that had already given up.
+            return res.status(HTTP_STATUS.OK).json(
+              successResponse(
+                { content: describeJobState(state, false), processing: false, failed: true },
+                'Transcription failed — use Refresh to run it again.'
+              )
+            );
+          }
+
           return res.status(202).json(
             successResponse(
-              { content: describeJobState(state, true), processing: true },
+              { content: describeJobState(state, running || shouldStart), processing: true },
               'Transcription is running.'
             )
           );
