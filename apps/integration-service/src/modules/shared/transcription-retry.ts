@@ -158,3 +158,47 @@ export const startTranscriptionRetryCron = (
   setTimeout(() => void tick(), 60_000);
   setInterval(() => void tick(), intervalMs);
 };
+
+/**
+ * Clear transcriptions that a restart orphaned.
+ *
+ * `transcriptionStatus = RUNNING` is set in the database, but the job that owns
+ * it lives in this process's memory. A deploy, a crash or a `pm2 restart`
+ * therefore leaves a row claiming to be running with nothing running it — and
+ * because the retry daemon only looks at PENDING rows, that class is stranded:
+ * never finished, never retried, never reported on.
+ *
+ * Called once at boot. Anything still marked RUNNING cannot be, because this
+ * process has only just started and owns no jobs yet.
+ */
+export const resetStuckTranscriptions = async (): Promise<void> => {
+  try {
+    const stuck = await db.meetingRecording.findMany({
+      where: { transcriptionStatus: 'RUNNING' },
+      select: { id: true, fileName: true, transcriptionAttempts: true },
+    });
+
+    if (stuck.length === 0) return;
+
+    await db.meetingRecording.updateMany({
+      where: { transcriptionStatus: 'RUNNING' },
+      data: {
+        transcriptionStatus: 'PENDING',
+        // Attempts must be > 0 for the retry daemon to consider a row, and an
+        // interrupted run genuinely was an attempt. `retryAt` in the past makes
+        // it eligible on the very next pass rather than after a backoff it did
+        // not earn.
+        transcriptionAttempts: { increment: 1 },
+        transcriptionRetryAt: new Date(Date.now() - 1000),
+        transcriptionError: 'Interrupted by a service restart before it finished.',
+      },
+    });
+
+    logger.warn(
+      `[TranscriptionRetry] ${stuck.length} transcription(s) were left RUNNING by a previous ` +
+        `process and have been requeued: ${stuck.map((s) => s.fileName).join(', ')}`
+    );
+  } catch (err: any) {
+    logger.error(`[TranscriptionRetry] Could not requeue orphaned transcriptions: ${err.message}`);
+  }
+};
