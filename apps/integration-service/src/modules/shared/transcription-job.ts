@@ -82,9 +82,8 @@ export const describeJobState = (state: TranscriptionJobState, running: boolean)
   if (running || state.status === 'RUNNING') {
     return (
       'Transcribing and analysing this class.\n\n' +
-      'This usually takes 2-6 minutes: the audio is transcribed, then the class is analysed ' +
-      'against the session material. On the Groq free tier the analysis runs in paced passes, ' +
-      'which is the slow part.\n\n' +
+      'The audio is transcribed in chunks, then the class is analysed against the session ' +
+      'material. Most classes finish in a couple of minutes.\n\n' +
       'You can close this window — it keeps running, and the summary will be here when it finishes.'
     );
   }
