@@ -12,6 +12,9 @@ import googlePresenceRouter from './modules/google/presence/presence.routes';
 import { startPresencePolling } from './modules/google/presence/presence.service';
 import storageRouter from './modules/storage/storage.routes';
 import classLifecycleRouter from './modules/classes/lifecycle.routes';
+import { startTranscriptionRetryCron } from './modules/shared/transcription-retry';
+import { GoogleRecordingService } from './modules/google/recording/recording.service';
+import { ZoomRecordingService } from './modules/zoom/recording/recording.service';
 
 // Zoom modules
 import zoomAuthRouter from './modules/zoom/auth/auth.routes';
@@ -34,6 +37,15 @@ app.use((req, res, next) => {
 
 // Start background cron workers
 startSyncCron();
+// Retries transcriptions that failed for a reason that passes — chiefly the
+// Groq free tier's audio quota, which rejects the sixth class of a day purely
+// for arriving too soon. Routed by provider so a Zoom recording is retried
+// through Zoom's path and a Meet recording through Google's.
+startTranscriptionRetryCron((recordingId, provider) =>
+  provider === 'ZOOM'
+    ? ZoomRecordingService.transcribeRecording(recordingId)
+    : GoogleRecordingService.transcribeRecording(recordingId)
+);
 startPresencePolling();
 startZoomPresencePolling();
 

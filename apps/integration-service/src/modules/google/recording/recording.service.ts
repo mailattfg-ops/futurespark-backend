@@ -7,6 +7,7 @@ import { GoogleDriveService } from '../drive/drive.service';
 import { GoogleAuthService } from '../auth/auth.service';
 import { pickBestRecording, type DriveCandidate } from './recording-match';
 import { logger } from '@futurespark/logger';
+import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
 import { Semaphore, createInFlightMap } from '../../../utils/concurrency';
 
@@ -638,6 +639,8 @@ export class GoogleRecordingService {
           );
         }
 
+        await recordTranscriptionSuccess(recordingId);
+
         // Returned so a caller WAITING on this — the admin's "generate
         // transcript" button — can render the result straight away rather than
         // polling for the file this just wrote.
@@ -647,6 +650,9 @@ export class GoogleRecordingService {
       }
     } catch (err: any) {
       logger.error(`[GoogleRecordingService] Transcription background job failed: ${err.message}`);
+      // Schedules the retry. A quota rejection is not a broken recording — it
+      // is the same recording, sent too soon.
+      await recordTranscriptionFailure(recordingId, err?.message ?? String(err));
       throw err;
     }
   }
