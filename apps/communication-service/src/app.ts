@@ -1,5 +1,10 @@
-import path from 'path';
-import dotenv from 'dotenv';
+/* The shared loader, imported for its side effect. app.ts is reached through
+ * server.ts's hoisted `require`, but assertWhatsAppStartupConfig() below runs in
+ * THIS module body — so the environment has to exist by the time this file is
+ * evaluated, not merely by the time server.ts's body runs. dotenv never
+ * overwrites an already-set variable, so loading it twice is a harmless no-op
+ * and container-injected env still wins. */
+import './load-env';
 import express from 'express';
 import cors from 'cors';
 import { logger } from '@futurespark/logger';
@@ -11,18 +16,6 @@ import { whatsappWebhookRoutes } from './modules/whatsapp/whatsapp.routes';
 import { whatsappReportRoutes } from './modules/whatsapp/report.routes';
 import { assertWhatsAppStartupConfig } from './modules/whatsapp/whatsapp.service';
 
-/* ──────────────────────────────────────────────────────────────────────────
- * Load .env HERE, not only in server.ts.
- *
- * server.ts does `import app from './app'` on the line ABOVE its
- * `dotenv.config()`, and TypeScript compiles imports to requires that all run
- * before any module body — so under `npm start` / `npm run dev` the whole
- * module graph was previously constructed with an empty environment.
- * dotenv never overwrites already-set variables, so server.ts's later calls
- * are a harmless no-op and container-injected env still wins.
- * ────────────────────────────────────────────────────────────────────────── */
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
-dotenv.config();
 
 // Fail loudly and early on a missing WhatsApp credential. In production this
 // throws and the process refuses to start; there are no sandbox fallbacks.
