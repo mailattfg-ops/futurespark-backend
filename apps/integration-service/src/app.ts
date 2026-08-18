@@ -12,7 +12,7 @@ import googlePresenceRouter from './modules/google/presence/presence.routes';
 import { startPresencePolling } from './modules/google/presence/presence.service';
 import storageRouter from './modules/storage/storage.routes';
 import classLifecycleRouter from './modules/classes/lifecycle.routes';
-import { startTranscriptionRetryCron } from './modules/shared/transcription-retry';
+import { startTranscriptionRetryCron, resetStuckTranscriptions } from './modules/shared/transcription-retry';
 import { GoogleRecordingService } from './modules/google/recording/recording.service';
 import { ZoomRecordingService } from './modules/zoom/recording/recording.service';
 
@@ -41,6 +41,9 @@ startSyncCron();
 // Groq free tier's audio quota, which rejects the sixth class of a day purely
 // for arriving too soon. Routed by provider so a Zoom recording is retried
 // through Zoom's path and a Meet recording through Google's.
+// A restart orphans any in-flight job: the DB says RUNNING, the process that
+// owned it is gone. Requeue those before the daemon starts looking.
+void resetStuckTranscriptions();
 startTranscriptionRetryCron((recordingId, provider) =>
   provider === 'ZOOM'
     ? ZoomRecordingService.transcribeRecording(recordingId)
