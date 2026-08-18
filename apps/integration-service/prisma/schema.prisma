@@ -101,5 +101,24 @@ model MeetingRecording {
   audioPath            String?  // Local/storage path for extracted audio
   downloadStatus       String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
   extractedAudioStatus String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+
+  // ── Transcription lifecycle ──────────────────────────────────────────────
+  // Tracked separately from the two statuses above because transcription is
+  // the step that can fail for reasons that FIX THEMSELVES: the Groq free tier
+  // allows 28,800 audio-seconds a day and 7,200 an hour, so the sixth class of
+  // a day is rejected purely for arriving too soon.
+  //
+  // Without this the sweep never looked at such a class again — it selects
+  // meetings whose recordings are still `pending_` placeholders, and by
+  // transcription time the real Drive file is already linked. One 429 meant no
+  // summary, ever, and 72 hours later the report cron mislabelled it
+  // "[NO_RECORDING]" for a recording that had downloaded perfectly.
+  transcriptionStatus  String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  transcriptionAttempts Int     @default(0)
+  transcriptionError   String?
+  /// Earliest sensible retry. Set an hour out for an hourly cap, tomorrow for a
+  /// daily one — retrying a quota failure immediately just burns the quota.
+  transcriptionRetryAt DateTime?
+
   createdAt            DateTime @default(now())
 }

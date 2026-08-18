@@ -4,6 +4,7 @@ import { exec } from 'child_process';
 import { db, withDbRetry } from '../../../database/datasource';
 import { ZoomAuthService } from '../auth/auth.service';
 import { logger } from '@futurespark/logger';
+import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
 import { Semaphore, createInFlightMap } from '../../../utils/concurrency';
 
@@ -394,6 +395,8 @@ export class ZoomRecordingService {
           );
         }
 
+        await recordTranscriptionSuccess(recordingId);
+
         // Returned so a caller that is WAITING on this — the "generate
         // transcript" button in the admin — can show the result immediately
         // instead of polling for the file this just wrote.
@@ -403,6 +406,9 @@ export class ZoomRecordingService {
       }
     } catch (err: any) {
       logger.error(`[ZoomRecordingService] Transcription background job failed: ${err.message}`);
+      // Schedules the retry. A quota rejection is not a broken recording — it
+      // is the same recording, sent too soon.
+      await recordTranscriptionFailure(recordingId, err?.message ?? String(err));
       throw err;
     }
   }
