@@ -49,6 +49,80 @@ const DEFAULT_TRANSCRIPTION_MODEL = 'whisper-large-v3-turbo';
 /** Groq's own recommended successor to llama-3.3-70b-versatile. */
 const DEFAULT_SUMMARY_MODEL = 'openai/gpt-oss-120b';
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * PROVIDERS
+ *
+ * Transcription and analysis are configured SEPARATELY, because the best model
+ * for each is rarely the same vendor. Both speak the OpenAI wire format, so a
+ * provider is a base URL, a key and a model slug — nothing structural.
+ *
+ * The split matters here specifically: Groq's free tier meters the analysis
+ * model at 8,000 tokens/minute, which is what forces the multi-pass workaround
+ * and turns a 40-second job into seventeen minutes. Pointing ONLY the analysis
+ * at another provider removes that, while speech-to-text carries on unchanged.
+ *
+ * Defaults keep everything on Groq, so an unconfigured deployment behaves
+ * exactly as before.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1';
+
+const readEnv = (...names: string[]): string | undefined => {
+  for (const name of names) {
+    const raw = process.env[name];
+    if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
+  }
+  return undefined;
+};
+
+/** Strip a trailing slash so `${base}/chat/completions` cannot double up. */
+const normalizeBaseUrl = (url: string): string => url.replace(/\/+$/, '');
+
+export interface ProviderConfig {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  /** Shown in error messages so an operator knows which vendor refused. */
+  label: string;
+}
+
+/**
+ * OpenRouter wants an app identifier, and — more importantly — lets data
+ * handling be enforced at the routing layer rather than trusted to a tier's
+ * terms. These are class recordings of named children, so routing is
+ * restricted to Zero-Data-Retention endpoints and any provider that stores or
+ * trains on inputs is refused outright.
+ *
+ * Ignored by every other vendor, so it is safe to send unconditionally.
+ */
+const isOpenRouter = (baseUrl: string): boolean => baseUrl.includes('openrouter.ai');
+
+const providerHeaders = (config: ProviderConfig): Record<string, string> => {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  if (isOpenRouter(config.baseUrl)) {
+    headers['HTTP-Referer'] = readEnv('AI_APP_URL') || 'https://app.finquo.ai';
+    headers['X-Title'] = readEnv('AI_APP_NAME') || 'FINQUO Junior';
+  }
+  return headers;
+};
+
+/** Body fields that only OpenRouter understands. */
+const providerBodyExtras = (config: ProviderConfig): Record<string, unknown> => {
+  if (!isOpenRouter(config.baseUrl)) return {};
+  if (readEnv('AI_REQUIRE_ZDR') === 'false') return {};
+  return {
+    provider: {
+      // Route only to endpoints that retain nothing, and refuse any provider
+      // that collects data. A child's lesson must not become training data.
+      zdr: true,
+      data_collection: 'deny',
+    },
+  };
+};
+
 /**
  * Upload ceiling per request.
  *
@@ -203,12 +277,47 @@ export class GroqTranscriptionService {
     return process.env.GROQ_API_KEY || '';
   }
 
+  /**
+   * Where speech-to-text goes.
+   *
+   * Falls back to the Groq settings so an existing deployment is unaffected by
+   * the introduction of the generic names.
+   */
+  private get transcriptionProvider(): ProviderConfig {
+    const baseUrl = normalizeBaseUrl(
+      readEnv('AI_TRANSCRIPTION_BASE_URL', 'AI_BASE_URL') ?? DEFAULT_BASE_URL
+    );
+    return {
+      baseUrl,
+      apiKey: readEnv('AI_TRANSCRIPTION_API_KEY', 'AI_API_KEY', 'GROQ_API_KEY') ?? '',
+      model: readEnv('AI_TRANSCRIPTION_MODEL', 'GROQ_TRANSCRIPTION_MODEL') ?? DEFAULT_TRANSCRIPTION_MODEL,
+      label: isOpenRouter(baseUrl) ? 'OpenRouter' : baseUrl.includes('groq.com') ? 'Groq' : baseUrl,
+    };
+  }
+
+  /**
+   * Where the session analysis goes.
+   *
+   * Configured independently of transcription on purpose — the analysis is the
+   * half that Groq's free tier makes unusable, and moving only this one fixes
+   * it without touching a speech-to-text setup that already works.
+   */
+  private get analysisProvider(): ProviderConfig {
+    const baseUrl = normalizeBaseUrl(readEnv('AI_ANALYSIS_BASE_URL', 'AI_BASE_URL') ?? DEFAULT_BASE_URL);
+    return {
+      baseUrl,
+      apiKey: readEnv('AI_ANALYSIS_API_KEY', 'AI_API_KEY', 'GROQ_API_KEY') ?? '',
+      model: readEnv('AI_ANALYSIS_MODEL', 'GROQ_SUMMARY_MODEL') ?? DEFAULT_SUMMARY_MODEL,
+      label: isOpenRouter(baseUrl) ? 'OpenRouter' : baseUrl.includes('groq.com') ? 'Groq' : baseUrl,
+    };
+  }
+
   private get transcriptionModel(): string {
-    return process.env.GROQ_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
+    return this.transcriptionProvider.model;
   }
 
   private get summaryModel(): string {
-    return process.env.GROQ_SUMMARY_MODEL || DEFAULT_SUMMARY_MODEL;
+    return this.analysisProvider.model;
   }
 
   private get maxUploadBytes(): number {
@@ -410,23 +519,34 @@ export class GroqTranscriptionService {
     return parts.join(' ').replace(/\s{2,}/g, ' ').trim();
   }
 
-  /** One file, one request to Groq. */
+  /** One file, one speech-to-text request. */
   private async uploadForTranscription(filePath: string, promptContext?: string): Promise<string> {
+    const provider = this.transcriptionProvider;
+
     const formData = new FormData();
-    formData.append('model', this.transcriptionModel);
+    formData.append('model', provider.model);
     formData.append('file', fs.createReadStream(filePath));
     if (promptContext) formData.append('prompt', promptContext);
 
+    // `language` is worth setting when a class is single-language, but this
+    // programme is taught in mixed English and Malayalam. Pinning either one
+    // makes Whisper transliterate the other into the pinned script, which
+    // destroys the financial vocabulary the report is built from — so the
+    // language is left unset unless an operator explicitly forces one.
+    const forcedLanguage = readEnv('AI_TRANSCRIPTION_LANGUAGE');
+    if (forcedLanguage) formData.append('language', forcedLanguage);
+
     try {
       const response = await axios.post(
-        'https://api.groq.com/openai/v1/audio/transcriptions',
+        `${provider.baseUrl}/audio/transcriptions`,
         formData,
         {
           headers: {
-            Authorization: `Bearer ${this.groqApiKey}`,
+            Authorization: `Bearer ${provider.apiKey}`,
             ...formData.getHeaders(),
           },
           maxBodyLength: Infinity,
+          timeout: readNumberEnv('AI_TRANSCRIPTION_TIMEOUT_MS', 600_000),
         },
       );
 
@@ -625,15 +745,17 @@ Return the JSON object now.`;
     const send = async (system: string, user: string) => {
       const requestTokens = estimateTokens(system + user) + 6000; // + the reply budget
       logger.info(
-        `[GroqTranscriptionService] Sending analysis to ${this.summaryModel} — about ` +
-          `${requestTokens.toLocaleString()} tokens.`
+        `[GroqTranscriptionService] Sending analysis to ${this.analysisProvider.label} ` +
+          `(${this.summaryModel}) — about ${requestTokens.toLocaleString()} tokens.`
       );
+
+      const provider = this.analysisProvider;
 
       try {
         const response = await axios.post(
-          'https://api.groq.com/openai/v1/chat/completions',
+          `${provider.baseUrl}/chat/completions`,
           {
-            model: this.summaryModel,
+            model: provider.model,
             messages: [
               { role: 'system', content: system },
               { role: 'user', content: user },
@@ -641,12 +763,10 @@ Return the JSON object now.`;
             response_format: { type: 'json_object' },
             max_tokens: 6000,
             temperature: 0.2,
+            ...providerBodyExtras(provider),
           },
           {
-            headers: {
-              Authorization: `Bearer ${this.groqApiKey}`,
-              'Content-Type': 'application/json',
-            },
+            headers: providerHeaders(provider),
             timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
           },
         );
