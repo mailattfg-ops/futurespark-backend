@@ -44,7 +44,7 @@ const MODEL_RETIRED_PATTERN = /decommission|deprecat|does not exist|no longer|no
 export const describeGroqFailure = (
   err: any,
   stage: GroqStage,
-  context: { model?: string; requestTokens?: number; audioMb?: number } = {}
+  context: { model?: string; requestTokens?: number; audioMb?: number; provider?: string } = {}
 ): GroqFailure => {
   const httpStatus: number | undefined = err?.response?.status;
   const detail: string =
@@ -53,15 +53,26 @@ export const describeGroqFailure = (
     err?.message ||
     String(err);
 
+  // Which vendor refused. The remedies genuinely differ — a Groq 429 is a
+  // free-tier quota that clears on its own, an OpenRouter 402 is an empty
+  // credit balance that never will — so the wording branches on it.
+  const vendor = context.provider ?? 'The AI provider';
+  const isGroq = /groq/i.test(vendor);
+  const isOpenRouter = /openrouter/i.test(vendor);
+  const keyEnv = stage === 'analysis' ? 'AI_ANALYSIS_API_KEY' : 'AI_TRANSCRIPTION_API_KEY';
+  const modelEnv = stage === 'analysis' ? 'AI_ANALYSIS_MODEL' : 'AI_TRANSCRIPTION_MODEL';
+
   const model = context.model ?? 'the configured model';
 
   if (err?.code === 'ECONNABORTED' || /timeout/i.test(detail)) {
     return {
       kind: 'TIMEOUT',
-      summary: `Groq did not respond in time during ${stage}.`,
+      summary: `${vendor} did not respond in time during ${stage}.`,
       remedy:
-        'A long class can take a while to analyse. Raise GROQ_SUMMARY_TIMEOUT_MS, or retry — the ' +
-        'transcript is already cached so a retry does not re-run speech-to-text.',
+        stage === 'analysis'
+          ? 'A long class can take a while to analyse. Raise GROQ_SUMMARY_TIMEOUT_MS, or retry — the ' +
+            'transcript is already cached so a retry does not re-run speech-to-text.'
+          : 'A long recording can take a while to transcribe. Raise AI_TRANSCRIPTION_TIMEOUT_MS, or retry.',
       detail,
       httpStatus,
       retryable: true,
@@ -71,10 +82,30 @@ export const describeGroqFailure = (
   if (httpStatus === 401 || httpStatus === 403) {
     return {
       kind: 'AUTH_FAILED',
-      summary: 'Groq rejected the API key.',
+      summary: `${vendor} rejected the API key.`,
       remedy:
-        'GROQ_API_KEY is missing, revoked or wrong. Generate a new key at console.groq.com > API Keys ' +
-        'and redeploy. ALL transcription and summaries are down until this is fixed.',
+        `${keyEnv} (or the shared AI_API_KEY) is missing, revoked or wrong. ` +
+        (isOpenRouter
+          ? 'Generate a new key at openrouter.ai > Keys and redeploy. '
+          : isGroq
+            ? 'Generate a new key at console.groq.com > API Keys and redeploy. '
+            : 'Generate a new key with the provider and redeploy. ') +
+        `Every ${stage} job fails until this is fixed.`,
+      detail,
+      httpStatus,
+      retryable: false,
+    };
+  }
+
+  // OpenRouter's "out of credits". Shaped like a rate limit (it clears when
+  // topped up, not by waiting), but retrying is pointless until someone pays.
+  if (httpStatus === 402) {
+    return {
+      kind: 'RATE_LIMITED',
+      summary: `${vendor} refused the request: the account is out of credits.`,
+      remedy:
+        'Top up the balance at openrouter.ai > Credits. Every transcription and analysis fails ' +
+        'until then — the retry daemon will finish the backlog once credit is restored.',
       detail,
       httpStatus,
       retryable: false,
@@ -84,11 +115,16 @@ export const describeGroqFailure = (
   if (httpStatus === 404 || MODEL_RETIRED_PATTERN.test(detail)) {
     return {
       kind: 'MODEL_RETIRED',
-      summary: `Groq does not recognise the model "${model}".`,
+      summary: `${vendor} does not recognise the model "${model}".`,
       remedy:
-        'Groq retires models on a few weeks\' notice. Check https://console.groq.com/docs/deprecations ' +
-        `and set ${stage === 'analysis' ? 'GROQ_SUMMARY_MODEL' : 'GROQ_TRANSCRIPTION_MODEL'} to the ` +
-        'replacement. No code change is needed.',
+        (isOpenRouter
+          ? 'Check https://openrouter.ai/models for the current id (transcription models like ' +
+            'openai/whisper-large-v3-turbo are searchable in the site header but absent from the ' +
+            '/models API). '
+          : isGroq
+            ? 'Groq retires models on a few weeks\' notice — check https://console.groq.com/docs/deprecations. '
+            : '') +
+        `Set ${modelEnv} to the replacement. No code change is needed.`,
       detail,
       httpStatus,
       retryable: false,
@@ -99,10 +135,12 @@ export const describeGroqFailure = (
     if (stage === 'transcription') {
       return {
         kind: 'AUDIO_TOO_LARGE',
-        summary: `The audio file${context.audioMb ? ` (${context.audioMb.toFixed(1)} MB)` : ''} is larger than Groq will accept in one request.`,
+        summary: `The audio file${context.audioMb ? ` (${context.audioMb.toFixed(1)} MB)` : ''} is larger than ${vendor} will accept in one request.`,
         remedy:
-          'The free tier caps a request at 25 MB, the developer tier at 100 MB. Lower ' +
-          'GROQ_MAX_UPLOAD_MB so the audio is split into more chunks.',
+          (isGroq
+            ? 'The Groq free tier caps a request at 25 MB, the developer tier at 100 MB. '
+            : 'The upload cap is around 25 MB. ') +
+          'Lower GROQ_MAX_UPLOAD_MB so the audio is split into more chunks.',
         detail,
         httpStatus,
         retryable: false,
@@ -113,12 +151,15 @@ export const describeGroqFailure = (
       summary:
         `The class is too long to analyse in one request` +
         `${context.requestTokens ? ` (about ${context.requestTokens.toLocaleString()} tokens)` : ''}.`,
-      remedy:
-        `This is a TOKENS-PER-MINUTE limit, not a context limit — "${model}" can hold 131,072 tokens, ` +
-        'but the Groq FREE tier only allows 8,000 per minute, so a 90-minute class cannot be sent at ' +
-        'all. Upgrade to the developer tier (pay-as-you-go; a class costs a few cents), or set ' +
-        'GROQ_MAX_REQUEST_TOKENS to force truncation — the report is then built from part of the ' +
-        'lesson and is marked as partial.',
+      remedy: isGroq
+        ? `This is a TOKENS-PER-MINUTE limit, not a context limit — "${model}" can hold 131,072 tokens, ` +
+          'but the Groq FREE tier only allows 8,000 per minute, so a 90-minute class cannot be sent at ' +
+          'all. Upgrade to the developer tier (pay-as-you-go; a class costs a few cents), or set ' +
+          'GROQ_MAX_REQUEST_TOKENS to force truncation — the report is then built from part of the ' +
+          'lesson and is marked as partial.'
+        : `The prompt exceeded what ${vendor} accepts for "${model}". Lower ` +
+          'GROQ_SUMMARY_TRANSCRIPT_CHARS so less transcript is sent, or switch AI_ANALYSIS_MODEL ' +
+          'to a model with a larger context window.',
       detail,
       httpStatus,
       retryable: false,
@@ -128,14 +169,16 @@ export const describeGroqFailure = (
   if (httpStatus === 429) {
     return {
       kind: 'RATE_LIMITED',
-      summary: `Groq rate limit reached during ${stage}.`,
-      remedy:
-        stage === 'transcription'
+      summary: `${vendor} rate limit reached during ${stage}.`,
+      remedy: isGroq
+        ? stage === 'transcription'
           ? 'The free tier allows 7,200 audio-seconds per HOUR and 28,800 per DAY — about five ' +
             '90-minute classes a day, or two finishing in the same hour. Upgrade to the developer ' +
             'tier ($0.04 per hour of audio) or spread the classes out.'
           : 'The free tier allows 8,000 tokens per minute for the analysis model. Wait a minute and ' +
-            'retry, or upgrade to the developer tier.',
+            'retry, or upgrade to the developer tier.'
+        : 'Wait a minute and retry — the retry daemon requeues this automatically. If it keeps ' +
+          'happening, check the account\'s rate limits and credit balance with the provider.',
       detail,
       httpStatus,
       retryable: true,
@@ -145,8 +188,10 @@ export const describeGroqFailure = (
   if (httpStatus !== undefined && httpStatus >= 500) {
     return {
       kind: 'SERVICE_UNAVAILABLE',
-      summary: `Groq returned a server error (${httpStatus}) during ${stage}.`,
-      remedy: 'This is Groq\'s side, not yours. Retry in a few minutes; check https://groqstatus.com.',
+      summary: `${vendor} returned a server error (${httpStatus}) during ${stage}.`,
+      remedy:
+        'This is the provider\'s side, not yours. Retry in a few minutes' +
+        (isGroq ? '; check https://groqstatus.com.' : isOpenRouter ? '; check https://status.openrouter.ai.' : '.'),
       detail,
       httpStatus,
       retryable: true,
@@ -156,8 +201,8 @@ export const describeGroqFailure = (
   if (!httpStatus && /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|socket hang up/i.test(detail)) {
     return {
       kind: 'NETWORK_ERROR',
-      summary: 'Could not reach Groq.',
-      remedy: 'The server has no route to api.groq.com. Check outbound networking and DNS.',
+      summary: `Could not reach ${vendor}.`,
+      remedy: 'The server could not connect to the provider\'s API host. Check outbound networking and DNS.',
       detail,
       httpStatus,
       retryable: true,
@@ -166,7 +211,7 @@ export const describeGroqFailure = (
 
   return {
     kind: 'UNKNOWN',
-    summary: `Groq ${stage} failed${httpStatus ? ` with HTTP ${httpStatus}` : ''}.`,
+    summary: `${vendor} ${stage} failed${httpStatus ? ` with HTTP ${httpStatus}` : ''}.`,
     remedy: 'Check the learning-service log for the full response.',
     detail,
     httpStatus,

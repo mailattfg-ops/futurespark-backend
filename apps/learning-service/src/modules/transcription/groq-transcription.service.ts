@@ -269,12 +269,20 @@ const resolveFfmpeg = (): string => {
 };
 
 export class GroqTranscriptionService {
-  // Read lazily, not as a captured field. This class is instantiated at module
+  // Key presence is judged per RESOLVED provider, not against GROQ_API_KEY.
+  // The old check tested GROQ_API_KEY specifically, so a deployment that moved
+  // both stages to OpenRouter and removed the Groq key would have every job
+  // silently downgraded to the canned placeholder — with a working paid key
+  // sitting right there in AI_TRANSCRIPTION_API_KEY / AI_ANALYSIS_API_KEY.
+  // Read lazily, not as captured fields: this class is instantiated at module
   // scope by transcription.controller, which can run before dotenv populates
-  // process.env — a captured field would freeze an empty key and silently
-  // downgrade every job to the offline fallback template.
-  private get groqApiKey(): string {
-    return process.env.GROQ_API_KEY || '';
+  // process.env.
+  private get hasTranscriptionKey(): boolean {
+    return this.transcriptionProvider.apiKey.length >= 5;
+  }
+
+  private get hasAnalysisKey(): boolean {
+    return this.analysisProvider.apiKey.length >= 5;
   }
 
   /**
@@ -342,13 +350,17 @@ export class GroqTranscriptionService {
     let localFilePath = audioFilePath;
     const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
 
-    // Both the STT and summary stages degrade to canned placeholder text when the
-    // key is absent. Surface that to callers so placeholder output is never cached
-    // or persisted as if it were a real AI summary.
-    const usedFallback = !this.groqApiKey || this.groqApiKey.length < 5;
+    // Both the STT and summary stages degrade to canned placeholder text when
+    // their provider has no key. Surface that to callers so placeholder output
+    // is never cached or persisted as if it were a real AI summary.
+    const usedFallback = !this.hasTranscriptionKey || !this.hasAnalysisKey;
     if (usedFallback) {
+      const missing = [
+        !this.hasTranscriptionKey && `transcription (${this.transcriptionProvider.label}: set AI_TRANSCRIPTION_API_KEY or AI_API_KEY)`,
+        !this.hasAnalysisKey && `analysis (${this.analysisProvider.label}: set AI_ANALYSIS_API_KEY or AI_API_KEY)`,
+      ].filter(Boolean).join(' and ');
       logger.error(
-        `[GroqTranscriptionService] GROQ_API_KEY missing — returning PLACEHOLDER transcript/summary, not real AI output.`
+        `[GroqTranscriptionService] No API key for ${missing} — returning PLACEHOLDER transcript/summary, not real AI output.`
       );
     }
 
@@ -445,7 +457,7 @@ export class GroqTranscriptionService {
       });
       const newStats = fs.statSync(tempOutput);
       const newSizeMb = newStats.size / (1024 * 1024);
-      logger.info(`[GroqTranscriptionService] [✓] Compressed audio: ${tempOutput} (${newSizeMb.toFixed(2)}MB) - Ready for Groq Whisper!`);
+      logger.info(`[GroqTranscriptionService] [✓] Compressed audio: ${tempOutput} (${newSizeMb.toFixed(2)}MB) - Ready for transcription`);
       return tempOutput;
     } catch (err: any) {
       logger.warn(`[GroqTranscriptionService] ⚠️ Compression failed: ${err.message}. Attempting fallback...`);
@@ -454,11 +466,11 @@ export class GroqTranscriptionService {
   }
 
   /**
-   * 1. Groq Whisper STT API
+   * 1. Speech-to-text (whatever provider AI_TRANSCRIPTION_BASE_URL points at)
    */
   private async transcribeWithGroqWhisper(filePath: string): Promise<string> {
-    if (!this.groqApiKey || this.groqApiKey.length < 5) {
-      logger.info(`[GroqTranscriptionService] GROQ_API_KEY not set in environment. Generating dynamic AI session transcript...`);
+    if (!this.hasTranscriptionKey) {
+      logger.info(`[GroqTranscriptionService] No transcription API key set (AI_TRANSCRIPTION_API_KEY / AI_API_KEY). Generating placeholder session transcript...`);
       return `[00:00:05] Instructor: Welcome to today's live interactive session. Today we are exploring key concepts and hands-on exercises for this program.
 [00:00:22] Student: Thank you! I'm ready to get started. I had a quick question regarding the initial concepts we discussed in the pre-session reading.
 [00:00:45] Instructor: Great question! Let's break that down step-by-step. First, we need to examine how the fundamental principles operate in practice.
@@ -560,7 +572,7 @@ export class GroqTranscriptionService {
         describeGroqFailure(
           new Error('Every audio chunk failed to transcribe.'),
           'transcription',
-          { model: this.transcriptionModel }
+          { model: this.transcriptionModel, provider: this.transcriptionProvider.label }
         )
       );
     }
@@ -612,7 +624,7 @@ export class GroqTranscriptionService {
       // rather than "Request failed with status code 413".
       const audioMb = fs.existsSync(filePath) ? fs.statSync(filePath).size / (1024 * 1024) : undefined;
       throw new GroqError(
-        describeGroqFailure(err, 'transcription', { model: this.transcriptionModel, audioMb })
+        describeGroqFailure(err, 'transcription', { model: this.transcriptionModel, audioMb, provider: this.transcriptionProvider.label })
       );
     }
   }
@@ -831,13 +843,14 @@ Return the JSON object now.`;
           throw new GroqError(
             describeGroqFailure(new Error(`"${this.summaryModel}" returned an empty message.`), 'analysis', {
               model: this.summaryModel,
+              provider: this.analysisProvider.label,
             })
           );
         }
         return content;
       } catch (err: any) {
         if (err instanceof GroqError) throw err;
-        throw new GroqError(describeGroqFailure(err, 'analysis', { model: this.summaryModel, requestTokens }));
+        throw new GroqError(describeGroqFailure(err, 'analysis', { model: this.summaryModel, requestTokens, provider: this.analysisProvider.label }));
       }
     };
 
@@ -867,11 +880,16 @@ COUNTING RULES
 - A meaningful response explains an idea, gives reasoning, provides an example, makes a financial decision, compares choices, asks a meaningful question, reflects, or self-corrects.
 - "yes", "no", "okay", "hmm" and similar are NOT meaningful unless they demonstrate understanding.
 - An independent response is given without the teacher supplying or leading to the answer; a prompted response needed help.
+- A higher-order question asks the student to explain WHY, compare, evaluate, predict or apply — not to recall a fact. higherOrderQuestions is a SUBSET of teacherQuestions and can never exceed it.
 - ${durationHint}
 - Talk time may be estimated from the transcript's share of speech, but say so honestly by keeping the split conservative. If speakers cannot be told apart, use null percentages and "Not available".
 
 ASSESSMENT VOCABULARY
 Use exactly one of: "Emerging", "Developing", "Proficient". Never use negative labels such as weak, poor, or low ability. Use null only if there is genuinely no evidence.
+For each of the four areas ALSO write one warm, specific sentence of evidence from the transcript (the "...Note" fields) — what the child actually said or did, in language a parent enjoys reading. Prefer "with minimal prompting" over anything negative. Empty string only when the transcript truly shows nothing for that area.
+
+PARENT CONNECTION
+parentConnection is ONE warm, simple conversation or activity a parent can try at home, drawn from what THIS session actually covered (e.g. comparing unit prices on the next grocery trip). One or two sentences, inviting, never homework-like, never empty when any topic was taught.
 
 WORD CLOUD
 Select 15-25 meaningful LEARNING concepts actually discussed — financial vocabulary, not the most frequently spoken words. Exclude articles, pronouns, auxiliary verbs, fillers (okay, yeah, hmm, like, just), and generic classroom words (teacher, student, class, session, question, answer). Combine related forms (saving/savings -> saving). Weight 1-10 by learning importance and relevance, NOT raw frequency.
@@ -893,6 +911,7 @@ Return ONLY a JSON object matching this schema exactly — no markdown, no comme
   "talkTime": { "teacher": string, "student": string, "teacherPercent": number|null, "studentPercent": number|null },
   "interactions": {
     "teacherQuestions": number|null, "studentQuestions": number|null,
+    "higherOrderQuestions": number|null,     // subset of teacherQuestions: why/compare/evaluate/predict/apply
     "meaningfulResponses": number|null, "independentResponses": number|null,
     "promptedResponses": number|null, "selfCorrections": number|null
   },
@@ -902,6 +921,10 @@ Return ONLY a JSON object matching this schema exactly — no markdown, no comme
     "application": "Emerging"|"Developing"|"Proficient"|null,
     "financialReasoning": "Emerging"|"Developing"|"Proficient"|null,
     "independence": "Emerging"|"Developing"|"Proficient"|null,
+    "conceptUnderstandingNote": string,      // one sentence of transcript evidence, parent-friendly
+    "applicationNote": string,               // ditto — how they connected it to their own life
+    "financialReasoningNote": string,        // ditto — calculations / decisions they worked through
+    "independenceNote": string,              // ditto — how independently they answered
     "highlight": string                      // one short evidence-based observation
   },
   "topicsCovered": [string],                 // planned topics the transcript shows were taught
@@ -911,6 +934,7 @@ Return ONLY a JSON object matching this schema exactly — no markdown, no comme
   "parentSummary": string,                   // 2-3 sentences, positive and simple
   "developmentArea": string,                 // one constructive area to practise
   "nextSessionFocus": string,                // one specific focus
+  "parentConnection": string,                // ONE warm at-home conversation prompt; never homework
   "wordCloud": [{ "word": string, "weight": number }]
 }`;
   }
@@ -1019,8 +1043,9 @@ Return ONLY a JSON object matching this schema exactly — no markdown, no comme
       const match = content.match(/\{[\s\S]*\}/);
       if (!match) {
         throw new GroqError(
-          describeGroqFailure(new Error('Groq did not return parseable JSON.'), 'analysis', {
+          describeGroqFailure(new Error('The analysis model did not return parseable JSON.'), 'analysis', {
             model: this.summaryModel,
+            provider: this.analysisProvider.label,
           })
         );
       }
@@ -1161,7 +1186,7 @@ Return the JSON now.`;
 
     if (notes.length === 0) {
       throw new GroqError(
-        describeGroqFailure(new Error('Every analysis pass failed.'), 'analysis', { model: this.summaryModel })
+        describeGroqFailure(new Error('Every analysis pass failed.'), 'analysis', { model: this.summaryModel, provider: this.analysisProvider.label })
       );
     }
 
@@ -1210,8 +1235,9 @@ Return the JSON object now.`;
       const match = finalRaw.match(/\{[\s\S]*\}/);
       if (!match) {
         throw new GroqError(
-          describeGroqFailure(new Error('Groq did not return parseable JSON.'), 'analysis', {
+          describeGroqFailure(new Error('The analysis model did not return parseable JSON.'), 'analysis', {
             model: this.summaryModel,
+            provider: this.analysisProvider.label,
           })
         );
       }
@@ -1241,8 +1267,8 @@ Return the JSON object now.`;
    * one-line escape hatch if the new format needs to be backed out in a hurry.
    */
   private async generateMasterSummary(transcript: string, metrics: any, studentName: string = 'Student', mentorName: string = 'Instructor'): Promise<string> {
-    if (!this.groqApiKey || this.groqApiKey.length < 5) {
-      logger.info(`[GroqTranscriptionService] GROQ_API_KEY not set in environment. Returning formatted Master AI Summary...`);
+    if (!this.hasAnalysisKey) {
+      logger.info(`[GroqTranscriptionService] No analysis API key set (AI_ANALYSIS_API_KEY / AI_API_KEY). Returning formatted Master AI Summary...`);
       return `==================================================
         UNIFIED MASTER CLASS SUMMARY & METRICS
 ==================================================
@@ -1337,28 +1363,29 @@ TRANSCRIPT:
 ${this.transcriptForPrompt(transcript)}
 --------------------------------------------------`;
 
+    // Legacy path, but it must still follow the configured analysis provider —
+    // this was the last call in the file hardcoded to Groq's URL and key.
+    const legacyProvider = this.analysisProvider;
     try {
       const response = await axios.post(
-        'https://api.groq.com/openai/v1/chat/completions',
+        `${legacyProvider.baseUrl}/chat/completions`,
         {
           model: this.summaryModel,
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 3500,
           temperature: 0.3,
+          ...providerBodyExtras(legacyProvider),
         },
         {
-          headers: {
-            Authorization: `Bearer ${this.groqApiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers: providerHeaders(legacyProvider),
         },
       );
 
       const content = response.data?.choices?.[0]?.message?.content;
       if (typeof content !== 'string' || content.trim().length === 0) {
         throw new Error(
-          `Groq returned an empty summary from "${this.summaryModel}". Reasoning models can put their ` +
-            'output in a different field — check the raw response shape if this persists.'
+          `${legacyProvider.label} returned an empty summary from "${this.summaryModel}". Reasoning models can put ` +
+            'their output in a different field — check the raw response shape if this persists.'
         );
       }
       return content;
@@ -1368,13 +1395,12 @@ ${this.transcriptForPrompt(transcript)}
 
       if (status === 404 || /decommission|deprecat|does not exist|not supported/i.test(detail)) {
         throw new Error(
-          `Groq does not recognise the summary model "${this.summaryModel}": ${detail}. Groq retires ` +
-            'models on a few weeks\' notice — check https://console.groq.com/docs/deprecations and set ' +
-            'GROQ_SUMMARY_MODEL to the replacement. No code change is needed.'
+          `${legacyProvider.label} does not recognise the summary model "${this.summaryModel}": ${detail}. ` +
+            'Set AI_ANALYSIS_MODEL to a current model id. No code change is needed.'
         );
       }
       if (status === 429) {
-        throw new Error(`Groq rate limit hit while summarising: ${detail}. The summary will be retried.`);
+        throw new Error(`${legacyProvider.label} rate limit hit while summarising: ${detail}. The summary will be retried.`);
       }
       throw err;
     }

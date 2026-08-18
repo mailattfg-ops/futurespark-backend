@@ -6,7 +6,6 @@ const PORT = process.env.LEARNING_SERVICE_PORT || 3002;
 
 app.listen(PORT, () => {
   logger.info(`learning-service server listening on port ${PORT}`);
-  logger.info(`[learning-service] GROQ_API_KEY ${process.env.GROQ_API_KEY ? 'loaded' : 'MISSING'}`);
 
   /* AI_PROVIDER_BANNER
    * Which vendor each stage will actually call, printed at boot.
