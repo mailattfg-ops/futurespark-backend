@@ -474,3 +474,58 @@ model Lead {
 
   @@schema("learning")
 }
+
+/// Key/value store for operator-facing settings that survive restarts and are
+/// shared by every admin. First use: `last_models` — the AI models most
+/// recently chosen in the admin picker, which take precedence over the .env
+/// defaults so changing a model no longer needs a deploy.
+model AppSetting {
+  key       String   @id
+  value     Json     @default("{}")
+  updatedAt DateTime @updatedAt
+
+  @@schema("learning")
+}
+
+/// One row per AI call — the spend ledger behind the /costs page.
+/// costUsd comes from the provider's own usage.cost, never recomputed.
+model AiUsage {
+  id           String   @id @default(uuid())
+  stage        String   // 'transcription' | 'analysis'
+  provider     String?
+  model        String?
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  audioSeconds Float    @default(0)
+  costUsd      Float    @default(0)
+  processingMs Int      @default(0)
+  classId      String?
+  recordingId  String?
+  fileName     String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([classId])
+  @@schema("learning")
+}
+
+/// Structured failure log — the /errors page. Message is the short
+/// operator-readable line; detail carries the provider body / stack.
+model ErrorLog {
+  id          String   @id @default(uuid())
+  occurredAt  DateTime @default(now())
+  stage       String   // 'transcription' | 'analysis'
+  kind        String?  // GroqFailureKind, e.g. RATE_LIMITED
+  provider    String?
+  model       String?
+  message     String   @db.Text
+  detail      String?  @db.Text
+  remedy      String?  @db.Text
+  classId     String?
+  recordingId String?
+  retryable   Boolean  @default(false)
+
+  @@index([occurredAt])
+  @@index([stage])
+  @@schema("learning")
+}

@@ -7,6 +7,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { errorHandler, requestId, asyncHandler } from '@futurespark/middleware';
 import { createRedisClient } from '@futurespark/cache';
 import { authenticate } from './middleware/authenticate';
+import { logsRouter } from './routes/logs';
 
 const app = express();
 
@@ -169,6 +170,30 @@ app.use('/api/courses',
     target: LEARN_SERVICE_URL,
     changeOrigin: true,
     pathRewrite: { '^/': '/courses/' },
+    on: {
+      error: (_err, _req, res: any) => {
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Learning service temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+// Merged service logs for the admin's /logs page. Served by the gateway
+// itself (not proxied): the log files live on this box, one per service.
+app.use('/api/logs', asyncHandler(authenticate), logsRouter);
+
+// AI administration — model catalogue + selection, spend ledger, error log.
+// Role enforcement happens in learning-service from the x-user-role header.
+app.use('/api/ai',
+  asyncHandler(authenticate),
+  createProxyMiddleware({
+    target: LEARN_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/ai/' },
     on: {
       error: (_err, _req, res: any) => {
         res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({

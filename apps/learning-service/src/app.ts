@@ -7,6 +7,7 @@ import { errorHandler } from '@futurespark/middleware';
 import { courseRoutes } from './modules/course';
 import { resourceRoutes } from './modules/resource/resource.routes';
 import { transcriptionRoutes } from './modules/transcription/transcription.routes';
+import { aiAdminRoutes } from './modules/ai-admin/ai-admin.routes';
 
 const app = express();
 
@@ -22,6 +23,8 @@ app.use((req, res, next) => {
 app.use('/courses', courseRoutes);
 app.use('/resources', resourceRoutes);
 app.use('/transcription', transcriptionRoutes);
+// Model catalogue + selection, spend ledger, error log (admin surface)
+app.use('/ai', aiAdminRoutes);
 
 app.get('/health', (req, res) => {
   res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'learning-service is healthy'));
