@@ -4,6 +4,7 @@ import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 import db from '../../database/datasource';
 import { GroqTranscriptionService } from './groq-transcription.service';
+import { GroqError, failureToPayload } from './groq-errors';
 
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
 const groqService = new GroqTranscriptionService();
@@ -300,6 +301,28 @@ export const transcriptionController = {
 
       return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Transcription and summary generated successfully.'));
     } catch (err: any) {
+      /* ── Report the actual problem ───────────────────────────────────────
+       * A GroqError already knows what failed and how to fix it. Passing that
+       * through instead of a generic 500 is the difference between an operator
+       * reading "Request failed with status code 413" and reading "the free
+       * tier only allows 8,000 tokens per minute; upgrade or set
+       * GROQ_MAX_REQUEST_TOKENS".
+       * ────────────────────────────────────────────────────────────────── */
+      if (err instanceof GroqError) {
+        const f = err.failure;
+        logger.error(
+          `[Transcription Controller] GROQ_${f.kind} (http ${f.httpStatus ?? '-'}) :: ${f.detail} :: ${f.remedy}`
+        );
+        // 502: the upstream AI failed, not this service. A 500 tells the caller
+        // to look here, and the last hour of debugging went to exactly that.
+        return res.status(HTTP_STATUS.BAD_GATEWAY ?? 502).json({
+          success: false,
+          message: f.summary,
+          error: failureToPayload(f),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       logger.error(`[Transcription Controller] Transcription job failed: ${err.message}`);
       return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Transcription failed'));
     }

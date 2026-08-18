@@ -6,6 +6,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 import { parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
+import { describeGroqFailure, estimateTokens, GroqError } from './groq-errors';
 
 /**
  * Everything known about the lesson before a word of it is analysed.
@@ -163,25 +164,17 @@ export class GroqTranscriptionService {
       let metrics: any;
       let report: SessionReport | null = null;
 
-      try {
-        // 1. Transcribe with Groq Whisper
-        transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
-      } catch (err: any) {
-        logger.error(`[GroqTranscriptionService] Groq Whisper API call failed: ${err.message}`);
-        throw new Error(`Groq Whisper STT API failed: ${err.message}`);
-      }
+      // 1. Transcribe with Groq Whisper. Errors already carry their diagnosis,
+      //    so they are re-thrown untouched rather than wrapped in a second,
+      //    vaguer message that hides it.
+      transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
 
       metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
 
-      try {
-        // 2. Analyse the recording against the session slides.
-        const built = await this.generateSessionReport(transcript, studentName, mentorName, context);
-        report = built;
-        classSummary = sessionReportToText(built);
-      } catch (err: any) {
-        logger.error(`[GroqTranscriptionService] Groq session-report call failed: ${err.message}`);
-        throw new Error(`Groq session report failed: ${err.message}`);
-      }
+      // 2. Analyse the recording against the session slides.
+      const built = await this.generateSessionReport(transcript, studentName, mentorName, context);
+      report = built;
+      classSummary = sessionReportToText(built);
 
       // Clean up temporary compressed audio if created
       if (fileToTranscribe !== audioFilePath && fs.existsSync(fileToTranscribe)) {
@@ -327,32 +320,13 @@ export class GroqTranscriptionService {
 
       return response.data.text;
     } catch (err: any) {
-      // Groq's raw errors do not say which limit was hit, and the two that
-      // actually bite here have completely different fixes.
-      const status = err?.response?.status;
-      const detail = err?.response?.data?.error?.message || err.message;
-
-      if (status === 413) {
-        throw new Error(
-          `Groq rejected the audio as too large: ${detail}. The free tier caps a request at 25MB ` +
-            '(dev tier 100MB). Lower GROQ_MAX_UPLOAD_MB so the file is split into more pieces.'
-        );
-      }
-      if (status === 429) {
-        throw new Error(
-          `Groq rate limit hit: ${detail}. The free tier allows 7,200 audio-seconds per HOUR and ` +
-            '28,800 per DAY — about five 90-minute classes a day. Upgrade to the pay-as-you-go dev ' +
-            'tier (whisper-large-v3-turbo is $0.04 per hour of audio) or spread the classes out.'
-        );
-      }
-      if (status === 404 || /decommission|deprecat|does not exist/i.test(detail)) {
-        throw new Error(
-          `Groq does not recognise the transcription model "${this.transcriptionModel}": ${detail}. ` +
-            'It has probably been retired — check https://console.groq.com/docs/deprecations and set ' +
-            'GROQ_TRANSCRIPTION_MODEL to the replacement.'
-        );
-      }
-      throw err;
+      // Every Groq failure gets diagnosed once, here, so the message that
+      // reaches an operator names the limit that was hit and how to raise it —
+      // rather than "Request failed with status code 413".
+      const audioMb = fs.existsSync(filePath) ? fs.statSync(filePath).size / (1024 * 1024) : undefined;
+      throw new GroqError(
+        describeGroqFailure(err, 'transcription', { model: this.transcriptionModel, audioMb })
+      );
     }
   }
 
@@ -600,78 +574,148 @@ ${this.transcriptForPrompt(transcript)}
 
 Return the JSON object now.`;
 
-    try {
-      const response = await axios.post(
-        'https://api.groq.com/openai/v1/chat/completions',
-        {
-          model: this.summaryModel,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          // Forces syntactically valid JSON, so the only failure mode left is a
-          // field with the wrong shape — which parseSessionReport absorbs.
-          response_format: { type: 'json_object' },
-          max_tokens: 6000,
-          temperature: 0.2,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${this.groqApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
-        },
-      );
-
-      const content = response.data?.choices?.[0]?.message?.content;
-      if (typeof content !== 'string' || content.trim().length === 0) {
-        throw new Error(`Groq returned an empty analysis from "${this.summaryModel}".`);
-      }
-
-      let raw: any;
-      try {
-        raw = JSON.parse(content);
-      } catch {
-        // Belt and braces: some models still wrap JSON in a fenced block even
-        // under json_object mode.
-        const match = content.match(/\{[\s\S]*\}/);
-        if (!match) throw new Error('Groq did not return parseable JSON.');
-        raw = JSON.parse(match[0]);
-      }
-
-      const report = parseSessionReport(raw, {
-        student: studentName,
-        teacher: mentorName,
-        sessionTopic: context.sessionTitle ?? undefined,
-        weekNumber: context.sessionOrder ?? null,
-        weekTotal: context.sessionTotal ?? null,
-        date: context.classDate ?? undefined,
-      });
-
+    const send = async (system: string, user: string) => {
+      const requestTokens = estimateTokens(system + user) + 6000; // + the reply budget
       logger.info(
-        `[GroqTranscriptionService] Session report built — ${report.learningGoals.length} goal(s), ` +
-          `${report.topicsCovered.length} topic(s) covered, ${report.topicsNotReached.length} not reached, ` +
-          `${report.wordCloud.length} word-cloud concept(s)${slides ? '' : ' (NO session material was available)'}.`
+        `[GroqTranscriptionService] Sending analysis to ${this.summaryModel} — about ` +
+          `${requestTokens.toLocaleString()} tokens.`
       );
 
-      return report;
-    } catch (err: any) {
-      const status = err?.response?.status;
-      const detail = err?.response?.data?.error?.message || err.message;
+      try {
+        const response = await axios.post(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            model: this.summaryModel,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            // Forces syntactically valid JSON, so the only failure mode left is
+            // a field with the wrong shape — which parseSessionReport absorbs.
+            response_format: { type: 'json_object' },
+            max_tokens: 6000,
+            temperature: 0.2,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${this.groqApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
+          },
+        );
 
-      if (status === 404 || /decommission|deprecat|does not exist|not supported/i.test(detail)) {
-        throw new Error(
-          `Groq does not recognise the summary model "${this.summaryModel}": ${detail}. Groq retires ` +
-            "models on a few weeks' notice — check https://console.groq.com/docs/deprecations and set " +
-            'GROQ_SUMMARY_MODEL to the replacement. No code change is needed.'
+        const content = response.data?.choices?.[0]?.message?.content;
+        if (typeof content !== 'string' || content.trim().length === 0) {
+          throw new GroqError(
+            describeGroqFailure(
+              new Error(`"${this.summaryModel}" returned an empty message.`),
+              'analysis',
+              { model: this.summaryModel }
+            )
+          );
+        }
+        return content;
+      } catch (err: any) {
+        if (err instanceof GroqError) throw err;
+        throw new GroqError(
+          describeGroqFailure(err, 'analysis', { model: this.summaryModel, requestTokens })
         );
       }
-      if (status === 429) {
-        throw new Error(`Groq rate limit hit while analysing the session: ${detail}. It will be retried.`);
+    };
+
+    let content: string;
+    let partial = false;
+
+    try {
+      content = await send(systemPrompt, userPrompt);
+    } catch (err: any) {
+      /* ── Too big to send: shrink once, and say so ─────────────────────────
+       * 413 here is a TOKENS-PER-MINUTE ceiling, not a context limit. The model
+       * holds 131k tokens; Groq's free tier only lets 8k through per minute, so
+       * a 90-minute class is refused outright.
+       *
+       * Retrying smaller is the difference between a partial report and none at
+       * all — but a report silently built from a fifth of the lesson would tell
+       * a parent their child never covered things they did. So the retry marks
+       * the report as partial, and that marking travels all the way to the PDF.
+       * ─────────────────────────────────────────────────────────────────── */
+      const kind = err instanceof GroqError ? err.failure.kind : null;
+      const budget = readNumberEnv('GROQ_MAX_REQUEST_TOKENS', 0);
+
+      if (kind !== 'REQUEST_TOO_LARGE' || budget <= 0) {
+        if (kind === 'REQUEST_TOO_LARGE') {
+          logger.error(
+            '[GroqTranscriptionService] The class is too large for this Groq plan and ' +
+              'GROQ_MAX_REQUEST_TOKENS is not set, so no truncated retry was attempted. ' +
+              'Set it to force a partial report, or upgrade the Groq plan for a complete one.'
+          );
+        }
+        throw err;
       }
-      throw err;
+
+      // Leave room for the system prompt, the slides and the 6k reply.
+      const fixedTokens = estimateTokens(systemPrompt) + estimateTokens(slideBlock) + 6000;
+      const transcriptTokens = Math.max(1500, budget - fixedTokens);
+      const transcriptChars = Math.floor(transcriptTokens * 3.6);
+
+      logger.warn(
+        `[GroqTranscriptionService] Retrying the analysis with the transcript cut to ~` +
+          `${transcriptChars.toLocaleString()} characters to fit a ${budget.toLocaleString()}-token budget. ` +
+          'The report will be marked PARTIAL.'
+      );
+
+      const shortTranscript =
+        transcript.length <= transcriptChars
+          ? transcript
+          : `${transcript.slice(0, Math.floor(transcriptChars * 0.5))}\n\n[... middle omitted — this plan could not accept the whole class ...]\n\n${transcript.slice(-Math.floor(transcriptChars * 0.5))}`;
+
+      const shortUser = userPrompt.replace(this.transcriptForPrompt(transcript), shortTranscript);
+      content = await send(systemPrompt, shortUser);
+      partial = true;
     }
+
+    let raw: any;
+    try {
+      raw = JSON.parse(content);
+    } catch {
+      // Belt and braces: some models still wrap JSON in a fenced block even
+      // under json_object mode.
+      const match = content.match(/\{[\s\S]*\}/);
+      if (!match) {
+        throw new GroqError(
+          describeGroqFailure(new Error('Groq did not return parseable JSON.'), 'analysis', {
+            model: this.summaryModel,
+          })
+        );
+      }
+      raw = JSON.parse(match[0]);
+    }
+
+    const report = parseSessionReport(raw, {
+      student: studentName,
+      teacher: mentorName,
+      sessionTopic: context.sessionTitle ?? undefined,
+      weekNumber: context.sessionOrder ?? null,
+      weekTotal: context.sessionTotal ?? null,
+      date: context.classDate ?? undefined,
+    });
+
+    if (partial) {
+      // Stated on the report itself, not just in a log line nobody reads.
+      report.parentSummary =
+        `[Based on part of the recording only — the full class could not be analysed on the current ` +
+        `AI plan.] ${report.parentSummary}`.trim();
+    }
+
+    logger.info(
+      `[GroqTranscriptionService] Session report built — ${report.learningGoals.length} goal(s), ` +
+        `${report.topicsCovered.length} topic(s) covered, ${report.topicsNotReached.length} not reached, ` +
+        `${report.wordCloud.length} word-cloud concept(s)` +
+        `${slides ? '' : ' (NO session material was available)'}${partial ? ' [PARTIAL]' : ''}.`
+    );
+
+    return report;
   }
 
   /**

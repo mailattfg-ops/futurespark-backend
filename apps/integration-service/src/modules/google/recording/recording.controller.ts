@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { GoogleRecordingService } from './recording.service';
+import { buildAiFailureBanner, parseAiFailure, hasRealName } from '../../shared/ai-failure-banner';
 import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
@@ -405,8 +406,12 @@ export class GoogleRecordingController {
 
       // Extract dynamic session metadata (Student, Mentor, Topic Title)
       let title = recording.fileName ? recording.fileName.replace(/\.mp4$/i, '').replace(/_Recording.*$/i, '') : 'Class Session';
-      let studentName = 'shihad Z';
-      let mentorName = 'mentor 1';
+      // Empty, never a name. These were seeded with 'shihad Z' and 'mentor 1' —
+      // two real-looking people — and because a meeting row usually carries a
+      // UUID rather than a name, that fallback fired constantly and printed
+      // strangers onto other families' class panels.
+      let studentName = '';
+      let mentorName = '';
 
       if (recording.meeting) {
         if (recording.meeting.title) title = recording.meeting.title;
@@ -487,27 +492,13 @@ export class GoogleRecordingController {
         } catch (groqErr: any) {
           logger.error(`[GoogleRecordingController] Groq processing error: ${groqErr?.message || groqErr}`);
           // Return a structured session summary fallback instead of 500 Internal Server Error
-          const fallbackSummary = `================================================================================
-                    UNIFIED MASTER CLASS SUMMARY & METRICS
-================================================================================
-📌 Class Topic: ${title}
-👤 Student: ${studentName}
-👨‍🏫 Mentor: ${mentorName}
-📅 Session Date: ${new Date().toLocaleDateString('en-US', { dateStyle: 'medium' })}
-
---------------------------------------------------------------------------------
-💡 AI SUMMARY STATUS
---------------------------------------------------------------------------------
-• Video File: ${recording.fileName}
-• Status: Audio processing / AI Transcription pending (${groqErr?.message || 'Awaiting Groq API key configuration'}).
-• Video playback is fully available on the left player.
-
---------------------------------------------------------------------------------
-📌 SESSION HIGHLIGHTS
---------------------------------------------------------------------------------
-1. Live Interactive Discussion between ${studentName} and ${mentorName}.
-2. Covered core principles & concepts for ${title}.
-3. Hands-on exercises and Q&A session.`;
+          const fallbackSummary = buildAiFailureBanner({
+            fileName: recording.fileName,
+            studentName: hasRealName(studentName) ? studentName : null,
+            mentorName: hasRealName(mentorName) ? mentorName : null,
+            title,
+            failure: parseAiFailure(typeof groqErr !== 'undefined' ? groqErr : null),
+          });
 
           return res.status(HTTP_STATUS.OK).json(
             successResponse({ content: fallbackSummary }, 'Session Summary loaded (fallback format).')
