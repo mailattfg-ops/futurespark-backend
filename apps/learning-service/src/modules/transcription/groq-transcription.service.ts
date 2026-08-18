@@ -500,15 +500,54 @@ export class GroqTranscriptionService {
       );
     }
 
+    /* ── One chunk failing must not cost the whole class ─────────────────
+     * The loop used to await each chunk with no recovery, so a single 429 or a
+     * dropped connection on chunk 4 of 6 threw away the five that had already
+     * succeeded — and the expensive part (the audio) had already been paid for.
+     *
+     * Each chunk now gets its own retries with a short backoff, and a chunk
+     * that still will not transcribe leaves a visible gap marker rather than
+     * silently shortening the lesson. A gap the analyser can see is far better
+     * than a transcript that looks complete but is missing fifteen minutes.
+     * ────────────────────────────────────────────────────────────────── */
     const parts: string[] = [];
+    const perChunkAttempts = readNumberEnv('GROQ_CHUNK_MAX_ATTEMPTS', 3);
+    let failedChunks = 0;
+
     try {
       for (let i = 0; i < chunks.length; i++) {
-        logger.info(`[GroqTranscriptionService] Transcribing chunk ${i + 1}/${chunks.length}...`);
         // The tail of the previous chunk is passed as `prompt` so Whisper keeps
         // spelling and terminology consistent across a cut — otherwise a name
         // established in chunk 1 can come back spelled differently in chunk 2.
         const carryOver = parts.length > 0 ? parts[parts.length - 1].slice(-200) : undefined;
-        parts.push(await this.uploadForTranscription(chunks[i], carryOver));
+        let transcribed: string | null = null;
+
+        for (let attempt = 1; attempt <= perChunkAttempts; attempt++) {
+          try {
+            logger.info(
+              `[GroqTranscriptionService] Transcribing chunk ${i + 1}/${chunks.length}` +
+                `${attempt > 1 ? ` (attempt ${attempt}/${perChunkAttempts})` : ''}...`
+            );
+            transcribed = await this.uploadForTranscription(chunks[i], carryOver);
+            break;
+          } catch (err: any) {
+            const last = attempt === perChunkAttempts;
+            logger.warn(
+              `[GroqTranscriptionService] Chunk ${i + 1} attempt ${attempt} failed: ${err.message}` +
+                `${last ? ' — giving up on this chunk.' : ' — retrying.'}`
+            );
+            if (last) break;
+            // Linear backoff. A quota rejection needs time, not immediacy.
+            await new Promise((resolve) => setTimeout(resolve, attempt * 20_000));
+          }
+        }
+
+        if (transcribed === null) {
+          failedChunks++;
+          parts.push(`[... ${Math.round(this.chunkSeconds / 60)} minutes of this class could not be transcribed ...]`);
+        } else {
+          parts.push(transcribed);
+        }
       }
     } finally {
       for (const chunk of chunks) {
@@ -516,7 +555,23 @@ export class GroqTranscriptionService {
       }
     }
 
-    return parts.join(' ').replace(/\s{2,}/g, ' ').trim();
+    if (failedChunks === chunks.length) {
+      throw new GroqError(
+        describeGroqFailure(
+          new Error('Every audio chunk failed to transcribe.'),
+          'transcription',
+          { model: this.transcriptionModel }
+        )
+      );
+    }
+    if (failedChunks > 0) {
+      logger.error(
+        `[GroqTranscriptionService] ${failedChunks}/${chunks.length} chunk(s) could not be transcribed. ` +
+          'The transcript has gaps and the report will be built from what was captured.'
+      );
+    }
+
+    return parts.join(' ').replace(/s{2,}/g, ' ').trim();
   }
 
   /** One file, one speech-to-text request. */
