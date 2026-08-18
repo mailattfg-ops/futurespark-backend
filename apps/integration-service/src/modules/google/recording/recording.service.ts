@@ -581,6 +581,8 @@ export class GoogleRecordingService {
           programId: recording.meeting.programId,
           startTime: recording.meeting.startTime?.toISOString(),
           endTime: recording.meeting.endTime?.toISOString(),
+          // For the AI usage ledger and error log.
+          recordingId: recording.id,
         }),
       });
 

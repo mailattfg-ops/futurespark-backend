@@ -34,6 +34,12 @@ export interface GroqFailure {
   httpStatus?: number;
   /** True when the same request could succeed later without any change. */
   retryable: boolean;
+  /** Which pipeline stage produced it — lets a single catch site log it right. */
+  stage?: GroqStage;
+  /** The vendor label the call site passed, for the error log. */
+  provider?: string;
+  /** The model in play, for the error log. */
+  model?: string;
 }
 
 /** Which API call failed — the same status means different things per endpoint. */
@@ -42,6 +48,17 @@ export type GroqStage = 'transcription' | 'analysis';
 const MODEL_RETIRED_PATTERN = /decommission|deprecat|does not exist|no longer|not supported|unknown model/i;
 
 export const describeGroqFailure = (
+  err: any,
+  stage: GroqStage,
+  context: { model?: string; requestTokens?: number; audioMb?: number; provider?: string } = {}
+): GroqFailure => ({
+  ...describeGroqFailureCore(err, stage, context),
+  stage,
+  provider: context.provider,
+  model: context.model,
+});
+
+const describeGroqFailureCore = (
   err: any,
   stage: GroqStage,
   context: { model?: string; requestTokens?: number; audioMb?: number; provider?: string } = {}

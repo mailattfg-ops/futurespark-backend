@@ -184,7 +184,7 @@ async function findClassForRecording(input: {
 export const transcriptionController = {
   async transcribe(req: Request, res: Response) {
     try {
-      const { audioFilePath, meetUrl, studentId, teacherId, sessionId, programId, startTime, endTime } = req.body;
+      const { audioFilePath, meetUrl, studentId, teacherId, sessionId, programId, startTime, endTime, recordingId } = req.body;
 
       if (!audioFilePath) {
         return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('Parameter "audioFilePath" is required.'));
@@ -238,6 +238,7 @@ export const transcriptionController = {
       //    the model can only describe what it heard, and financial vocabulary
       //    spoken by a child over a phone mic is exactly what Whisper garbles.
       const analysisContext = await buildAnalysisContext({ sessionId, programId, startTime, endTime });
+      analysisContext.recordingId = recordingId ?? null;
 
       // 3. Process transcription using Groq Pipeline
       const result = await groqService.processClassAudio(

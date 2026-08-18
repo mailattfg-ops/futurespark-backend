@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 import { parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
 import { describeGroqFailure, estimateTokens, GroqError } from './groq-errors';
+import { getLastModels, recordAiError, recordAiUsage } from '../ai-admin/ai-admin.service';
 
 /**
  * Everything known about the lesson before a word of it is analysed.
@@ -30,6 +31,9 @@ export interface ClassAnalysisContext {
   endTime?: string | null;
   /** Real audio length in seconds, when the recording reported one. */
   audioSeconds?: number | null;
+  /** For the usage ledger and error log — which class this spend belongs to. */
+  classId?: string | null;
+  recordingId?: string | null;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -286,6 +290,31 @@ export class GroqTranscriptionService {
   }
 
   /**
+   * Models chosen in the admin picker (AppSetting `last_models`). They take
+   * precedence over the .env defaults, so changing a model is a dropdown click
+   * rather than a redeploy. Refreshed at the start of each pipeline run; the
+   * getters stay synchronous by reading this snapshot.
+   */
+  private storedModels: { transcription?: string; analysis?: string } = {};
+
+  /**
+   * Which class/recording the CURRENT run belongs to, for the usage ledger.
+   * Instance state is acceptable here: the retry daemon is serial and manual
+   * runs are rare, and a mis-tagged ledger row is advisory metadata, not truth
+   * the pipeline depends on.
+   */
+  private jobTag: { classId?: string | null; recordingId?: string | null; fileName?: string | null } = {};
+
+  private async refreshStoredModels(): Promise<void> {
+    try {
+      this.storedModels = await getLastModels();
+    } catch {
+      // Settings must never block the pipeline; the .env defaults still apply.
+      this.storedModels = {};
+    }
+  }
+
+  /**
    * Where speech-to-text goes.
    *
    * Falls back to the Groq settings so an existing deployment is unaffected by
@@ -298,7 +327,9 @@ export class GroqTranscriptionService {
     return {
       baseUrl,
       apiKey: readEnv('AI_TRANSCRIPTION_API_KEY', 'AI_API_KEY', 'GROQ_API_KEY') ?? '',
-      model: readEnv('AI_TRANSCRIPTION_MODEL', 'GROQ_TRANSCRIPTION_MODEL') ?? DEFAULT_TRANSCRIPTION_MODEL,
+      model:
+        this.storedModels.transcription ||
+        (readEnv('AI_TRANSCRIPTION_MODEL', 'GROQ_TRANSCRIPTION_MODEL') ?? DEFAULT_TRANSCRIPTION_MODEL),
       label: isOpenRouter(baseUrl) ? 'OpenRouter' : baseUrl.includes('groq.com') ? 'Groq' : baseUrl,
     };
   }
@@ -315,7 +346,9 @@ export class GroqTranscriptionService {
     return {
       baseUrl,
       apiKey: readEnv('AI_ANALYSIS_API_KEY', 'AI_API_KEY', 'GROQ_API_KEY') ?? '',
-      model: readEnv('AI_ANALYSIS_MODEL', 'GROQ_SUMMARY_MODEL') ?? DEFAULT_SUMMARY_MODEL,
+      model:
+        this.storedModels.analysis ||
+        (readEnv('AI_ANALYSIS_MODEL', 'GROQ_SUMMARY_MODEL') ?? DEFAULT_SUMMARY_MODEL),
       label: isOpenRouter(baseUrl) ? 'OpenRouter' : baseUrl.includes('groq.com') ? 'Groq' : baseUrl,
     };
   }
@@ -346,6 +379,14 @@ export class GroqTranscriptionService {
     context: ClassAnalysisContext = {}
   ) {
     logger.info(`[GroqTranscriptionService] [+] Processing file: ${audioFilePath} for ${studentName} & ${mentorName}`);
+
+    // Admin-picked models override the .env defaults from here on.
+    await this.refreshStoredModels();
+    this.jobTag = {
+      classId: context.classId ?? null,
+      recordingId: context.recordingId ?? null,
+      fileName: path.basename(audioFilePath.split('?')[0] ?? '') || null,
+    };
 
     let localFilePath = audioFilePath;
     const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
@@ -417,6 +458,23 @@ export class GroqTranscriptionService {
       return { transcript, classSummary, metrics, report, usedFallback };
     } catch (err: any) {
       logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
+
+      // One choke point writes the structured error log for the /errors page.
+      // GroqErrors carry their full diagnosis; anything else is recorded as-is.
+      const failure = err instanceof GroqError ? err.failure : null;
+      void recordAiError({
+        stage: failure?.stage ?? 'transcription',
+        kind: failure?.kind ?? 'UNKNOWN',
+        provider: failure?.provider ?? null,
+        model: failure?.model ?? null,
+        message: failure?.summary ?? String(err?.message ?? err).slice(0, 500),
+        detail: failure?.detail ?? err?.stack ?? null,
+        remedy: failure?.remedy ?? null,
+        retryable: failure?.retryable ?? false,
+        classId: this.jobTag.classId,
+        recordingId: this.jobTag.recordingId,
+      });
+
       throw err;
     }
   }
@@ -586,9 +644,29 @@ export class GroqTranscriptionService {
     return parts.join(' ').replace(/s{2,}/g, ' ').trim();
   }
 
-  /** One file, one speech-to-text request. */
+  /** Models that only work on /audio/transcriptions, never on chat. */
+  private isDedicatedSttModel(model: string): boolean {
+    return /whisper|-transcribe|transcription/i.test(model);
+  }
+
+  /**
+   * One file, one speech-to-text request.
+   *
+   * Two wire paths, chosen by the model:
+   * - whisper-style models -> POST /audio/transcriptions (multipart). Fast and
+   *   cheap, but the transcript has NO speaker labels — attribution is left to
+   *   the analysis model's inference.
+   * - multimodal chat models (Gemini etc.) -> POST /chat/completions with the
+   *   audio inlined. Slower per minute, but the model labels Teacher:/Student:
+   *   turns itself and handles Malayalam-English code-switching natively —
+   *   which is exactly what fixes a mis-counted "student questions: 0".
+   */
   private async uploadForTranscription(filePath: string, promptContext?: string): Promise<string> {
     const provider = this.transcriptionProvider;
+
+    if (!this.isDedicatedSttModel(provider.model)) {
+      return this.transcribeViaChat(filePath, promptContext);
+    }
 
     const formData = new FormData();
     formData.append('model', provider.model);
@@ -603,6 +681,7 @@ export class GroqTranscriptionService {
     const forcedLanguage = readEnv('AI_TRANSCRIPTION_LANGUAGE');
     if (forcedLanguage) formData.append('language', forcedLanguage);
 
+    const startedAt = Date.now();
     try {
       const response = await axios.post(
         `${provider.baseUrl}/audio/transcriptions`,
@@ -617,14 +696,95 @@ export class GroqTranscriptionService {
         },
       );
 
+      // OpenRouter reports { seconds, cost } for transcription requests.
+      const usage = response.data?.usage ?? {};
+      void recordAiUsage({
+        stage: 'transcription',
+        provider: provider.label,
+        model: provider.model,
+        audioSeconds: Number(usage.seconds) || 0,
+        costUsd: Number(usage.cost) || 0,
+        processingMs: Date.now() - startedAt,
+        ...this.jobTag,
+      });
+
       return response.data.text;
     } catch (err: any) {
-      // Every Groq failure gets diagnosed once, here, so the message that
-      // reaches an operator names the limit that was hit and how to raise it —
-      // rather than "Request failed with status code 413".
+      // Every failure gets diagnosed once, here, so the message that reaches
+      // an operator names the limit that was hit and how to raise it — rather
+      // than "Request failed with status code 413".
       const audioMb = fs.existsSync(filePath) ? fs.statSync(filePath).size / (1024 * 1024) : undefined;
       throw new GroqError(
         describeGroqFailure(err, 'transcription', { model: this.transcriptionModel, audioMb, provider: this.transcriptionProvider.label })
+      );
+    }
+  }
+
+  /** Transcription through a multimodal chat model — audio in, labelled text out. */
+  private async transcribeViaChat(filePath: string, promptContext?: string): Promise<string> {
+    const provider = this.transcriptionProvider;
+
+    const ext = path.extname(filePath).replace('.', '').toLowerCase();
+    const format = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'webm'].includes(ext) ? ext : 'mp3';
+    const audioBase64 = fs.readFileSync(filePath).toString('base64');
+
+    const instructions =
+      'Transcribe this class recording EXACTLY. Never translate; preserve the Malayalam + English ' +
+      'code-switching as spoken, Malayalam in Malayalam script. Label every turn as "Teacher:" or ' +
+      '"Student:" (one adult teaching, one child learning — judge from voice and content) with a ' +
+      '[mm:ss] timestamp. Output ONLY the transcript lines, no commentary.' +
+      (promptContext ? `\nVocabulary that may occur: ${promptContext.slice(0, 1500)}` : '');
+
+    const startedAt = Date.now();
+    try {
+      const response = await axios.post(
+        `${provider.baseUrl}/chat/completions`,
+        {
+          model: provider.model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: instructions },
+                { type: 'input_audio', input_audio: { data: audioBase64, format } },
+              ],
+            },
+          ],
+          max_tokens: 16_000,
+          temperature: 0,
+          usage: { include: true },
+          ...providerBodyExtras(provider),
+        },
+        {
+          headers: providerHeaders(provider),
+          maxBodyLength: Infinity,
+          timeout: readNumberEnv('AI_TRANSCRIPTION_TIMEOUT_MS', 600_000),
+        },
+      );
+
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        throw new Error(`"${provider.model}" returned an empty transcript from the audio.`);
+      }
+
+      const usage = response.data?.usage ?? {};
+      void recordAiUsage({
+        stage: 'transcription',
+        provider: provider.label,
+        model: provider.model,
+        inputTokens: Number(usage.prompt_tokens) || 0,
+        outputTokens: Number(usage.completion_tokens) || 0,
+        costUsd: Number(usage.cost) || 0,
+        processingMs: Date.now() - startedAt,
+        ...this.jobTag,
+      });
+
+      return content.trim();
+    } catch (err: any) {
+      if (err instanceof GroqError) throw err;
+      const audioMb = fs.existsSync(filePath) ? fs.statSync(filePath).size / (1024 * 1024) : undefined;
+      throw new GroqError(
+        describeGroqFailure(err, 'transcription', { model: provider.model, audioMb, provider: provider.label })
       );
     }
   }
@@ -817,6 +977,7 @@ Return the JSON object now.`;
       );
 
       const provider = this.analysisProvider;
+      const startedAt = Date.now();
 
       try {
         const response = await axios.post(
@@ -830,6 +991,9 @@ Return the JSON object now.`;
             response_format: { type: 'json_object' },
             max_tokens: 6000,
             temperature: 0.2,
+            // OpenRouter includes its own cost accounting when asked; other
+            // vendors ignore the field.
+            usage: { include: true },
             ...providerBodyExtras(provider),
           },
           {
@@ -837,6 +1001,18 @@ Return the JSON object now.`;
             timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
           },
         );
+
+        const usage = response.data?.usage ?? {};
+        void recordAiUsage({
+          stage: 'analysis',
+          provider: provider.label,
+          model: provider.model,
+          inputTokens: Number(usage.prompt_tokens) || 0,
+          outputTokens: Number(usage.completion_tokens) || 0,
+          costUsd: Number(usage.cost) || 0,
+          processingMs: Date.now() - startedAt,
+          ...this.jobTag,
+        });
 
         const content = response.data?.choices?.[0]?.message?.content;
         if (typeof content !== 'string' || content.trim().length === 0) {
@@ -883,6 +1059,7 @@ COUNTING RULES
 - A higher-order question asks the student to explain WHY, compare, evaluate, predict or apply — not to recall a fact. higherOrderQuestions is a SUBSET of teacherQuestions and can never exceed it.
 - ${durationHint}
 - Talk time may be estimated from the transcript's share of speech, but say so honestly by keeping the split conservative. If speakers cannot be told apart, use null percentages and "Not available".
+- The transcript usually has NO speaker labels. Attribute each turn from conversational cues: the teacher poses questions, explains and uses the student's name; the student answers, asks back, and self-corrects. When you genuinely cannot tell who said a line, leave it out of every count — and if attribution is impossible for most of the transcript, return null for the question and response counts. A 0 is a statement that the student asked nothing; it must come from reading the whole transcript with confident attribution, never from failing to tell the speakers apart.
 
 ASSESSMENT VOCABULARY
 Use exactly one of: "Emerging", "Developing", "Proficient". Never use negative labels such as weak, poor, or low ability. Use null only if there is genuinely no evidence.
