@@ -69,6 +69,118 @@ const readNumberEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+/**
+ * Keep a request under a tokens-per-minute ceiling.
+ *
+ * Groq's free tier meters TPM, so firing the analysis passes back to back would
+ * trip the very limit the passes exist to avoid. This tracks what has been sent
+ * in the last rolling minute and sleeps until there is room.
+ *
+ * Deliberately simple and slightly pessimistic: it counts the tokens we ASK for
+ * rather than what Groq bills, so it errs towards waiting. A background job that
+ * already runs 90 minutes after the class can afford to wait; a 429 costs the
+ * whole report.
+ */
+class TpmPacer {
+  private readonly window: Array<{ at: number; tokens: number }> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async waitFor(tokens: number): Promise<void> {
+    for (;;) {
+      const cutoff = Date.now() - 60_000;
+      while (this.window.length > 0 && this.window[0].at < cutoff) this.window.shift();
+
+      const used = this.window.reduce((sum, entry) => sum + entry.tokens, 0);
+      if (used + tokens <= this.limit || this.window.length === 0) {
+        this.window.push({ at: Date.now(), tokens });
+        return;
+      }
+
+      // Sleep until the oldest entry falls out of the rolling minute.
+      const waitMs = Math.max(1_000, this.window[0].at + 60_000 - Date.now() + 250);
+      logger.info(
+        `[GroqTranscriptionService] Pacing for the tokens-per-minute limit — waiting ${Math.ceil(waitMs / 1000)}s.`
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
+/**
+ * Reduce a full session deck to its vocabulary.
+ *
+ * The pass stage needs the session's TERMS — so it can recognise "FOBO" in
+ * garbled audio and know which concepts were planned — but the full deck would
+ * consume the entire per-request budget before a word of transcript fits.
+ *
+ * Keeps headings, key terms, activity names and short structural lines; drops
+ * the speaker-note prose, which is guidance for the teacher rather than
+ * vocabulary for the analyst.
+ */
+export const condenseSlides = (slides: string): string => {
+  if (!slides) return '(No session material available.)';
+
+  const kept: string[] = [];
+  for (const rawLine of slides.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.length === 0 || /^\d+$/.test(line)) continue; // slide numbers
+
+    // Case-SENSITIVE, and length-bounded. Decks shout their headings
+    // ("KEY TERM · STOP 1"), while the speaker notes underneath are sentences
+    // that often open with the same words — "Key term 1. Buying on the spot
+    // without planning. Use the notebook-and-chocolate example..." matched as a
+    // heading under a case-insensitive rule and dragged a paragraph of teacher
+    // guidance into the vocabulary list.
+    const isHeading =
+      /^(KEY TERM|ACTIVITY|STOP \d|SECTION|QUESTION \d|LEVEL \d|TAKE HOME|FUN FACT|MIND MAP)/.test(line) &&
+      line.length <= 60;
+    const isShout = line === line.toUpperCase() && line.length > 2 && line.length < 60;
+    const isShort = line.length <= 70;
+
+    if (isHeading || isShout || isShort) kept.push(line);
+    if (kept.length >= 220) break;
+  }
+
+  const out = [...new Set(kept)].join('\n');
+  return out.length > 0 ? out.slice(0, 6_000) : slides.slice(0, 6_000);
+};
+
+/** Case-insensitive dedupe that keeps the first spelling seen. */
+const dedupeStrings = (values: unknown[]): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const text = value.trim();
+    if (text.length === 0) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+};
+
+/**
+ * Total a count across passes.
+ *
+ * Returns null when NO pass reported the field — zero is a claim about the
+ * child ("asked no questions") and must never come from a failure to measure.
+ */
+const sumCounts = (notes: any[], key: string): number | null => {
+  let total = 0;
+  let seen = false;
+  for (const note of notes) {
+    const value = Number(note?.[key]);
+    if (Number.isFinite(value) && value >= 0) {
+      total += value;
+      seen = true;
+    }
+  }
+  return seen ? total : null;
+};
+
 /** Resolve the ffmpeg binary once, the same way the rest of the pipeline does. */
 const resolveFfmpeg = (): string => {
   try {
@@ -491,7 +603,77 @@ export class GroqTranscriptionService {
       ? `The recording is ${Math.round(context.audioSeconds)} seconds long (${Math.floor(context.audioSeconds / 60)}m ${Math.round(context.audioSeconds % 60)}s). Use this as the total session duration.`
       : 'The exact recording length is unknown. Set duration to "Not available" unless the audio makes it clear.';
 
-    const systemPrompt = `You are an AI Education Session Analyst for a 1:1 Financial Literacy Program.
+    const systemPrompt = this.reportSystemPrompt(durationHint);
+
+    const userPrompt = `STUDENT: ${studentName}
+TEACHER: ${mentorName}
+SESSION: ${context.sessionTitle ?? 'Not available'}${context.sessionOrder ? ` (Session ${context.sessionOrder}${context.sessionTotal ? ` of ${context.sessionTotal}` : ''})` : ''}
+DATE: ${context.classDate ?? 'Not available'}
+SCHEDULED START: ${context.startTime ?? 'Not available'}
+SCHEDULED END: ${context.endTime ?? 'Not available'}
+${plannedTopics.length > 0 ? `PLANNED TOPICS: ${plannedTopics.join('; ')}` : ''}
+
+===== INPUT 1 — SESSION MATERIAL (what was PLANNED) =====
+${slideBlock}
+
+===== INPUT 2 — SESSION TRANSCRIPT (what actually HAPPENED) =====
+${this.transcriptForPrompt(transcript)}
+===== END OF TRANSCRIPT =====
+
+Return the JSON object now.`;
+
+    const send = async (system: string, user: string) => {
+      const requestTokens = estimateTokens(system + user) + 6000; // + the reply budget
+      logger.info(
+        `[GroqTranscriptionService] Sending analysis to ${this.summaryModel} — about ` +
+          `${requestTokens.toLocaleString()} tokens.`
+      );
+
+      try {
+        const response = await axios.post(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            model: this.summaryModel,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            response_format: { type: 'json_object' },
+            max_tokens: 6000,
+            temperature: 0.2,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${this.groqApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
+          },
+        );
+
+        const content = response.data?.choices?.[0]?.message?.content;
+        if (typeof content !== 'string' || content.trim().length === 0) {
+          throw new GroqError(
+            describeGroqFailure(new Error(`"${this.summaryModel}" returned an empty message.`), 'analysis', {
+              model: this.summaryModel,
+            })
+          );
+        }
+        return content;
+      } catch (err: any) {
+        if (err instanceof GroqError) throw err;
+        throw new GroqError(describeGroqFailure(err, 'analysis', { model: this.summaryModel, requestTokens }));
+      }
+    };
+
+    return this.runAnalysis(
+      transcript, slideBlock, studentName, mentorName, context, systemPrompt, userPrompt, send
+    );
+  }
+
+  /** The Student Session Report instructions, shared by every analysis path. */
+  private reportSystemPrompt(durationHint = 'Use the transcript to judge the session length.'): string {
+    return `You are an AI Education Session Analyst for a 1:1 Financial Literacy Program.
 
 You receive two inputs:
   INPUT 1 — SESSION MATERIAL: the standardised slides, key terms, activities, quiz and speaker notes for this session. This is what was PLANNED.
@@ -556,73 +738,49 @@ Return ONLY a JSON object matching this schema exactly — no markdown, no comme
   "nextSessionFocus": string,                // one specific focus
   "wordCloud": [{ "word": string, "weight": number }]
 }`;
+  }
 
-    const userPrompt = `STUDENT: ${studentName}
-TEACHER: ${mentorName}
-SESSION: ${context.sessionTitle ?? 'Not available'}${context.sessionOrder ? ` (Session ${context.sessionOrder}${context.sessionTotal ? ` of ${context.sessionTotal}` : ''})` : ''}
-DATE: ${context.classDate ?? 'Not available'}
-SCHEDULED START: ${context.startTime ?? 'Not available'}
-SCHEDULED END: ${context.endTime ?? 'Not available'}
-${plannedTopics.length > 0 ? `PLANNED TOPICS: ${plannedTopics.join('; ')}` : ''}
+  /**
+   * Run the analysis and turn the reply into a report.
+   *
+   * Split out from prompt-building so the single-request path and the
+   * multi-pass path share exactly one parser, one validator and one set of
+   * fallbacks — the two drifting apart is how a report ends up rendering
+   * differently depending on which Groq plan produced it.
+   */
+  private async runAnalysis(
+    transcript: string,
+    slideBlock: string,
+    studentName: string,
+    mentorName: string,
+    context: ClassAnalysisContext,
+    systemPrompt: string,
+    userPrompt: string,
+    send: (system: string, user: string) => Promise<string>
+  ): Promise<SessionReport> {
+    const slides = (context.slideContent ?? '').trim();
 
-===== INPUT 1 — SESSION MATERIAL (what was PLANNED) =====
-${slideBlock}
+    /* ── Does the whole class fit in one request? ─────────────────────────
+     * On the Groq FREE tier, `openai/gpt-oss-120b` allows 8,000 tokens per
+     * MINUTE. That is a spend ceiling, not a context ceiling — the model holds
+     * 131,072 tokens — so a 90-minute class is refused outright with 413 even
+     * though it would fit comfortably in the window.
+     *
+     * When a budget is configured and the class exceeds it, the analysis runs
+     * in passes instead of failing: see `analyseInPasses`. The whole lesson is
+     * still read, just a slice at a time.
+     * ─────────────────────────────────────────────────────────────────── */
+    const budget = readNumberEnv('GROQ_MAX_REQUEST_TOKENS', 0);
+    const singleShotTokens = estimateTokens(systemPrompt + userPrompt) + 6000;
 
-===== INPUT 2 — SESSION TRANSCRIPT (what actually HAPPENED) =====
-${this.transcriptForPrompt(transcript)}
-===== END OF TRANSCRIPT =====
-
-Return the JSON object now.`;
-
-    const send = async (system: string, user: string) => {
-      const requestTokens = estimateTokens(system + user) + 6000; // + the reply budget
+    if (budget > 0 && singleShotTokens > budget) {
       logger.info(
-        `[GroqTranscriptionService] Sending analysis to ${this.summaryModel} — about ` +
-          `${requestTokens.toLocaleString()} tokens.`
+        `[GroqTranscriptionService] The class needs about ${singleShotTokens.toLocaleString()} tokens, over the ` +
+          `${budget.toLocaleString()}-token per-request budget. Running the analysis in passes so the whole ` +
+          'lesson is still read.'
       );
-
-      try {
-        const response = await axios.post(
-          'https://api.groq.com/openai/v1/chat/completions',
-          {
-            model: this.summaryModel,
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: user },
-            ],
-            // Forces syntactically valid JSON, so the only failure mode left is
-            // a field with the wrong shape — which parseSessionReport absorbs.
-            response_format: { type: 'json_object' },
-            max_tokens: 6000,
-            temperature: 0.2,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${this.groqApiKey}`,
-              'Content-Type': 'application/json',
-            },
-            timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000),
-          },
-        );
-
-        const content = response.data?.choices?.[0]?.message?.content;
-        if (typeof content !== 'string' || content.trim().length === 0) {
-          throw new GroqError(
-            describeGroqFailure(
-              new Error(`"${this.summaryModel}" returned an empty message.`),
-              'analysis',
-              { model: this.summaryModel }
-            )
-          );
-        }
-        return content;
-      } catch (err: any) {
-        if (err instanceof GroqError) throw err;
-        throw new GroqError(
-          describeGroqFailure(err, 'analysis', { model: this.summaryModel, requestTokens })
-        );
-      }
-    };
+      return this.analyseInPasses(transcript, slideBlock, studentName, mentorName, context, budget, send);
+    }
 
     let content: string;
     let partial = false;
@@ -640,8 +798,10 @@ Return the JSON object now.`;
        * a parent their child never covered things they did. So the retry marks
        * the report as partial, and that marking travels all the way to the PDF.
        * ─────────────────────────────────────────────────────────────────── */
+      // Reaching here with a budget set means the token ESTIMATE was optimistic
+      // — the pre-check above would otherwise have routed this to the passes.
+      // Truncating once is the safety net under that estimate.
       const kind = err instanceof GroqError ? err.failure.kind : null;
-      const budget = readNumberEnv('GROQ_MAX_REQUEST_TOKENS', 0);
 
       if (kind !== 'REQUEST_TOO_LARGE' || budget <= 0) {
         if (kind === 'REQUEST_TOO_LARGE') {
@@ -713,6 +873,188 @@ Return the JSON object now.`;
         `${report.topicsCovered.length} topic(s) covered, ${report.topicsNotReached.length} not reached, ` +
         `${report.wordCloud.length} word-cloud concept(s)` +
         `${slides ? '' : ' (NO session material was available)'}${partial ? ' [PARTIAL]' : ''}.`
+    );
+
+    return report;
+  }
+
+  /**
+   * Analyse a class that is too large for one request, in passes.
+   *
+   * ── Why this exists ──
+   * Groq's free tier caps `gpt-oss-120b` at 8,000 tokens per MINUTE. A
+   * 90-minute class is roughly 40,000 tokens, so it cannot be sent at all —
+   * and truncating it means telling a parent about a fifth of the lesson while
+   * silently dropping the rest, including the homework set at the end.
+   *
+   * Map-reduce instead. Each pass reads one slice of the transcript and returns
+   * compact notes; a final pass turns all the notes into the report. Every
+   * request stays under the budget, and the WHOLE lesson is read.
+   *
+   * The cost is wall-clock: the passes are paced to respect tokens-per-minute,
+   * so a 90-minute class takes six or seven minutes to analyse. That is free in
+   * practice — this runs in the background 90 minutes after the class ended,
+   * and nobody is waiting on it.
+   *
+   * This is a workaround for a plan limit, not an improvement. A single pass
+   * sees the whole conversation at once and can reason across it; passes cannot.
+   * The paid tier is better analysis, not just faster.
+   */
+  private async analyseInPasses(
+    transcript: string,
+    slideBlock: string,
+    studentName: string,
+    mentorName: string,
+    context: ClassAnalysisContext,
+    budget: number,
+    send: (system: string, user: string) => Promise<string>
+  ): Promise<SessionReport> {
+    // Slides are condensed to their vocabulary for the pass stage — the full
+    // deck alone would eat the entire budget before a word of transcript fits.
+    const slideOutline = condenseSlides(slideBlock);
+
+    const perPassOverhead = estimateTokens(slideOutline) + 1200 /* instructions */ + 900 /* reply */;
+    const transcriptTokensPerPass = Math.max(1200, budget - perPassOverhead);
+    const charsPerPass = Math.floor(transcriptTokensPerPass * 3.6);
+
+    const slices: string[] = [];
+    for (let i = 0; i < transcript.length; i += charsPerPass) {
+      slices.push(transcript.slice(i, i + charsPerPass));
+    }
+
+    const maxPasses = readNumberEnv('GROQ_MAX_ANALYSIS_PASSES', 12);
+    if (slices.length > maxPasses) {
+      // Keep the beginning and the end: the opening establishes the topic, the
+      // close carries the homework and next steps.
+      const keepHead = Math.ceil(maxPasses / 2);
+      const keepTail = maxPasses - keepHead;
+      logger.warn(
+        `[GroqTranscriptionService] ${slices.length} passes needed but the ceiling is ${maxPasses}. ` +
+          'Reading the opening and the closing; the middle will be skipped.'
+      );
+      slices.splice(keepHead, slices.length - maxPasses);
+      void keepTail;
+    }
+
+    logger.info(
+      `[GroqTranscriptionService] Reading the class in ${slices.length} pass(es) of ~${charsPerPass.toLocaleString()} characters.`
+    );
+
+    const passSystem = `You are analysing ONE SLICE of a 1:1 financial literacy lesson transcript.
+You will be given the vocabulary of the session's material for reference, then a slice of the conversation.
+
+Extract ONLY what this slice actually shows. Do not speculate about parts you cannot see, and do not
+describe anything as taught unless this slice shows it being taught.
+
+Return ONLY JSON:
+{
+  "topicsTaught": [string],        // concepts actually explained or worked through here
+  "studentMoments": [string],      // things the STUDENT said or did that show understanding, reasoning or confusion
+  "studentQuestions": [string],    // questions the student asked, quoted briefly
+  "teacherQuestionCount": number,  // questions the teacher asked in this slice
+  "meaningfulResponses": number,   // student responses that explained, reasoned, compared or decided
+  "independentResponses": number,  // answered without the teacher supplying the answer
+  "promptedResponses": number,     // needed help to get there
+  "concepts": [string],            // financial vocabulary genuinely discussed here
+  "homework": [string]             // any task, assignment or next step set in this slice
+}`;
+
+    const notes: any[] = [];
+    const pacer = new TpmPacer(budget);
+
+    for (let i = 0; i < slices.length; i++) {
+      const user = `SESSION VOCABULARY (for naming only — never treat as taught):
+${slideOutline}
+
+TRANSCRIPT SLICE ${i + 1} OF ${slices.length}:
+${slices[i]}
+
+Return the JSON now.`;
+
+      await pacer.waitFor(estimateTokens(passSystem + user) + 900);
+
+      try {
+        const raw = await send(passSystem, user);
+        notes.push(JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw));
+        logger.info(`[GroqTranscriptionService] Pass ${i + 1}/${slices.length} complete.`);
+      } catch (err: any) {
+        // One bad slice must not cost the whole report — the other passes still
+        // describe most of the lesson.
+        logger.error(`[GroqTranscriptionService] Pass ${i + 1} failed: ${err.message}. Continuing without it.`);
+      }
+    }
+
+    if (notes.length === 0) {
+      throw new GroqError(
+        describeGroqFailure(new Error('Every analysis pass failed.'), 'analysis', { model: this.summaryModel })
+      );
+    }
+
+    // ── Reduce: notes -> the report ──
+    const merged = {
+      topicsTaught: dedupeStrings(notes.flatMap((n) => n?.topicsTaught ?? [])),
+      studentMoments: dedupeStrings(notes.flatMap((n) => n?.studentMoments ?? [])).slice(0, 25),
+      studentQuestions: dedupeStrings(notes.flatMap((n) => n?.studentQuestions ?? [])).slice(0, 20),
+      concepts: dedupeStrings(notes.flatMap((n) => n?.concepts ?? [])).slice(0, 40),
+      homework: dedupeStrings(notes.flatMap((n) => n?.homework ?? [])).slice(0, 10),
+      // Summed rather than re-estimated: these are counts of real events, and
+      // each pass counted the events it could actually see.
+      teacherQuestions: sumCounts(notes, 'teacherQuestionCount'),
+      meaningfulResponses: sumCounts(notes, 'meaningfulResponses'),
+      independentResponses: sumCounts(notes, 'independentResponses'),
+      promptedResponses: sumCounts(notes, 'promptedResponses'),
+    };
+
+    const reduceUser = `STUDENT: ${studentName}
+TEACHER: ${mentorName}
+SESSION: ${context.sessionTitle ?? 'Not available'}${context.sessionOrder ? ` (Session ${context.sessionOrder}${context.sessionTotal ? ` of ${context.sessionTotal}` : ''})` : ''}
+DATE: ${context.classDate ?? 'Not available'}
+SCHEDULED START: ${context.startTime ?? 'Not available'}
+SCHEDULED END: ${context.endTime ?? 'Not available'}
+
+===== SESSION MATERIAL (what was PLANNED) =====
+${slideOutline}
+
+===== OBSERVATIONS FROM THE WHOLE RECORDING =====
+These were extracted pass by pass from the complete class. Counts are totals across the lesson.
+${JSON.stringify(merged, null, 1)}
+
+Build the Student Session Report from these observations. Anything in the session material that does
+NOT appear in topicsTaught belongs in topicsNotReached. Talk-time percentages could not be measured
+across passes — set them to null and both talk strings to "Not available".
+
+Return the JSON object now.`;
+
+    await pacer.waitFor(estimateTokens(reduceUser) + 6000);
+    const finalRaw = await send(this.reportSystemPrompt(), reduceUser);
+
+    let raw: any;
+    try {
+      raw = JSON.parse(finalRaw);
+    } catch {
+      const match = finalRaw.match(/\{[\s\S]*\}/);
+      if (!match) {
+        throw new GroqError(
+          describeGroqFailure(new Error('Groq did not return parseable JSON.'), 'analysis', {
+            model: this.summaryModel,
+          })
+        );
+      }
+      raw = JSON.parse(match[0]);
+    }
+
+    const report = parseSessionReport(raw, {
+      student: studentName,
+      teacher: mentorName,
+      sessionTopic: context.sessionTitle ?? undefined,
+      weekNumber: context.sessionOrder ?? null,
+      weekTotal: context.sessionTotal ?? null,
+      date: context.classDate ?? undefined,
+    });
+
+    logger.info(
+      `[GroqTranscriptionService] Multi-pass report built from ${notes.length} pass(es) — ` +
+        `${report.topicsCovered.length} topic(s) covered, ${report.wordCloud.length} concept(s).`
     );
 
     return report;
