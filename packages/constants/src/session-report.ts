@@ -52,6 +52,12 @@ export interface TalkTimeSplit {
 export interface InteractionCounts {
   teacherQuestions: number | null;
   studentQuestions: number | null;
+  /**
+   * Teacher questions that asked the child to explain, compare, evaluate,
+   * predict or apply — a subset of teacherQuestions, never larger than it.
+   * Rendered as "9 (35%)" with the percentage computed against teacherQuestions.
+   */
+  higherOrderQuestions: number | null;
   meaningfulResponses: number | null;
   independentResponses: number | null;
   promptedResponses: number | null;
@@ -63,6 +69,15 @@ export interface LearningAssessment {
   application: LearningStatus | null;
   financialReasoning: LearningStatus | null;
   independence: LearningStatus | null;
+  /**
+   * The "Learning snapshot" — one parent-friendly sentence of evidence per
+   * area, so the level above is never a bare adjective. Empty string when the
+   * transcript gave nothing to say (the renderer then skips the card).
+   */
+  conceptUnderstandingNote: string;
+  applicationNote: string;
+  financialReasoningNote: string;
+  independenceNote: string;
   /** One short evidence-based observation drawn from the recording. */
   highlight: string;
 }
@@ -111,6 +126,11 @@ export interface SessionReport {
   developmentArea: string;
   /** One specific focus for next time. */
   nextSessionFocus: string;
+  /**
+   * "Try this at home" — ONE warm, simple conversation prompt a parent can try,
+   * grounded in what the session actually covered. Must never read as homework.
+   */
+  parentConnection: string;
 
   /** 15-25 concepts, weighted. Drawn by the PDF, not by the model. */
   wordCloud: WordCloudEntry[];
@@ -161,7 +181,7 @@ const CLOUD_STOPWORDS = new Set(
     'i me my mine you your yours we us our he she they them their this that these those it ' +
     'is am are was were be been have has had do does did can could will would should may might ' +
     'okay ok yeah yes no right good great actually basically maybe really very just like well hmm um uh ' +
-    'teacher student class session question answer tell say said think know'
+    'teacher student class session question answer tell say said think know what how'
   ).split(' ')
 );
 
@@ -195,7 +215,11 @@ const asWordCloud = (value: unknown): WordCloudEntry[] => {
 
     const existing = byNormal.get(normal);
     if (!existing || weight > existing.weight) {
-      byNormal.set(normal, { word: word.toUpperCase(), weight });
+      // Keep the model's own casing. It was uppercased here once, which
+      // destroyed the acronym/word distinction — "EMI" and "unit cost" both
+      // became shouting, and the renderer could no longer tell that
+      // title-casing one of them ("Emi") is wrong.
+      byNormal.set(normal, { word, weight });
     }
   }
 
@@ -240,6 +264,14 @@ export const parseSessionReport = (raw: any, fallbacks: Partial<SessionReport> =
     interactions: {
       teacherQuestions: asCount(counts.teacherQuestions),
       studentQuestions: asCount(counts.studentQuestions),
+      // Clamped to teacherQuestions: it is a subset by definition, and a model
+      // that returns 12-of-9 would otherwise print an impossible percentage.
+      higherOrderQuestions: (() => {
+        const higher = asCount(counts.higherOrderQuestions);
+        const total = asCount(counts.teacherQuestions);
+        if (higher === null) return null;
+        return total !== null && higher > total ? total : higher;
+      })(),
       meaningfulResponses: asCount(counts.meaningfulResponses),
       independentResponses: asCount(counts.independentResponses),
       promptedResponses: asCount(counts.promptedResponses),
@@ -253,6 +285,10 @@ export const parseSessionReport = (raw: any, fallbacks: Partial<SessionReport> =
       application: asStatus(assess.application),
       financialReasoning: asStatus(assess.financialReasoning),
       independence: asStatus(assess.independence),
+      conceptUnderstandingNote: asString(assess.conceptUnderstandingNote),
+      applicationNote: asString(assess.applicationNote),
+      financialReasoningNote: asString(assess.financialReasoningNote),
+      independenceNote: asString(assess.independenceNote),
       highlight: asString(assess.highlight),
     },
 
@@ -264,6 +300,7 @@ export const parseSessionReport = (raw: any, fallbacks: Partial<SessionReport> =
     parentSummary: asString(r.parentSummary),
     developmentArea: asString(r.developmentArea),
     nextSessionFocus: asString(r.nextSessionFocus),
+    parentConnection: asString(r.parentConnection),
 
     wordCloud: asWordCloud(r.wordCloud),
   };
@@ -302,6 +339,7 @@ export const sessionReportToText = (report: SessionReport): string => {
     line('Student talk', `${report.talkTime.student} (${pct(report.talkTime.studentPercent)})`),
     line('Teacher questions', report.interactions.teacherQuestions),
     line('Student questions', report.interactions.studentQuestions),
+    line('Higher-order questions', report.interactions.higherOrderQuestions),
     line('Meaningful responses', report.interactions.meaningfulResponses),
     line('Independent responses', report.interactions.independentResponses),
     line('Prompted responses', report.interactions.promptedResponses),
@@ -322,6 +360,16 @@ export const sessionReportToText = (report: SessionReport): string => {
     ''
   );
 
+  const notes: Array<[string, string]> = [
+    ['What was understood', report.assessment.conceptUnderstandingNote],
+    ['Applied to real life', report.assessment.applicationNote],
+    ['Money reasoning', report.assessment.financialReasoningNote],
+    ['Working independently', report.assessment.independenceNote],
+  ].filter(([, note]) => note.length > 0) as Array<[string, string]>;
+  if (notes.length > 0) {
+    parts.push('LEARNING SNAPSHOT', '-'.repeat(50), ...notes.map(([label, note]) => `- ${label}: ${note}`), '');
+  }
+
   if (report.assessment.highlight) parts.push('Learning highlight:', report.assessment.highlight, '');
   if (report.topicsCovered.length > 0) {
     parts.push('TOPICS COVERED', '-'.repeat(50), ...report.topicsCovered.map((t) => `- ${t}`), '');
@@ -333,6 +381,7 @@ export const sessionReportToText = (report: SessionReport): string => {
   if (report.parentSummary) parts.push('SESSION INSIGHT', '-'.repeat(50), report.parentSummary, '');
   if (report.developmentArea) parts.push('NEXT DEVELOPMENT AREA', '-'.repeat(50), report.developmentArea, '');
   if (report.nextSessionFocus) parts.push('NEXT SESSION FOCUS', '-'.repeat(50), report.nextSessionFocus, '');
+  if (report.parentConnection) parts.push('TRY THIS AT HOME', '-'.repeat(50), report.parentConnection, '');
   if (report.wordCloud.length > 0) {
     parts.push('KEY CONCEPTS DISCUSSED', '-'.repeat(50), report.wordCloud.map((w) => w.word).join(' · '), '');
   }
