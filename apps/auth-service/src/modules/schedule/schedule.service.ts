@@ -1346,6 +1346,80 @@ export const scheduleService = {
   // ── Post-class reflection ───────────────────────────────────────────────────
 
   /**
+   * The mentor fires the quiz DURING the session. The student portal polls
+   * quiz status and pops the quiz up when it sees the stamp, so mentor and
+   * student can go through it together on the call. Relaunching restamps —
+   * the student portal keys its popup on the timestamp, so a fresh stamp
+   * pops the quiz again for a student who closed it.
+   */
+  async launchQuiz(classId: string, callerId?: string, callerRole?: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: { id: true, mentorId: true, status: true, reflectionSubmittedAt: true },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    // Only this class's mentor, or an admin — a launch makes a modal appear on
+    // a child's screen, so it is not a thing any authenticated caller may do.
+    const role = (callerRole ?? '').toUpperCase();
+    if (!(role === 'ADMIN' || (isMentorRole(role) && scheduledClass.mentorId === callerId))) {
+      throw new AppError('Only the class mentor or an admin can launch the quiz.', HTTP_STATUS.FORBIDDEN);
+    }
+    if (scheduledClass.reflectionSubmittedAt) {
+      throw new AppError('The student has already submitted this quiz.', HTTP_STATUS.BAD_REQUEST);
+    }
+    if (scheduledClass.status === 'CANCELLED') {
+      throw new AppError('This class was cancelled.', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    const updated = await db.scheduledClass.update({
+      where: { id: classId },
+      data: { quizLaunchedAt: new Date() },
+      select: { quizLaunchedAt: true },
+    });
+    return { launchedAt: updated.quizLaunchedAt };
+  },
+
+  /**
+   * Lightweight poll target: has the quiz been launched, and has the student
+   * submitted? Polled every few seconds by the student portal during a live
+   * class and by the mentor's panel after a launch, so it reads one row and
+   * nothing else.
+   */
+  async getQuizStatus(classId: string, callerId?: string, callerRole?: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        id: true,
+        studentId: true,
+        mentorId: true,
+        quizLaunchedAt: true,
+        reflectionSubmittedAt: true,
+        reflectionScore: true,
+        reflectionMaxScore: true,
+        reflectionBadge: true,
+        student: { select: { parentAccountId: true } },
+      },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    assertClassAccess(scheduledClass as any, callerId, callerRole);
+
+    return {
+      launched: Boolean(scheduledClass.quizLaunchedAt),
+      launchedAt: scheduledClass.quizLaunchedAt,
+      submitted: Boolean(scheduledClass.reflectionSubmittedAt),
+      submittedAt: scheduledClass.reflectionSubmittedAt,
+      score: scheduledClass.reflectionScore,
+      maxScore: scheduledClass.reflectionMaxScore,
+      badge: scheduledClass.reflectionBadge,
+    };
+  },
+
+  /**
    * The quiz a student must answer for a given class, plus whatever they have
    * already submitted. Questions come from the curriculum session; a session
    * with no custom quiz falls back to its text prompts, then to the platform

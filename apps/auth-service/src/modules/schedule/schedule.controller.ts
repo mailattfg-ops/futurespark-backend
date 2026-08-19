@@ -247,6 +247,26 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class rating submitted successfully'));
   },
 
+  async launchQuiz(req: Request, res: Response) {
+    const result = await scheduleService.launchQuiz(
+      req.params.id,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(result, 'Quiz launched — it will pop up on the student portal within a few seconds.'));
+  },
+
+  async getQuizStatus(req: Request, res: Response) {
+    const result = await scheduleService.getQuizStatus(
+      req.params.id,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Quiz status fetched'));
+  },
+
   async getReflection(req: Request, res: Response) {
     const result = await scheduleService.getReflection(
       req.params.id,

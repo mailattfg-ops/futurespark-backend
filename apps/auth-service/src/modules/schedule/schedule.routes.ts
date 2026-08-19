@@ -53,6 +53,11 @@ router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
 // Gated: the student, their parent, or the mentor who taught — and the payload
 // is tiered inside. Only `canSeeAnswerKey` roles get `correctOptionId` on the
 // quiz; the student sitting it and their parent get it stripped.
+// Live quiz: the mentor launches it mid-session; the student portal polls
+// status and pops the quiz up. Both are guarded per-class in the service.
+router.post('/:id/quiz/launch', asyncHandler(scheduleController.launchQuiz));
+router.get('/:id/quiz/status', asyncHandler(scheduleController.getQuizStatus));
+
 router.get('/:id/reflection', asyncHandler(scheduleController.getReflection));
 // Gated: the student whose class it is (ADMIN for support fixes). Stores the
 // answers unmarked and unscored — nothing here can award anything.
