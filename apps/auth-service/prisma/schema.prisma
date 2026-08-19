@@ -529,3 +529,29 @@ model ErrorLog {
   @@index([stage])
   @@schema("learning")
 }
+
+/// One saved version of an editable pipeline prompt.
+///
+/// Two types exist, matching what the pipeline actually calls:
+///   'transcription' — instructions for chat-audio transcription models
+///   'analysis'      — the report system prompt (its JSON output schema is
+///                     appended by code and is not part of the editable body)
+/// Exactly one ACTIVE version per type; saving a new version activates it and
+/// archives the rest. The pipeline falls back to the code default whenever no
+/// active row exists, so this table can be empty (or missing) without ever
+/// stopping a class from being analysed.
+model PromptVersion {
+  id         String   @id @default(uuid())
+  promptType String   // 'transcription' | 'analysis'
+  version    Int      // 1, 2, 3… rendered as v1, v2, v3
+  content    String   @db.Text
+  status     String   @default("active") // 'active' | 'archived'
+  changeWhat String?
+  changeWhy  String?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+
+  @@unique([promptType, version])
+  @@index([promptType, status])
+  @@schema("learning")
+}
