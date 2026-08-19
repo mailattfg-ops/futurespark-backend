@@ -35,6 +35,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// Activity Log — records webapp-driven mutations (recording sync, uploads) by
+// posting them to auth-service's internal /audit/record endpoint.
+import { auditMiddleware } from './modules/shared/audit-http';
+app.use(auditMiddleware);
+
 // Start background cron workers
 startSyncCron();
 // Retries transcriptions that failed for a reason that passes — chiefly the

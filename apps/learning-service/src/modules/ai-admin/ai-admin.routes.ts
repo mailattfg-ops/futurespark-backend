@@ -107,8 +107,9 @@ router.get('/usage', async (req: Request, res: Response) => {
 router.get('/errors', async (req: Request, res: Response) => {
   try {
     const stage = typeof req.query.stage === 'string' && req.query.stage ? req.query.stage : undefined;
+    const q = typeof req.query.q === 'string' && req.query.q ? req.query.q : undefined;
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
-    const data = await getErrors(stage, limit);
+    const data = await getErrors(stage, limit, q);
     res.status(HTTP_STATUS.OK).json(successResponse(data, 'AI errors loaded.'));
   } catch (err: any) {
     res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message));

@@ -182,9 +182,37 @@ app.use('/api/courses',
   })
 );
 
-// Merged service logs for the admin's /logs page. Served by the gateway
-// itself (not proxied): the log files live on this box, one per service.
+// Merged service logs — still consumed by the AI Errors page's log-context
+// and Pipeline activity features. Served by the gateway itself (not proxied):
+// the log files live on this box, one per service.
 app.use('/api/logs', asyncHandler(authenticate), logsRouter);
+
+// Activity Log — business events ("who did what"), the admin's /logs page.
+// READ-ONLY from outside: the internal /audit/record write endpoint must stay
+// reachable only service-to-service, so non-GET is refused here.
+app.use('/api/audit',
+  asyncHandler(authenticate),
+  (req: any, res: any, next: any) => {
+    if (req.method !== 'GET') {
+      return res.status(405).json({ success: false, message: 'The activity log is read-only from the app.' });
+    }
+    next();
+  },
+  createProxyMiddleware({
+    target: AUTH_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/audit/' },
+    on: {
+      error: (_err, _req, res: any) => {
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'Auth service temporarily unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
 
 // AI administration — model catalogue + selection, spend ledger, error log.
 // Role enforcement happens in learning-service from the x-user-role header.
