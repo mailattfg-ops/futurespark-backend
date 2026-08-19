@@ -7,7 +7,8 @@ import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 import { parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
 import { describeGroqFailure, estimateTokens, GroqError } from './groq-errors';
-import { getLastModels, recordAiError, recordAiUsage } from '../ai-admin/ai-admin.service';
+import { getActivePrompt, getLastModels, recordAiError, recordAiUsage } from '../ai-admin/ai-admin.service';
+import { ANALYSIS_OUTPUT_SCHEMA, ANALYSIS_PROMPT_DEFAULT, TRANSCRIPTION_PROMPT_DEFAULT, renderPrompt } from '../ai-admin/prompt-defaults';
 
 /**
  * Everything known about the lesson before a word of it is analysed.
@@ -305,6 +306,9 @@ export class GroqTranscriptionService {
    */
   private jobTag: { classId?: string | null; recordingId?: string | null; fileName?: string | null } = {};
 
+  /** Values for {{variables}} in the editable prompts, set per run. */
+  private promptVars: Record<string, string> = {};
+
   private async refreshStoredModels(): Promise<void> {
     try {
       this.storedModels = await getLastModels();
@@ -386,6 +390,12 @@ export class GroqTranscriptionService {
       classId: context.classId ?? null,
       recordingId: context.recordingId ?? null,
       fileName: path.basename(audioFilePath.split('?')[0] ?? '') || null,
+    };
+    this.promptVars = {
+      student_name: studentName,
+      teacher_name: mentorName,
+      session_topic: context.sessionTitle ?? '',
+      session_number: context.sessionOrder != null ? String(context.sessionOrder) : '',
     };
 
     let localFilePath = audioFilePath;
@@ -728,12 +738,15 @@ export class GroqTranscriptionService {
     const format = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'webm'].includes(ext) ? ext : 'mp3';
     const audioBase64 = fs.readFileSync(filePath).toString('base64');
 
-    const instructions =
-      'Transcribe this class recording EXACTLY. Never translate; preserve the Malayalam + English ' +
-      'code-switching as spoken, Malayalam in Malayalam script. Label every turn as "Teacher:" or ' +
-      '"Student:" (one adult teaching, one child learning — judge from voice and content) with a ' +
-      '[mm:ss] timestamp. Output ONLY the transcript lines, no commentary.' +
-      (promptContext ? `\nVocabulary that may occur: ${promptContext.slice(0, 1500)}` : '');
+    // The editable transcription prompt (from /prompts), else the code default.
+    const activePrompt = await getActivePrompt('transcription');
+    if (activePrompt) {
+      logger.info(`[GroqTranscriptionService] Using transcription prompt v${activePrompt.version} (from /prompts).`);
+    }
+    const instructions = renderPrompt(activePrompt?.content ?? TRANSCRIPTION_PROMPT_DEFAULT, {
+      vocabulary: (promptContext ?? '(none provided)').slice(0, 1500),
+      ...this.promptVars,
+    });
 
     const startedAt = Date.now();
     try {
@@ -950,7 +963,7 @@ export class GroqTranscriptionService {
       ? `The recording is ${Math.round(context.audioSeconds)} seconds long (${Math.floor(context.audioSeconds / 60)}m ${Math.round(context.audioSeconds % 60)}s). Use this as the total session duration.`
       : 'The exact recording length is unknown. Set duration to "Not available" unless the audio makes it clear.';
 
-    const systemPrompt = this.reportSystemPrompt(durationHint);
+    const systemPrompt = await this.reportSystemPrompt(durationHint);
 
     const userPrompt = `STUDENT: ${studentName}
 TEACHER: ${mentorName}
@@ -1035,85 +1048,21 @@ Return the JSON object now.`;
     );
   }
 
-  /** The Student Session Report instructions, shared by every analysis path. */
-  private reportSystemPrompt(durationHint = 'Use the transcript to judge the session length.'): string {
-    return `You are an AI Education Session Analyst for a 1:1 Financial Literacy Program.
-
-You receive two inputs:
-  INPUT 1 — SESSION MATERIAL: the standardised slides, key terms, activities, quiz and speaker notes for this session. This is what was PLANNED.
-  INPUT 2 — SESSION TRANSCRIPT: the actual 1:1 conversation between teacher and student. This is what HAPPENED.
-
-HOW TO USE EACH INPUT — this distinction is critical:
-- Use the SESSION MATERIAL to understand what the student was expected to learn, to name and spell concepts the way the curriculum does, and to judge which planned topics were reached.
-- Use the TRANSCRIPT, and ONLY the transcript, for every statement about the student: what they understood, how they participated, how they applied concepts, how independently they answered, what they asked.
-- NEVER describe a concept as covered because it appears in the material. If the transcript does not show it being taught, it belongs in topicsNotReached.
-- NEVER invent a number, a quotation or an observation. If something cannot be established from the transcript, use null for counts and "Not available" for text.
-
-PRIMARY OBJECTIVE
-Evaluate the STUDENT's learning journey. This is not a teacher performance review; never criticise the teacher.
-
-COUNTING RULES
-- A meaningful response explains an idea, gives reasoning, provides an example, makes a financial decision, compares choices, asks a meaningful question, reflects, or self-corrects.
-- "yes", "no", "okay", "hmm" and similar are NOT meaningful unless they demonstrate understanding.
-- An independent response is given without the teacher supplying or leading to the answer; a prompted response needed help.
-- A higher-order question asks the student to explain WHY, compare, evaluate, predict or apply — not to recall a fact. higherOrderQuestions is a SUBSET of teacherQuestions and can never exceed it.
-- ${durationHint}
-- Talk time may be estimated from the transcript's share of speech, but say so honestly by keeping the split conservative. If speakers cannot be told apart, use null percentages and "Not available".
-- The transcript usually has NO speaker labels. Attribute each turn from conversational cues: the teacher poses questions, explains and uses the student's name; the student answers, asks back, and self-corrects. When you genuinely cannot tell who said a line, leave it out of every count — and if attribution is impossible for most of the transcript, return null for the question and response counts. A 0 is a statement that the student asked nothing; it must come from reading the whole transcript with confident attribution, never from failing to tell the speakers apart.
-
-ASSESSMENT VOCABULARY
-Use exactly one of: "Emerging", "Developing", "Proficient". Never use negative labels such as weak, poor, or low ability. Use null only if there is genuinely no evidence.
-For each of the four areas ALSO write one warm, specific sentence of evidence from the transcript (the "...Note" fields) — what the child actually said or did, in language a parent enjoys reading. Prefer "with minimal prompting" over anything negative. Empty string only when the transcript truly shows nothing for that area.
-
-PARENT CONNECTION
-parentConnection is ONE warm, simple conversation or activity a parent can try at home, drawn from what THIS session actually covered (e.g. comparing unit prices on the next grocery trip). One or two sentences, inviting, never homework-like, never empty when any topic was taught.
-
-WORD CLOUD
-Select 15-25 meaningful LEARNING concepts actually discussed — financial vocabulary, not the most frequently spoken words. Exclude articles, pronouns, auxiliary verbs, fillers (okay, yeah, hmm, like, just), and generic classroom words (teacher, student, class, session, question, answer). Combine related forms (saving/savings -> saving). Weight 1-10 by learning importance and relevance, NOT raw frequency.
-
-SAFETY
-Do not diagnose learning difficulties. Do not make high-stakes judgements. Do not comment on personality, intelligence, accent, gender or any irrelevant characteristic. Do not include the raw transcript. Do not expose your reasoning.
-
-OUTPUT
-Return ONLY a JSON object matching this schema exactly — no markdown, no commentary:
-
-{
-  "student": string,
-  "teacher": string,
-  "sessionTopic": string,
-  "weekNumber": number|null,
-  "weekTotal": number|null,
-  "date": string,
-  "timing": { "startTime": string, "endTime": string, "duration": string },
-  "talkTime": { "teacher": string, "student": string, "teacherPercent": number|null, "studentPercent": number|null },
-  "interactions": {
-    "teacherQuestions": number|null, "studentQuestions": number|null,
-    "higherOrderQuestions": number|null,     // subset of teacherQuestions: why/compare/evaluate/predict/apply
-    "meaningfulResponses": number|null, "independentResponses": number|null,
-    "promptedResponses": number|null, "selfCorrections": number|null
-  },
-  "learningGoals": [string],                 // 2-4, parent-friendly, from the session material
-  "assessment": {
-    "conceptUnderstanding": "Emerging"|"Developing"|"Proficient"|null,
-    "application": "Emerging"|"Developing"|"Proficient"|null,
-    "financialReasoning": "Emerging"|"Developing"|"Proficient"|null,
-    "independence": "Emerging"|"Developing"|"Proficient"|null,
-    "conceptUnderstandingNote": string,      // one sentence of transcript evidence, parent-friendly
-    "applicationNote": string,               // ditto — how they connected it to their own life
-    "financialReasoningNote": string,        // ditto — calculations / decisions they worked through
-    "independenceNote": string,              // ditto — how independently they answered
-    "highlight": string                      // one short evidence-based observation
-  },
-  "topicsCovered": [string],                 // planned topics the transcript shows were taught
-  "topicsNotReached": [string],              // planned topics the transcript does not show
-  "questionQuality": string,                 // what the student's questions demonstrated
-  "keyLearningMoment": string,               // 1-2 sentences
-  "parentSummary": string,                   // 2-3 sentences, positive and simple
-  "developmentArea": string,                 // one constructive area to practise
-  "nextSessionFocus": string,                // one specific focus
-  "parentConnection": string,                // ONE warm at-home conversation prompt; never homework
-  "wordCloud": [{ "word": string, "weight": number }]
-}`;
+  /**
+   * The Student Session Report instructions, shared by every analysis path.
+   *
+   * The editable body comes from the ACTIVE 'analysis' PromptVersion when one
+   * exists (the /prompts admin page); otherwise the code default applies. The
+   * JSON OUTPUT schema is always appended by code — parseSessionReport and the
+   * PDF renderer depend on that exact shape, so it is not editable.
+   */
+  private async reportSystemPrompt(durationHint = 'Use the transcript to judge the session length.'): Promise<string> {
+    const active = await getActivePrompt('analysis');
+    if (active) {
+      logger.info(`[GroqTranscriptionService] Using analysis prompt v${active.version} (from /prompts).`);
+    }
+    const body = renderPrompt(active?.content ?? ANALYSIS_PROMPT_DEFAULT, { duration_hint: durationHint });
+    return `${body}\n\n${ANALYSIS_OUTPUT_SCHEMA}`;
   }
 
   /**
@@ -1403,7 +1352,7 @@ across passes — set them to null and both talk strings to "Not available".
 Return the JSON object now.`;
 
     await pacer.waitFor(estimateTokens(reduceUser) + 6000);
-    const finalRaw = await send(this.reportSystemPrompt(), reduceUser);
+    const finalRaw = await send(await this.reportSystemPrompt(), reduceUser);
 
     let raw: any;
     try {

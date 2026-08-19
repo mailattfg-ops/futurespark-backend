@@ -311,3 +311,133 @@ export const clearErrors = async () => {
   const result = await db.errorLog.deleteMany({});
   return { deleted: result.count };
 };
+
+/* ── Prompt management ──────────────────────────────────────────────────────
+ * Two editable prompt types drive the pipeline (see prompt-defaults.ts).
+ * Exactly one ACTIVE version per type; saving a new version activates it and
+ * archives the others. Every read the PIPELINE does is failure-proof: no rows,
+ * no table, no database — the code default applies and the class still runs.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+import { PROMPT_TYPE_DEFS, type PromptTypeDef } from './prompt-defaults';
+
+export { renderPrompt } from './prompt-defaults';
+
+const promptDef = (type: string): PromptTypeDef | undefined =>
+  PROMPT_TYPE_DEFS.find((d) => d.type === type);
+
+/** Seed v1 (the code default) for any type with no versions yet. */
+const seedPromptType = async (def: PromptTypeDef): Promise<void> => {
+  const count = await db.promptVersion.count({ where: { promptType: def.type } });
+  if (count > 0) return;
+  await db.promptVersion.create({
+    data: {
+      promptType: def.type,
+      version: 1,
+      content: def.defaultContent,
+      status: 'active',
+      changeWhat: 'Initial version',
+      changeWhy: 'Seeded from the pipeline default.',
+      createdBy: 'system',
+    },
+  });
+  logger.info(`[AiAdmin] Seeded prompt "${def.type}" v1 from the code default.`);
+};
+
+export const getPromptOverview = async () => {
+  for (const def of PROMPT_TYPE_DEFS) await seedPromptType(def);
+
+  const rows = await db.promptVersion.findMany({ orderBy: [{ promptType: 'asc' }, { version: 'desc' }] });
+  return {
+    types: PROMPT_TYPE_DEFS.map((def) => ({
+      type: def.type,
+      label: def.label,
+      note: def.note,
+      variables: def.variables,
+      activeVersion: rows.find((r) => r.promptType === def.type && r.status === 'active')?.version ?? null,
+      versions: rows.filter((r) => r.promptType === def.type),
+    })),
+  };
+};
+
+export const savePromptVersion = async (
+  type: string,
+  content: string,
+  changeWhat: string,
+  changeWhy: string,
+  createdBy?: string
+) => {
+  const def = promptDef(type);
+  if (!def) throw new Error(`Unknown prompt type "${type}".`);
+  if (!content || content.trim().length < 40) {
+    throw new Error('The prompt content is too short to be a working prompt.');
+  }
+  if (!changeWhat?.trim() || !changeWhy?.trim()) {
+    throw new Error('"What changed" and "Why" are both required when saving a new version.');
+  }
+
+  const latest = await db.promptVersion.findFirst({
+    where: { promptType: type },
+    orderBy: { version: 'desc' },
+  });
+
+  const [, created] = await db.$transaction([
+    db.promptVersion.updateMany({ where: { promptType: type, status: 'active' }, data: { status: 'archived' } }),
+    db.promptVersion.create({
+      data: {
+        promptType: type,
+        version: (latest?.version ?? 0) + 1,
+        content,
+        status: 'active',
+        changeWhat: changeWhat.trim(),
+        changeWhy: changeWhy.trim(),
+        createdBy: createdBy ?? null,
+      },
+    }),
+  ]);
+
+  activePromptCache.delete(type);
+  logger.info(`[AiAdmin] Prompt "${type}" v${created.version} saved and activated.`);
+  return created;
+};
+
+export const activatePromptVersion = async (id: string) => {
+  const target = await db.promptVersion.findUnique({ where: { id } });
+  if (!target) throw new Error('That prompt version no longer exists.');
+
+  await db.$transaction([
+    db.promptVersion.updateMany({
+      where: { promptType: target.promptType, status: 'active' },
+      data: { status: 'archived' },
+    }),
+    db.promptVersion.update({ where: { id }, data: { status: 'active' } }),
+  ]);
+
+  activePromptCache.delete(target.promptType);
+  logger.info(`[AiAdmin] Prompt "${target.promptType}" switched to v${target.version}.`);
+  return { ...target, status: 'active' };
+};
+
+/** 60s cache — consulted on every pipeline run. */
+const activePromptCache = new Map<string, { content: string | null; version: number | null; at: number }>();
+
+/**
+ * The active prompt body for a type, or null when the pipeline should use its
+ * code default. NEVER throws — prompt management must not stop a class.
+ */
+export const getActivePrompt = async (
+  type: 'transcription' | 'analysis'
+): Promise<{ content: string; version: number } | null> => {
+  const cached = activePromptCache.get(type);
+  if (cached && Date.now() - cached.at < 60_000) {
+    return cached.content === null ? null : { content: cached.content, version: cached.version! };
+  }
+  try {
+    const row = await db.promptVersion.findFirst({ where: { promptType: type, status: 'active' } });
+    activePromptCache.set(type, { content: row?.content ?? null, version: row?.version ?? null, at: Date.now() });
+    return row ? { content: row.content, version: row.version } : null;
+  } catch (err: any) {
+    logger.warn(`[AiAdmin] Could not read the active "${type}" prompt (${err.message}); using the code default.`);
+    return cached && cached.content !== null ? { content: cached.content, version: cached.version! } : null;
+  }
+};

@@ -3,12 +3,15 @@ import { logger } from '@futurespark/logger';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 import {
+  activatePromptVersion,
   clearErrors,
   getErrors,
   getLastModels,
   getModelCatalogue,
+  getPromptOverview,
   getUsage,
   saveLastModels,
+  savePromptVersion,
 } from './ai-admin.service';
 
 /**
@@ -109,6 +112,52 @@ router.get('/errors', async (req: Request, res: Response) => {
     res.status(HTTP_STATUS.OK).json(successResponse(data, 'AI errors loaded.'));
   } catch (err: any) {
     res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message));
+  }
+});
+
+/* ── Prompt management ──────────────────────────────────────────────────── */
+
+router.get('/prompts', async (_req: Request, res: Response) => {
+  try {
+    const data = await getPromptOverview();
+    res.status(HTTP_STATUS.OK).json(successResponse(data, 'Prompts loaded.'));
+  } catch (err: any) {
+    res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message));
+  }
+});
+
+router.post('/prompts/:type/versions', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) {
+    return res.status(HTTP_STATUS.FORBIDDEN).json(errorResponse('Only an admin can edit the prompts.'));
+  }
+  try {
+    const { content, changeWhat, changeWhy } = req.body ?? {};
+    const created = await savePromptVersion(
+      req.params.type,
+      String(content ?? ''),
+      String(changeWhat ?? ''),
+      String(changeWhy ?? ''),
+      String(req.headers['x-user-id'] ?? '') || undefined
+    );
+    res.status(HTTP_STATUS.OK).json(
+      successResponse({ version: created }, `Saved and activated v${created.version} — it applies from the next run.`)
+    );
+  } catch (err: any) {
+    res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(err.message));
+  }
+});
+
+router.post('/prompts/versions/:id/activate', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) {
+    return res.status(HTTP_STATUS.FORBIDDEN).json(errorResponse('Only an admin can switch prompt versions.'));
+  }
+  try {
+    const activated = await activatePromptVersion(req.params.id);
+    res.status(HTTP_STATUS.OK).json(
+      successResponse({ version: activated }, `v${activated.version} is now active — it applies from the next run.`)
+    );
+  } catch (err: any) {
+    res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(err.message));
   }
 });
 
