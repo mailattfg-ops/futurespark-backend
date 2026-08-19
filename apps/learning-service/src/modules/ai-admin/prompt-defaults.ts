@@ -32,7 +32,8 @@ export const renderPrompt = (
   });
 
 export const TRANSCRIPTION_PROMPT_DEFAULT = `Transcribe this class recording EXACTLY. Never translate; preserve the Malayalam + English code-switching as spoken, Malayalam in Malayalam script. Label every turn as "Teacher:" or "Student:" (one adult teaching, one child learning — judge from voice and content) with a [mm:ss] timestamp. Output ONLY the transcript lines, no commentary.
-Vocabulary that may occur: {{vocabulary}}`;
+This is a lesson about {{session_topic}}. Vocabulary that may occur: {{vocabulary}}
+When a spoken word sounds close to one of these vocabulary terms, write the vocabulary term — accented speech makes domain words easy to mishear.`;
 
 /**
  * The analysis system prompt WITHOUT its OUTPUT schema — the schema is
@@ -76,6 +77,22 @@ Select 15-25 meaningful LEARNING concepts actually discussed — financial vocab
 
 SAFETY
 Do not diagnose learning difficulties. Do not make high-stakes judgements. Do not comment on personality, intelligence, accent, gender or any irrelevant characteristic. Do not include the raw transcript. Do not expose your reasoning.`;
+
+/**
+ * Appended to EVERY analysis prompt, editable or not — like the schema below.
+ *
+ * These exist because of real reports that reached real parents: an insurance
+ * class whose PDF quoted the transcript's mishearing "endurance", a summary
+ * built from the first half of the lesson, a word cloud padded with generic
+ * words. They are correctness invariants, not style — so they live in code
+ * where no prompt edit can drop them.
+ */
+export const ANALYSIS_QUALITY_RULES = `ACCURACY RULES — non-negotiable; they override anything above when in conflict:
+
+1. REPAIR THE TRANSCRIPT'S HEARING. The transcript is machine-transcribed from mixed Malayalam-English audio and WILL contain mishearings. The SESSION MATERIAL is the authority on this session's terms. Whenever a transcript word is phonetically close to a term from the session material, the planned topics or the session title, read it as that term — "endurance" in an insurance class IS "insurance". Use the corrected word EVERYWHERE in your output, including inside quotations. A parent must never see a mishearing presented as something their child or teacher said.
+2. QUOTE FOR MEANING. When quoting the transcript, keep the speaker's real idea but silently fix mishearings and drop fillers ("uh", "um"). If a passage is too garbled to repair with confidence, paraphrase it or leave it out — never print garbled text, and never invent a quote.
+3. COVER THE WHOLE SESSION. Before answering, re-scan the transcript from start to end and list every substantive topic actually taught — including topics that are NOT in the session material. Anything discussed for more than a couple of minutes must be reflected in topicsCovered and weighed for the summary and key learning moment. Never build the report from the opening of the transcript alone.
+4. WORD CLOUD = THIS SESSION'S CONCEPTS ONLY. Every entry must pass two tests: (a) the transcript shows it genuinely discussed in THIS session, and (b) the teacher would recognise it as part of what they taught today. Exclude generic words (money, class, good, learn, example, important) unless they were themselves the lesson. 12-18 strong entries beat 25 padded ones — never pad to reach a count.`;
 
 /** Appended to EVERY analysis prompt, editable or not. */
 export const ANALYSIS_OUTPUT_SCHEMA = `OUTPUT
@@ -140,7 +157,9 @@ export const PROMPT_TYPE_DEFS: PromptTypeDef[] = [
     label: 'Analysis',
     note:
       'The system prompt that builds the whole parent report in one call. The JSON output ' +
-      'schema is appended automatically and cannot be edited — the PDF renderer depends on it.',
+      'schema and a fixed set of accuracy rules (mishearing correction against the session ' +
+      'material, whole-session coverage, word-cloud relevance) are appended automatically ' +
+      'and cannot be edited — the PDF renderer and report quality depend on them.',
     variables: [{ name: 'duration_hint', description: 'The real recording length, injected per class.' }],
     defaultContent: ANALYSIS_PROMPT_DEFAULT,
   },

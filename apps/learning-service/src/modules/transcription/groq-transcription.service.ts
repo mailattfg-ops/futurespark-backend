@@ -8,7 +8,7 @@ import { logger } from '@futurespark/logger';
 import { NOT_AVAILABLE, parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
 import { describeGroqFailure, estimateTokens, GroqError } from './groq-errors';
 import { getActivePrompt, getLastModels, recordAiError, recordAiUsage } from '../ai-admin/ai-admin.service';
-import { ANALYSIS_OUTPUT_SCHEMA, ANALYSIS_PROMPT_DEFAULT, TRANSCRIPTION_PROMPT_DEFAULT, renderPrompt } from '../ai-admin/prompt-defaults';
+import { ANALYSIS_OUTPUT_SCHEMA, ANALYSIS_PROMPT_DEFAULT, ANALYSIS_QUALITY_RULES, TRANSCRIPTION_PROMPT_DEFAULT, renderPrompt } from '../ai-admin/prompt-defaults';
 
 /**
  * Everything known about the lesson before a word of it is analysed.
@@ -242,6 +242,56 @@ const dedupeStrings = (values: unknown[]): string[] => {
 };
 
 /**
+ * The programme's core vocabulary — terms any class may reach regardless of
+ * what its deck says. A session's own terms always come FIRST in the hint;
+ * this list fills the remaining budget so that a word the deck never wrote
+ * down ("EMI" coming up in a savings class) is still primed, and a class with
+ * thin or missing material is never transcribed completely unprimed.
+ */
+const CORE_FINANCIAL_VOCABULARY = [
+  'money', 'saving', 'savings', 'spending', 'budget', 'budgeting', 'income', 'expense',
+  'needs', 'wants', 'emergency fund', 'insurance', 'premium', 'claim', 'protection',
+  'bank', 'bank account', 'interest', 'compound interest', 'loan', 'EMI', 'borrowing',
+  'credit', 'debit', 'credit card', 'debit card', 'UPI', 'digital payment', 'online fraud',
+  'scam', 'investment', 'investing', 'risk', 'return', 'inflation', 'stock', 'mutual fund',
+  'tax', 'salary', 'pocket money', 'financial goal', 'profit', 'loss', 'price', 'discount',
+  'unit price', 'impulse buying', 'FOBO',
+];
+
+/**
+ * Distil the class context into a short term list for the TRANSCRIPTION stage.
+ *
+ * The transcriber only hears audio — it does not know an insurance class is
+ * happening, so Malayalam-accented "insurance" comes out as "endurance" and
+ * every later stage inherits the mishearing. Priming it with the session's own
+ * terms biases recognition toward the words actually being said.
+ *
+ * Kept short on purpose: Whisper reads ~224 tokens of `prompt`, and a chat
+ * model needs the terms, not the deck. Session terms lead so a tight budget
+ * cuts the generic tail, never the words specific to this class.
+ */
+export const buildVocabularyHint = (context: ClassAnalysisContext): string => {
+  const terms: string[] = [];
+  if (context.sessionTitle) terms.push(context.sessionTitle.trim());
+  for (const topic of context.plannedTopics ?? []) terms.push(topic);
+
+  // The condensed deck's short lines are its headings and key terms; strip the
+  // structural prefixes so only the term itself primes the transcriber.
+  const slides = (context.slideContent ?? '').trim();
+  if (slides) {
+    for (const line of condenseSlides(slides).split('\n')) {
+      const term = line
+        .replace(/^(KEY TERM|ACTIVITY|SECTION|STOP \d|QUESTION \d|LEVEL \d|TAKE HOME|FUN FACT|MIND MAP)[\s\d·:.–-]*/i, '')
+        .trim();
+      if (term.length >= 3 && term.length <= 40 && !/^\d+$/.test(term)) terms.push(term);
+    }
+  }
+
+  terms.push(...CORE_FINANCIAL_VOCABULARY);
+  return dedupeStrings(terms).join(', ').slice(0, 1200);
+};
+
+/**
  * Total a count across passes.
  *
  * Returns null when NO pass reported the field — zero is a claim about the
@@ -308,6 +358,8 @@ export class GroqTranscriptionService {
 
   /** Values for {{variables}} in the editable prompts, set per run. */
   private promptVars: Record<string, string> = {};
+  /** Session terms priming the transcriber — set per job in processClassAudio. */
+  private transcriptionVocabulary = '';
 
   private async refreshStoredModels(): Promise<void> {
     try {
@@ -397,6 +449,21 @@ export class GroqTranscriptionService {
       session_topic: context.sessionTitle ?? '',
       session_number: context.sessionOrder != null ? String(context.sessionOrder) : '',
     };
+    this.transcriptionVocabulary = buildVocabularyHint(context);
+    const hasSessionTerms = Boolean(
+      context.sessionTitle || (context.plannedTopics ?? []).length > 0 || (context.slideContent ?? '').trim()
+    );
+    if (hasSessionTerms) {
+      logger.info(
+        `[GroqTranscriptionService] Priming transcription with ${this.transcriptionVocabulary.split(', ').length} term(s)` +
+          (context.sessionTitle ? ` for "${context.sessionTitle}"` : '') +
+          ' (session material + core vocabulary).'
+      );
+    } else {
+      logger.warn(
+        '[GroqTranscriptionService] No session material for this class — transcription primed with the core financial vocabulary only.'
+      );
+    }
 
     let localFilePath = audioFilePath;
     const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
@@ -685,17 +752,22 @@ export class GroqTranscriptionService {
    *   turns itself and handles Malayalam-English code-switching natively —
    *   which is exactly what fixes a mis-counted "student questions: 0".
    */
-  private async uploadForTranscription(filePath: string, promptContext?: string): Promise<string> {
+  private async uploadForTranscription(filePath: string, carryOver?: string): Promise<string> {
     const provider = this.transcriptionProvider;
 
     if (!this.isDedicatedSttModel(provider.model)) {
-      return this.transcribeViaChat(filePath, promptContext);
+      return this.transcribeViaChat(filePath, carryOver);
     }
 
     const formData = new FormData();
     formData.append('model', provider.model);
     formData.append('file', fs.createReadStream(filePath));
-    if (promptContext) formData.append('prompt', promptContext);
+    // Whisper's `prompt` biases recognition toward these spellings: the
+    // session's own terms first (so "insurance" is never heard as
+    // "endurance"), then the previous chunk's tail for continuity. Whisper
+    // only reads ~224 tokens of prompt, hence the tight cap.
+    const promptParts = [this.transcriptionVocabulary.slice(0, 600), carryOver ?? ''].filter(Boolean);
+    if (promptParts.length > 0) formData.append('prompt', promptParts.join('\n'));
 
     // `language` is worth setting when a class is single-language, but this
     // programme is taught in mixed English and Malayalam. Pinning either one
@@ -745,7 +817,7 @@ export class GroqTranscriptionService {
   }
 
   /** Transcription through a multimodal chat model — audio in, labelled text out. */
-  private async transcribeViaChat(filePath: string, promptContext?: string): Promise<string> {
+  private async transcribeViaChat(filePath: string, carryOver?: string): Promise<string> {
     const provider = this.transcriptionProvider;
 
     const ext = path.extname(filePath).replace('.', '').toLowerCase();
@@ -757,10 +829,14 @@ export class GroqTranscriptionService {
     if (activePrompt) {
       logger.info(`[GroqTranscriptionService] Using transcription prompt v${activePrompt.version} (from /prompts).`);
     }
-    const instructions = renderPrompt(activePrompt?.content ?? TRANSCRIPTION_PROMPT_DEFAULT, {
-      vocabulary: (promptContext ?? '(none provided)').slice(0, 1500),
-      ...this.promptVars,
-    });
+    const instructions =
+      renderPrompt(activePrompt?.content ?? TRANSCRIPTION_PROMPT_DEFAULT, {
+        vocabulary: (this.transcriptionVocabulary || '(none provided)').slice(0, 1500),
+        ...this.promptVars,
+      }) +
+      (carryOver
+        ? `\n\nThis audio continues a longer recording. The previous part ended with:\n${carryOver}\nKeep names and spellings consistent with it.`
+        : '');
 
     const startedAt = Date.now();
     try {
@@ -1150,8 +1226,12 @@ Return the JSON object now.`;
     if (active) {
       logger.info(`[GroqTranscriptionService] Using analysis prompt v${active.version} (from /prompts).`);
     }
+    // The accuracy rules and the schema are code-owned and appended to every
+    // prompt version — an edit on /prompts can change the judgement, never the
+    // correctness floor ("endurance"→"insurance" repair, whole-session
+    // coverage, word-cloud relevance) or the JSON shape the PDF depends on.
     const body = renderPrompt(active?.content ?? ANALYSIS_PROMPT_DEFAULT, { duration_hint: durationHint });
-    return `${body}\n\n${ANALYSIS_OUTPUT_SCHEMA}`;
+    return `${body}\n\n${ANALYSIS_QUALITY_RULES}\n\n${ANALYSIS_OUTPUT_SCHEMA}`;
   }
 
   /**
@@ -1357,6 +1437,10 @@ Return the JSON object now.`;
 
     const passSystem = `You are analysing ONE SLICE of a 1:1 financial literacy lesson transcript.
 You will be given the vocabulary of the session's material for reference, then a slice of the conversation.
+
+The transcript is machine-transcribed from mixed Malayalam-English audio and may mishear domain terms.
+When a transcript word is phonetically close to a session-vocabulary term, read and report it as that
+term ("endurance" in an insurance lesson IS "insurance") — including inside anything you quote.
 
 Extract ONLY what this slice actually shows. Do not speculate about parts you cannot see, and do not
 describe anything as taught unless this slice shows it being taught.
