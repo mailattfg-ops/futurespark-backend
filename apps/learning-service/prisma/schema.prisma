@@ -235,6 +235,11 @@ model ScheduledClass {
   reflectionReviewedAt   DateTime?
   reflectionReviewedById String?
   reflectionMentorNote   String?   @db.Text
+  // Live quiz: stamped when the mentor launches the reflection quiz DURING the
+  // session. The student portal polls for it and pops the quiz up so mentor and
+  // student can go through it together. Cleared by nothing — relaunching just
+  // restamps it.
+  quizLaunchedAt         DateTime?
   rescheduledCount    Int       @default(0)
   actualEndedAt       DateTime?
   autoRecording       Boolean   @default(true)
