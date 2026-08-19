@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
-import { parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
+import { NOT_AVAILABLE, parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
 import { describeGroqFailure, estimateTokens, GroqError } from './groq-errors';
 import { getActivePrompt, getLastModels, recordAiError, recordAiUsage } from '../ai-admin/ai-admin.service';
 import { ANALYSIS_OUTPUT_SCHEMA, ANALYSIS_PROMPT_DEFAULT, TRANSCRIPTION_PROMPT_DEFAULT, renderPrompt } from '../ai-admin/prompt-defaults';
@@ -455,10 +455,11 @@ export class GroqTranscriptionService {
 
       metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
 
-      // 2. Analyse the recording against the session slides.
+      // 2. Analyse the recording against the session slides, then pin down the
+      //    fields the model must never own (times, duration, talk-time split).
       const built = await this.generateSessionReport(transcript, studentName, mentorName, context);
-      report = built;
-      classSummary = sessionReportToText(built);
+      report = this.finalizeReport(built, context, metrics);
+      classSummary = sessionReportToText(report);
 
       // Clean up temporary compressed audio if created
       if (fileToTranscribe !== audioFilePath && fs.existsSync(fileToTranscribe)) {
@@ -469,9 +470,22 @@ export class GroqTranscriptionService {
     } catch (err: any) {
       logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
 
-      // One choke point writes the structured error log for the /errors page.
-      // GroqErrors carry their full diagnosis; anything else is recorded as-is.
+      // One choke point writes the structured error log for the /errors page
+      // AND drops a system line into the Activity Log feed.
       const failure = err instanceof GroqError ? err.failure : null;
+
+      void import('../shared/audit').then(({ recordAudit }) =>
+        recordAudit({
+          actorRole: 'SYSTEM',
+          action: 'failed',
+          entityType: 'ai-summary',
+          entityId: this.jobTag.recordingId ?? null,
+          entityName: this.jobTag.fileName ?? null,
+          summary: `The AI pipeline failed on ${this.jobTag.fileName ?? 'a recording'}: ${
+            (failure?.summary ?? String(err?.message ?? err)).slice(0, 140)
+          }`,
+        })
+      ).catch(() => {});
       void recordAiError({
         stage: failure?.stage ?? 'transcription',
         kind: failure?.kind ?? 'UNKNOWN',
@@ -844,6 +858,81 @@ export class GroqTranscriptionService {
   /**
    * 2. Native Transcript Metrics Calculation
    */
+  /**
+   * Deterministic fields the model must never own.
+   *
+   * The model once echoed the scheduled start straight onto a parent's PDF as
+   * a raw ISO string ("2026-08-17T14:00:00.000Z"), and its honest nulls left
+   * Duration and Talk time reading "Not available". All three are derivable
+   * from data we hold, so they are pinned here AFTER parsing: the narrative
+   * stays the model's, the facts are ours.
+   *
+   * - Start/End: the scheduled class times, formatted in REPORT_TIMEZONE
+   *   (default Asia/Kolkata — the families' clock, not the server's).
+   * - Duration: the real recording length when known, else the booked slot.
+   * - Talk time: the model's attribution when it made one; otherwise the
+   *   transcript word-share estimate, spread over the known duration.
+   */
+  private finalizeReport(
+    report: SessionReport,
+    context: ClassAnalysisContext,
+    metrics: { mentorShareRatio?: number; studentShareRatio?: number } | null
+  ): SessionReport {
+    const timeZone = readEnv('REPORT_TIMEZONE') ?? 'Asia/Kolkata';
+    const looksIso = (v: string) => /\d{4}-\d{2}-\d{2}T/.test(v);
+    const clock = (iso?: string | null): string | null => {
+      if (!iso) return null;
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return new Intl.DateTimeFormat('en-IN', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone,
+      }).format(d);
+    };
+
+    const start = clock(context.startTime) ?? (looksIso(report.timing.startTime) ? clock(report.timing.startTime) : null);
+    if (start) report.timing.startTime = start;
+    else if (looksIso(report.timing.startTime)) report.timing.startTime = NOT_AVAILABLE; // never print raw ISO
+
+    const end = clock(context.endTime) ?? (looksIso(report.timing.endTime) ? clock(report.timing.endTime) : null);
+    if (end) report.timing.endTime = end;
+    else if (looksIso(report.timing.endTime)) report.timing.endTime = NOT_AVAILABLE;
+
+    // Duration: real audio first, booked slot second.
+    let seconds: number | null = context.audioSeconds ?? null;
+    if (seconds === null && context.startTime && context.endTime) {
+      const diff = (new Date(context.endTime).getTime() - new Date(context.startTime).getTime()) / 1000;
+      if (Number.isFinite(diff) && diff > 0 && diff < 12 * 3600) seconds = diff;
+    }
+    if (seconds !== null) {
+      const mins = Math.round(seconds / 60);
+      report.timing.duration =
+        mins >= 60 ? `${Math.floor(mins / 60)} hr${mins % 60 ? ` ${mins % 60} min` : ''}` : `${mins} min`;
+    }
+
+    // Talk time: fill nulls from the word-share estimate so the panel is
+    // never empty, and give the bars real minute figures once a duration
+    // exists.
+    const t = report.talkTime;
+    if ((t.teacherPercent === null || t.studentPercent === null) && metrics) {
+      if (typeof metrics.mentorShareRatio === 'number') t.teacherPercent = metrics.mentorShareRatio;
+      if (typeof metrics.studentShareRatio === 'number') t.studentPercent = metrics.studentShareRatio;
+    }
+    if (seconds !== null) {
+      const mmss = (s: number) => `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
+      if ((!t.teacher || t.teacher === NOT_AVAILABLE) && t.teacherPercent !== null) {
+        t.teacher = mmss((seconds * t.teacherPercent) / 100);
+      }
+      if ((!t.student || t.student === NOT_AVAILABLE) && t.studentPercent !== null) {
+        t.student = mmss((seconds * t.studentPercent) / 100);
+      }
+    }
+
+    return report;
+  }
+
   private calculateTranscriptMetrics(text: string, studentName: string = 'Student', mentorName: string = 'Instructor') {
     const words = text.split(/\s+/).filter(Boolean).length;
     const sentences = text.split(/[.!?]+/).filter(Boolean).length;

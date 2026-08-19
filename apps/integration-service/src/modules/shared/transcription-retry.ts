@@ -1,5 +1,6 @@
 import { db } from '../../database/datasource';
 import { logger } from '@futurespark/logger';
+import { recordSystemEvent } from './audit-http';
 
 /**
  * Retrying transcriptions that failed for reasons that pass.
@@ -74,6 +75,12 @@ export const recordTranscriptionFailure = async (recordingId: string, error: str
         `[TranscriptionRetry] Recording ${recordingId} has failed ${attempts} times and will not be retried ` +
           `automatically. Last error: ${error.slice(0, 200)}`
       );
+      recordSystemEvent({
+        action: 'failed',
+        entityType: 'transcription',
+        entityId: recordingId,
+        summary: `The system gave up on a recording after ${attempts} failed transcription attempts — use Re-run to retry it manually`,
+      });
     } else {
       logger.warn(
         `[TranscriptionRetry] Recording ${recordingId} attempt ${attempts}/${MAX_ATTEMPTS} failed ` +
@@ -136,6 +143,13 @@ export const startTranscriptionRetryCron = (
         `[TranscriptionRetry] Retrying "${due.meeting?.title ?? due.fileName}" ` +
           `(attempt ${due.transcriptionAttempts + 1}/${MAX_ATTEMPTS}).`
       );
+      recordSystemEvent({
+        action: 'updated',
+        entityType: 'transcription',
+        entityId: due.id,
+        entityName: due.meeting?.title ?? due.fileName,
+        summary: `The system is retrying the transcription of "${due.meeting?.title ?? due.fileName}" (attempt ${due.transcriptionAttempts + 1}/${MAX_ATTEMPTS})`,
+      });
 
       try {
         await transcribe(due.id, due.meeting?.provider ?? 'GOOGLE_MEET');
@@ -198,6 +212,11 @@ export const resetStuckTranscriptions = async (): Promise<void> => {
       `[TranscriptionRetry] ${stuck.length} transcription(s) were left RUNNING by a previous ` +
         `process and have been requeued: ${stuck.map((s) => s.fileName).join(', ')}`
     );
+    recordSystemEvent({
+      action: 'updated',
+      entityType: 'transcription',
+      summary: `The system requeued ${stuck.length} transcription(s) interrupted by a restart`,
+    });
   } catch (err: any) {
     logger.error(`[TranscriptionRetry] Could not requeue orphaned transcriptions: ${err.message}`);
   }

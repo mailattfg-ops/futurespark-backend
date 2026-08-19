@@ -225,8 +225,11 @@ export const recordAiUsage = async (record: UsageRecord): Promise<void> => {
 export const getUsage = async (limit = 200) => {
   const rows = await db.aiUsage.findMany({ orderBy: { createdAt: 'desc' }, take: limit });
 
-  // Totals over EVERYTHING, not just the page returned.
-  const [bySt, classes] = await Promise.all([
+  // Totals over EVERYTHING, not just the page returned. "Classes" counts
+  // distinct attributed classIds, plus distinct recordings that never got a
+  // class attribution (one recording ≈ one class) — rows written before the
+  // pre-run attribution fix have only a recordingId.
+  const [bySt, classes, unattributed] = await Promise.all([
     db.aiUsage.groupBy({
       by: ['stage'],
       _sum: { costUsd: true, audioSeconds: true },
@@ -237,6 +240,11 @@ export const getUsage = async (limit = 200) => {
       distinct: ['classId'],
       select: { classId: true },
     }),
+    db.aiUsage.findMany({
+      where: { classId: null, recordingId: { not: null } },
+      distinct: ['recordingId'],
+      select: { recordingId: true },
+    }),
   ]);
 
   const stageSum = (stage: string) => bySt.find((s) => s.stage === stage);
@@ -244,7 +252,7 @@ export const getUsage = async (limit = 200) => {
   const analysisCostUsd = stageSum('analysis')?._sum.costUsd ?? 0;
   const audioSeconds = bySt.reduce((sum, s) => sum + (s._sum.audioSeconds ?? 0), 0);
   const calls = bySt.reduce((sum, s) => sum + s._count._all, 0);
-  const classCount = classes.length;
+  const classCount = classes.length + unattributed.length;
   const totalCostUsd = transcriptionCostUsd + analysisCostUsd;
 
   return {
@@ -298,9 +306,21 @@ export const recordAiError = async (record: ErrorRecord): Promise<void> => {
   }
 };
 
-export const getErrors = async (stage?: string, limit = 200) => {
+export const getErrors = async (stage?: string, limit = 200, q?: string) => {
   const rows = await db.errorLog.findMany({
-    where: stage ? { stage } : undefined,
+    where: {
+      ...(stage ? { stage } : {}),
+      ...(q
+        ? {
+            OR: [
+              { message: { contains: q, mode: 'insensitive' } },
+              { detail: { contains: q, mode: 'insensitive' } },
+              { kind: { contains: q, mode: 'insensitive' } },
+              { model: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    },
     orderBy: { occurredAt: 'desc' },
     take: limit,
   });

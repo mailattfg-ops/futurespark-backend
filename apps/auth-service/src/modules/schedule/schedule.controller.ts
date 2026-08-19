@@ -247,6 +247,15 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(classSession, 'Class rating submitted successfully'));
   },
 
+  async getRawTranscript(req: Request, res: Response) {
+    const result = await scheduleService.getRawTranscript(
+      req.params.id,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Raw transcript fetched'));
+  },
+
   async launchQuiz(req: Request, res: Response) {
     const result = await scheduleService.launchQuiz(
       req.params.id,

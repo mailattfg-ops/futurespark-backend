@@ -8,6 +8,8 @@ import { courseRoutes } from './modules/course';
 import { resourceRoutes } from './modules/resource/resource.routes';
 import { transcriptionRoutes } from './modules/transcription/transcription.routes';
 import { aiAdminRoutes } from './modules/ai-admin/ai-admin.routes';
+import { auditMiddleware } from './modules/shared/audit';
+import { startLogRetentionCron } from './cron/log-retention.cron';
 
 const app = express();
 
@@ -18,6 +20,12 @@ app.use((req, res, next) => {
   logger.info(`[learning-service] ${req.method} ${req.path}`);
   next();
 });
+
+// Activity Log — records every successful mutation as a "who did what" event.
+app.use(auditMiddleware);
+
+// Keep activity + AI logs at least one month (31-day floor; default 45 days).
+startLogRetentionCron();
 
 // Mount curriculum routes
 app.use('/courses', courseRoutes);
