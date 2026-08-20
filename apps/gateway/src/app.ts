@@ -86,6 +86,24 @@ app.use('/api/auth', createProxyMiddleware({
   },
 }));
 
+// Public Lead Registration (web forms, demo booking)
+app.use('/api/leads', createProxyMiddleware({
+  target: LEARN_SERVICE_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/api/leads': '/courses/leads' },
+  on: {
+    error: (err, _req, res: any) => {
+      logger.error(`[Gateway] Learning service unreachable for lead registration: ${err.message}`);
+      res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+        success: false,
+        message: 'Learning service is temporarily unavailable. Please try again shortly.',
+        timestamp: new Date().toISOString(),
+      });
+    },
+  },
+}));
+
+
 // ── Protected Routes (JWT + HMAC Required) ────────────────────
 // User management
 app.use('/api/users',

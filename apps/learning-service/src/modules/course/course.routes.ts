@@ -6,9 +6,9 @@ import { leadRoutes } from '../lead/lead.routes';
 
 const router = Router();
 
-router.use(requireInternalAuth);
-
 router.use('/leads', leadRoutes);
+
+router.use(requireInternalAuth);
 
 // ── Global session directory ─────────────────────────────────
 // Static path first, so "reflection-defaults" is never read as a session id.
