@@ -5,10 +5,10 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
-import { parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
+import { NOT_AVAILABLE, parseSessionReport, sessionReportToText, type SessionReport } from '@futurespark/constants';
 import { describeGroqFailure, estimateTokens, GroqError } from './groq-errors';
 import { getActivePrompt, getLastModels, recordAiError, recordAiUsage } from '../ai-admin/ai-admin.service';
-import { ANALYSIS_OUTPUT_SCHEMA, ANALYSIS_PROMPT_DEFAULT, TRANSCRIPTION_PROMPT_DEFAULT, renderPrompt } from '../ai-admin/prompt-defaults';
+import { ANALYSIS_OUTPUT_SCHEMA, ANALYSIS_PROMPT_DEFAULT, ANALYSIS_QUALITY_RULES, TRANSCRIPTION_PROMPT_DEFAULT, renderPrompt } from '../ai-admin/prompt-defaults';
 
 /**
  * Everything known about the lesson before a word of it is analysed.
@@ -242,6 +242,56 @@ const dedupeStrings = (values: unknown[]): string[] => {
 };
 
 /**
+ * The programme's core vocabulary — terms any class may reach regardless of
+ * what its deck says. A session's own terms always come FIRST in the hint;
+ * this list fills the remaining budget so that a word the deck never wrote
+ * down ("EMI" coming up in a savings class) is still primed, and a class with
+ * thin or missing material is never transcribed completely unprimed.
+ */
+const CORE_FINANCIAL_VOCABULARY = [
+  'money', 'saving', 'savings', 'spending', 'budget', 'budgeting', 'income', 'expense',
+  'needs', 'wants', 'emergency fund', 'insurance', 'premium', 'claim', 'protection',
+  'bank', 'bank account', 'interest', 'compound interest', 'loan', 'EMI', 'borrowing',
+  'credit', 'debit', 'credit card', 'debit card', 'UPI', 'digital payment', 'online fraud',
+  'scam', 'investment', 'investing', 'risk', 'return', 'inflation', 'stock', 'mutual fund',
+  'tax', 'salary', 'pocket money', 'financial goal', 'profit', 'loss', 'price', 'discount',
+  'unit price', 'impulse buying', 'FOBO',
+];
+
+/**
+ * Distil the class context into a short term list for the TRANSCRIPTION stage.
+ *
+ * The transcriber only hears audio — it does not know an insurance class is
+ * happening, so Malayalam-accented "insurance" comes out as "endurance" and
+ * every later stage inherits the mishearing. Priming it with the session's own
+ * terms biases recognition toward the words actually being said.
+ *
+ * Kept short on purpose: Whisper reads ~224 tokens of `prompt`, and a chat
+ * model needs the terms, not the deck. Session terms lead so a tight budget
+ * cuts the generic tail, never the words specific to this class.
+ */
+export const buildVocabularyHint = (context: ClassAnalysisContext): string => {
+  const terms: string[] = [];
+  if (context.sessionTitle) terms.push(context.sessionTitle.trim());
+  for (const topic of context.plannedTopics ?? []) terms.push(topic);
+
+  // The condensed deck's short lines are its headings and key terms; strip the
+  // structural prefixes so only the term itself primes the transcriber.
+  const slides = (context.slideContent ?? '').trim();
+  if (slides) {
+    for (const line of condenseSlides(slides).split('\n')) {
+      const term = line
+        .replace(/^(KEY TERM|ACTIVITY|SECTION|STOP \d|QUESTION \d|LEVEL \d|TAKE HOME|FUN FACT|MIND MAP)[\s\d·:.–-]*/i, '')
+        .trim();
+      if (term.length >= 3 && term.length <= 40 && !/^\d+$/.test(term)) terms.push(term);
+    }
+  }
+
+  terms.push(...CORE_FINANCIAL_VOCABULARY);
+  return dedupeStrings(terms).join(', ').slice(0, 1200);
+};
+
+/**
  * Total a count across passes.
  *
  * Returns null when NO pass reported the field — zero is a claim about the
@@ -308,6 +358,8 @@ export class GroqTranscriptionService {
 
   /** Values for {{variables}} in the editable prompts, set per run. */
   private promptVars: Record<string, string> = {};
+  /** Session terms priming the transcriber — set per job in processClassAudio. */
+  private transcriptionVocabulary = '';
 
   private async refreshStoredModels(): Promise<void> {
     try {
@@ -397,6 +449,21 @@ export class GroqTranscriptionService {
       session_topic: context.sessionTitle ?? '',
       session_number: context.sessionOrder != null ? String(context.sessionOrder) : '',
     };
+    this.transcriptionVocabulary = buildVocabularyHint(context);
+    const hasSessionTerms = Boolean(
+      context.sessionTitle || (context.plannedTopics ?? []).length > 0 || (context.slideContent ?? '').trim()
+    );
+    if (hasSessionTerms) {
+      logger.info(
+        `[GroqTranscriptionService] Priming transcription with ${this.transcriptionVocabulary.split(', ').length} term(s)` +
+          (context.sessionTitle ? ` for "${context.sessionTitle}"` : '') +
+          ' (session material + core vocabulary).'
+      );
+    } else {
+      logger.warn(
+        '[GroqTranscriptionService] No session material for this class — transcription primed with the core financial vocabulary only.'
+      );
+    }
 
     let localFilePath = audioFilePath;
     const isUrl = audioFilePath.startsWith('http://') || audioFilePath.startsWith('https://');
@@ -455,10 +522,11 @@ export class GroqTranscriptionService {
 
       metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
 
-      // 2. Analyse the recording against the session slides.
+      // 2. Analyse the recording against the session slides, then pin down the
+      //    fields the model must never own (times, duration, talk-time split).
       const built = await this.generateSessionReport(transcript, studentName, mentorName, context);
-      report = built;
-      classSummary = sessionReportToText(built);
+      report = this.finalizeReport(built, context, metrics);
+      classSummary = sessionReportToText(report);
 
       // Clean up temporary compressed audio if created
       if (fileToTranscribe !== audioFilePath && fs.existsSync(fileToTranscribe)) {
@@ -469,9 +537,22 @@ export class GroqTranscriptionService {
     } catch (err: any) {
       logger.error(`[GroqTranscriptionService] Fatal error in audio processing: ${err.message}`);
 
-      // One choke point writes the structured error log for the /errors page.
-      // GroqErrors carry their full diagnosis; anything else is recorded as-is.
+      // One choke point writes the structured error log for the /errors page
+      // AND drops a system line into the Activity Log feed.
       const failure = err instanceof GroqError ? err.failure : null;
+
+      void import('../shared/audit').then(({ recordAudit }) =>
+        recordAudit({
+          actorRole: 'SYSTEM',
+          action: 'failed',
+          entityType: 'ai-summary',
+          entityId: this.jobTag.recordingId ?? null,
+          entityName: this.jobTag.fileName ?? null,
+          summary: `The AI pipeline failed on ${this.jobTag.fileName ?? 'a recording'}: ${
+            (failure?.summary ?? String(err?.message ?? err)).slice(0, 140)
+          }`,
+        })
+      ).catch(() => {});
       void recordAiError({
         stage: failure?.stage ?? 'transcription',
         kind: failure?.kind ?? 'UNKNOWN',
@@ -671,17 +752,22 @@ export class GroqTranscriptionService {
    *   turns itself and handles Malayalam-English code-switching natively —
    *   which is exactly what fixes a mis-counted "student questions: 0".
    */
-  private async uploadForTranscription(filePath: string, promptContext?: string): Promise<string> {
+  private async uploadForTranscription(filePath: string, carryOver?: string): Promise<string> {
     const provider = this.transcriptionProvider;
 
     if (!this.isDedicatedSttModel(provider.model)) {
-      return this.transcribeViaChat(filePath, promptContext);
+      return this.transcribeViaChat(filePath, carryOver);
     }
 
     const formData = new FormData();
     formData.append('model', provider.model);
     formData.append('file', fs.createReadStream(filePath));
-    if (promptContext) formData.append('prompt', promptContext);
+    // Whisper's `prompt` biases recognition toward these spellings: the
+    // session's own terms first (so "insurance" is never heard as
+    // "endurance"), then the previous chunk's tail for continuity. Whisper
+    // only reads ~224 tokens of prompt, hence the tight cap.
+    const promptParts = [this.transcriptionVocabulary.slice(0, 600), carryOver ?? ''].filter(Boolean);
+    if (promptParts.length > 0) formData.append('prompt', promptParts.join('\n'));
 
     // `language` is worth setting when a class is single-language, but this
     // programme is taught in mixed English and Malayalam. Pinning either one
@@ -731,7 +817,7 @@ export class GroqTranscriptionService {
   }
 
   /** Transcription through a multimodal chat model — audio in, labelled text out. */
-  private async transcribeViaChat(filePath: string, promptContext?: string): Promise<string> {
+  private async transcribeViaChat(filePath: string, carryOver?: string): Promise<string> {
     const provider = this.transcriptionProvider;
 
     const ext = path.extname(filePath).replace('.', '').toLowerCase();
@@ -743,10 +829,14 @@ export class GroqTranscriptionService {
     if (activePrompt) {
       logger.info(`[GroqTranscriptionService] Using transcription prompt v${activePrompt.version} (from /prompts).`);
     }
-    const instructions = renderPrompt(activePrompt?.content ?? TRANSCRIPTION_PROMPT_DEFAULT, {
-      vocabulary: (promptContext ?? '(none provided)').slice(0, 1500),
-      ...this.promptVars,
-    });
+    const instructions =
+      renderPrompt(activePrompt?.content ?? TRANSCRIPTION_PROMPT_DEFAULT, {
+        vocabulary: (this.transcriptionVocabulary || '(none provided)').slice(0, 1500),
+        ...this.promptVars,
+      }) +
+      (carryOver
+        ? `\n\nThis audio continues a longer recording. The previous part ended with:\n${carryOver}\nKeep names and spellings consistent with it.`
+        : '');
 
     const startedAt = Date.now();
     try {
@@ -844,6 +934,81 @@ export class GroqTranscriptionService {
   /**
    * 2. Native Transcript Metrics Calculation
    */
+  /**
+   * Deterministic fields the model must never own.
+   *
+   * The model once echoed the scheduled start straight onto a parent's PDF as
+   * a raw ISO string ("2026-08-17T14:00:00.000Z"), and its honest nulls left
+   * Duration and Talk time reading "Not available". All three are derivable
+   * from data we hold, so they are pinned here AFTER parsing: the narrative
+   * stays the model's, the facts are ours.
+   *
+   * - Start/End: the scheduled class times, formatted in REPORT_TIMEZONE
+   *   (default Asia/Kolkata — the families' clock, not the server's).
+   * - Duration: the real recording length when known, else the booked slot.
+   * - Talk time: the model's attribution when it made one; otherwise the
+   *   transcript word-share estimate, spread over the known duration.
+   */
+  private finalizeReport(
+    report: SessionReport,
+    context: ClassAnalysisContext,
+    metrics: { mentorShareRatio?: number; studentShareRatio?: number } | null
+  ): SessionReport {
+    const timeZone = readEnv('REPORT_TIMEZONE') ?? 'Asia/Kolkata';
+    const looksIso = (v: string) => /\d{4}-\d{2}-\d{2}T/.test(v);
+    const clock = (iso?: string | null): string | null => {
+      if (!iso) return null;
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return new Intl.DateTimeFormat('en-IN', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone,
+      }).format(d);
+    };
+
+    const start = clock(context.startTime) ?? (looksIso(report.timing.startTime) ? clock(report.timing.startTime) : null);
+    if (start) report.timing.startTime = start;
+    else if (looksIso(report.timing.startTime)) report.timing.startTime = NOT_AVAILABLE; // never print raw ISO
+
+    const end = clock(context.endTime) ?? (looksIso(report.timing.endTime) ? clock(report.timing.endTime) : null);
+    if (end) report.timing.endTime = end;
+    else if (looksIso(report.timing.endTime)) report.timing.endTime = NOT_AVAILABLE;
+
+    // Duration: real audio first, booked slot second.
+    let seconds: number | null = context.audioSeconds ?? null;
+    if (seconds === null && context.startTime && context.endTime) {
+      const diff = (new Date(context.endTime).getTime() - new Date(context.startTime).getTime()) / 1000;
+      if (Number.isFinite(diff) && diff > 0 && diff < 12 * 3600) seconds = diff;
+    }
+    if (seconds !== null) {
+      const mins = Math.round(seconds / 60);
+      report.timing.duration =
+        mins >= 60 ? `${Math.floor(mins / 60)} hr${mins % 60 ? ` ${mins % 60} min` : ''}` : `${mins} min`;
+    }
+
+    // Talk time: fill nulls from the word-share estimate so the panel is
+    // never empty, and give the bars real minute figures once a duration
+    // exists.
+    const t = report.talkTime;
+    if ((t.teacherPercent === null || t.studentPercent === null) && metrics) {
+      if (typeof metrics.mentorShareRatio === 'number') t.teacherPercent = metrics.mentorShareRatio;
+      if (typeof metrics.studentShareRatio === 'number') t.studentPercent = metrics.studentShareRatio;
+    }
+    if (seconds !== null) {
+      const mmss = (s: number) => `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s`;
+      if ((!t.teacher || t.teacher === NOT_AVAILABLE) && t.teacherPercent !== null) {
+        t.teacher = mmss((seconds * t.teacherPercent) / 100);
+      }
+      if ((!t.student || t.student === NOT_AVAILABLE) && t.studentPercent !== null) {
+        t.student = mmss((seconds * t.studentPercent) / 100);
+      }
+    }
+
+    return report;
+  }
+
   private calculateTranscriptMetrics(text: string, studentName: string = 'Student', mentorName: string = 'Instructor') {
     const words = text.split(/\s+/).filter(Boolean).length;
     const sentences = text.split(/[.!?]+/).filter(Boolean).length;
@@ -1061,8 +1226,12 @@ Return the JSON object now.`;
     if (active) {
       logger.info(`[GroqTranscriptionService] Using analysis prompt v${active.version} (from /prompts).`);
     }
+    // The accuracy rules and the schema are code-owned and appended to every
+    // prompt version — an edit on /prompts can change the judgement, never the
+    // correctness floor ("endurance"→"insurance" repair, whole-session
+    // coverage, word-cloud relevance) or the JSON shape the PDF depends on.
     const body = renderPrompt(active?.content ?? ANALYSIS_PROMPT_DEFAULT, { duration_hint: durationHint });
-    return `${body}\n\n${ANALYSIS_OUTPUT_SCHEMA}`;
+    return `${body}\n\n${ANALYSIS_QUALITY_RULES}\n\n${ANALYSIS_OUTPUT_SCHEMA}`;
   }
 
   /**
@@ -1268,6 +1437,10 @@ Return the JSON object now.`;
 
     const passSystem = `You are analysing ONE SLICE of a 1:1 financial literacy lesson transcript.
 You will be given the vocabulary of the session's material for reference, then a slice of the conversation.
+
+The transcript is machine-transcribed from mixed Malayalam-English audio and may mishear domain terms.
+When a transcript word is phonetically close to a session-vocabulary term, read and report it as that
+term ("endurance" in an insurance lesson IS "insurance") — including inside anything you quote.
 
 Extract ONLY what this slice actually shows. Do not speculate about parts you cannot see, and do not
 describe anything as taught unless this slice shows it being taught.

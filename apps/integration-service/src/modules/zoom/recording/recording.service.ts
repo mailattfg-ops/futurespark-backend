@@ -350,6 +350,9 @@ export class ZoomRecordingService {
           endTime: recording.meeting.endTime?.toISOString(),
           // For the AI usage ledger and error log.
           recordingId: recording.id,
+          // Real recording length, so the report can print a true duration and
+          // split talk time over it.
+          audioSeconds: recording.duration ?? undefined,
         }),
       });
 

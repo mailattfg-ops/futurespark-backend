@@ -1383,6 +1383,30 @@ export const scheduleService = {
   },
 
   /**
+   * The RAW transcript the summary was generated from — for verifying what the
+   * pipeline actually heard when a report looks wrong. Mentor-of-class or
+   * admin only: it is a verbatim record of a child's session.
+   */
+  async getRawTranscript(classId: string, callerId?: string, callerRole?: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: { id: true, mentorId: true, transcript: true, transcriptionStatus: true, updatedAt: true },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    const role = (callerRole ?? '').toUpperCase();
+    if (!(role === 'ADMIN' || (isMentorRole(role) && scheduledClass.mentorId === callerId))) {
+      throw new AppError('Only the class mentor or an admin can read the raw transcript.', HTTP_STATUS.FORBIDDEN);
+    }
+    return {
+      transcript: scheduledClass.transcript ?? null,
+      length: scheduledClass.transcript?.length ?? 0,
+      transcriptionStatus: scheduledClass.transcriptionStatus,
+    };
+  },
+
+  /**
    * Lightweight poll target: has the quiz been launched, and has the student
    * submitted? Polled every few seconds by the student portal during a live
    * class and by the mentor's panel after a launch, so it reads one row and
@@ -1537,6 +1561,7 @@ export const scheduleService = {
         actualEndedAt: true,
         rescheduledCount: true,
         reflectionSubmittedAt: true,
+        quizLaunchedAt: true,
       },
     });
     if (!scheduledClass) {
@@ -1580,17 +1605,14 @@ export const scheduleService = {
       if (scheduledClass.status === 'CANCELLED') {
         throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
       }
-      // Mirrors `owesReflection`: only a class the mentor has marked COMPLETE can
-      // take answers. `deriveAttendance` is deliberately not used here — it also
-      // reports ATTENDED once the Meet room empties, which would let a student
-      // submit against a class the mentor has not closed out yet.
-      if (scheduledClass.status !== 'COMPLETED') {
-        throw new AppError(
-          scheduledClass.endTime.getTime() > Date.now()
-            ? 'This class has not finished yet'
-            : 'Your mentor has not marked this class complete yet — the quiz opens once they do',
-          HTTP_STATUS.BAD_REQUEST
-        );
+      // The quiz opens once the class has STARTED — or the mentor has launched
+      // it live — and no longer waits for the mentor to mark the class
+      // complete. The live-quiz flow depends on this: the mentor fires the
+      // quiz mid-session, while the class is still SCHEDULED, and the student
+      // answers it on the call.
+      const started = scheduledClass.startTime.getTime() <= Date.now();
+      if (!started && !scheduledClass.quizLaunchedAt) {
+        throw new AppError('This class has not started yet', HTTP_STATUS.BAD_REQUEST);
       }
     }
 

@@ -1,6 +1,7 @@
 import { db } from '../../database/datasource';
 import { logger } from '@futurespark/logger';
 import { recordTranscriptionFailure, recordTranscriptionSuccess } from './transcription-retry';
+import { recordSystemEvent } from './audit-http';
 
 /**
  * Running the transcription pipeline OUTSIDE the HTTP request that asked for it.
@@ -45,6 +46,12 @@ export const startTranscriptionJob = (
   }
 
   logger.info(`[TranscriptionJob] Starting background transcription for ${recordingId}.`);
+  recordSystemEvent({
+    action: 'started',
+    entityType: 'transcription',
+    entityId: recordingId,
+    summary: 'The system started transcribing a class recording',
+  });
 
   const job = (async () => {
     try {
@@ -55,10 +62,22 @@ export const startTranscriptionJob = (
       await run();
       await recordTranscriptionSuccess(recordingId);
       logger.info(`[TranscriptionJob] Transcription finished for ${recordingId}.`);
+      recordSystemEvent({
+        action: 'created',
+        entityType: 'transcription',
+        entityId: recordingId,
+        summary: 'The system finished transcribing a class recording',
+      });
     } catch (err: any) {
       const message = err?.message ?? String(err);
       logger.error(`[TranscriptionJob] Transcription failed for ${recordingId}: ${message}`);
       await recordTranscriptionFailure(recordingId, message);
+      recordSystemEvent({
+        action: 'failed',
+        entityType: 'transcription',
+        entityId: recordingId,
+        summary: `The system could not transcribe a recording: ${message.slice(0, 140)}`,
+      });
     } finally {
       inFlight.delete(recordingId);
     }

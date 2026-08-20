@@ -258,6 +258,7 @@ model ScheduledClass {
   completedAt         DateTime?
   reportPdfPath       String?   // S3 key (or local path) of the rendered PDF
   reportSentAt        DateTime? // Meta accepted the WhatsApp report — the idempotency latch
+  reportSentTo        String?   // the phone number the successful send actually went to
   reportAttempts      Int       @default(0)
   reportLastError     String?   @db.Text
   doubts              ClassDoubt[]
@@ -562,4 +563,39 @@ model PromptVersion {
   @@unique([promptType, version])
   @@index([promptType, status])
   @@schema("learning")
+}
+
+/// One row per business event — the admin's Activity Log.
+///
+/// "Parent SJ was created", "SJ updated their name" — who did what, across
+/// every role. Written best-effort by an Express middleware in auth-service
+/// and learning-service (both clients span the auth schema, so both write
+/// this one table directly); a logging failure never fails the action it
+/// describes.
+model AuditLog {
+  id         String   @id @default(uuid())
+  occurredAt DateTime @default(now())
+  /// Who did it. SYSTEM rows have no actor id.
+  actorId    String?
+  actorName  String?
+  actorRole  String?  // ADMIN | TEACHER | STUDENT | PARENT | SYSTEM | ...
+  /// Broad grouping for the UI filter: auth | people | classes | curriculum | ai | recordings | other
+  category   String   @default("other")
+  /// What happened.
+  action     String   // created | updated | deleted | other verbs
+  entityType String   // parent | student | staff | class | session | program | ...
+  entityId   String?
+  entityName String?
+  /// The human sentence shown in the feed.
+  summary    String   @db.Text
+  /// For updates: [{ field, to }] — the fields the request changed.
+  changes    Json?
+  service    String?  // which service recorded it
+  method     String?  // HTTP method, for debugging the mapping
+  path       String?  // route path with ids, for debugging the mapping
+
+  @@index([occurredAt])
+  @@index([entityType])
+  @@index([actorRole])
+  @@schema("auth")
 }

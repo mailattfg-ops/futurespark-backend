@@ -184,7 +184,7 @@ async function findClassForRecording(input: {
 export const transcriptionController = {
   async transcribe(req: Request, res: Response) {
     try {
-      const { audioFilePath, meetUrl, studentId, teacherId, sessionId, programId, startTime, endTime, recordingId } = req.body;
+      const { audioFilePath, meetUrl, studentId, teacherId, sessionId, programId, startTime, endTime, recordingId, audioSeconds } = req.body;
 
       if (!audioFilePath) {
         return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('Parameter "audioFilePath" is required.'));
@@ -239,6 +239,21 @@ export const transcriptionController = {
       //    spoken by a child over a phone mic is exactly what Whisper garbles.
       const analysisContext = await buildAnalysisContext({ sessionId, programId, startTime, endTime });
       analysisContext.recordingId = recordingId ?? null;
+      analysisContext.audioSeconds =
+        typeof audioSeconds === 'number' && audioSeconds > 0 ? audioSeconds : null;
+
+      // Attribute the class BEFORE the pipeline runs. The match uses only
+      // scheduling facts (ids + time window), never the transcript — and the
+      // usage ledger writes its cost rows DURING the run, so matching
+      // afterwards left every AiUsage.classId null and "Classes Analysed"
+      // permanently at zero.
+      let matchedClass: Awaited<ReturnType<typeof findClassForRecording>> = null;
+      try {
+        matchedClass = await findClassForRecording({ meetUrl, studentId, sessionId, programId, startTime, endTime });
+      } catch (matchErr: any) {
+        logger.warn(`[Transcription Controller] Pre-run class match failed: ${matchErr.message}`);
+      }
+      analysisContext.classId = matchedClass?.id ?? null;
 
       // 3. Process transcription using Groq Pipeline
       const result = await groqService.processClassAudio(
@@ -258,14 +273,18 @@ export const transcriptionController = {
       }
       if (!result.usedFallback) {
         try {
-          const scheduledClass = await findClassForRecording({
-            meetUrl,
-            studentId,
-            sessionId,
-            programId,
-            startTime,
-            endTime,
-          });
+          // Reuse the pre-run match; retry once in case the class row appeared
+          // while the pipeline was running.
+          const scheduledClass =
+            matchedClass ??
+            (await findClassForRecording({
+              meetUrl,
+              studentId,
+              sessionId,
+              programId,
+              startTime,
+              endTime,
+            }));
 
           if (scheduledClass) {
             logger.info(`[Transcription Controller] Matching ScheduledClass found (ID: ${scheduledClass.id}). Updating metrics...`);
@@ -288,12 +307,35 @@ export const transcriptionController = {
                 transcriptionStatus: 'COMPLETED',
               },
             });
+
+            // Activity Log: the system finished its biggest background job.
+            const { recordAudit } = await import('../shared/audit');
+            void recordAudit({
+              actorRole: 'SYSTEM',
+              action: 'created',
+              entityType: 'ai-summary',
+              entityId: scheduledClass.id,
+              entityName: studentName,
+              summary: `The AI pipeline generated ${studentName}'s class summary` +
+                (analysisContext.sessionTitle ? ` for "${analysisContext.sessionTitle}"` : ''),
+            });
           } else {
             logger.warn(
               `[Transcription Controller] No matching ScheduledClass found (meetUrl: ${meetUrl ?? '-'}, ` +
                 `student: ${studentId ?? '-'}, session: ${sessionId ?? '-'}). The summary was generated ` +
                 'but has nowhere to live, so no parent report will go out for it.'
             );
+            // Activity Log: the "summary not syncing" case — generated but unattached.
+            const { recordAudit } = await import('../shared/audit');
+            void recordAudit({
+              actorRole: 'SYSTEM',
+              action: 'failed',
+              entityType: 'ai-summary',
+              entityName: studentName,
+              summary:
+                `The AI pipeline generated ${studentName}'s summary but found NO matching class to attach it to` +
+                ` — no parent report can go out until the class is matched`,
+            });
           }
         } catch (dbErr: any) {
           logger.error(`[Transcription Controller] Failed to update ScheduledClass in DB: ${dbErr.message}`);

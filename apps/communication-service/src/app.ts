@@ -12,6 +12,7 @@ import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 
 import { notificationRoutes } from './modules/notification/notification.routes';
+import { metricsRoutes } from './modules/metrics/metrics.routes';
 import { whatsappWebhookRoutes } from './modules/whatsapp/whatsapp.routes';
 import { whatsappReportRoutes } from './modules/whatsapp/report.routes';
 import { assertWhatsAppStartupConfig } from './modules/whatsapp/whatsapp.service';
@@ -70,10 +71,13 @@ app.use('/whatsapp', express.json({ limit: '12mb' }), whatsappReportRoutes);
 app.use(express.json({ limit: '100kb' }));
 
 app.get('/health', (req, res) => {
-  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'communication-service is healthy'));
+  // uptime feeds the System Health page's per-service card.
+  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP', uptime: process.uptime() }, 'communication-service is healthy'));
 });
 
 app.use('/notifications', notificationRoutes);
+
+app.use('/metrics', metricsRoutes);
 
 app.use((req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Route not found'));

@@ -12,6 +12,7 @@ import googlePresenceRouter from './modules/google/presence/presence.routes';
 import { startPresencePolling } from './modules/google/presence/presence.service';
 import storageRouter from './modules/storage/storage.routes';
 import classLifecycleRouter from './modules/classes/lifecycle.routes';
+import metricsRoutes from './modules/metrics/metrics.routes';
 import { startTranscriptionRetryCron, resetStuckTranscriptions } from './modules/shared/transcription-retry';
 import { GoogleRecordingService } from './modules/google/recording/recording.service';
 import { ZoomRecordingService } from './modules/zoom/recording/recording.service';
@@ -34,6 +35,11 @@ app.use((req, res, next) => {
   logger.info(`[integration-service] ${req.method} ${req.path}`);
   next();
 });
+
+// Activity Log — records webapp-driven mutations (recording sync, uploads) by
+// posting them to auth-service's internal /audit/record endpoint.
+import { auditMiddleware } from './modules/shared/audit-http';
+app.use(auditMiddleware);
 
 // Start background cron workers
 startSyncCron();
@@ -71,8 +77,12 @@ app.use('/storage', storageRouter);
 // Provider-neutral class lifecycle (auth-service tells us a class was signed off)
 app.use('/classes', classLifecycleRouter);
 
+// System Health aggregates (admin-only, read by the gateway)
+app.use('/metrics', metricsRoutes);
+
 app.get('/health', (_req, res) => {
-  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'integration-service is healthy'));
+  // uptime feeds the System Health page's per-service card.
+  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP', uptime: process.uptime() }, 'integration-service is healthy'));
 });
 
 app.use((_req, res) => {

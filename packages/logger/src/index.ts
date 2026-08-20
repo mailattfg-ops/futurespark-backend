@@ -71,8 +71,11 @@ if (process.env.LOG_TO_FILE !== 'false') {
       new winston.transports.File({
         filename: path.join(logDir, `${serviceName}.log`),
         format: fileFormat,
-        maxsize: 5 * 1024 * 1024, // rotate at 5 MB…
-        maxFiles: 2,              // …keeping one previous generation
+        // Sized so the window comfortably exceeds a month at this platform's
+        // traffic: 10 MB × 6 generations ≈ 60 MB / several hundred thousand
+        // lines per service before the oldest line falls off.
+        maxsize: 10 * 1024 * 1024,
+        maxFiles: 6,
         tailable: true,
       })
     );
