@@ -8,6 +8,7 @@ import { errorHandler, requestId, asyncHandler } from '@futurespark/middleware';
 import { createRedisClient } from '@futurespark/cache';
 import { authenticate } from './middleware/authenticate';
 import { logsRouter } from './routes/logs';
+import { systemHealthRouter } from './routes/system-health';
 
 const app = express();
 
@@ -85,6 +86,24 @@ app.use('/api/auth', createProxyMiddleware({
     },
   },
 }));
+
+// Public Lead Registration (web forms, demo booking)
+app.use('/api/leads', createProxyMiddleware({
+  target: LEARN_SERVICE_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/api/leads': '/courses/leads' },
+  on: {
+    error: (err, _req, res: any) => {
+      logger.error(`[Gateway] Learning service unreachable for lead registration: ${err.message}`);
+      res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+        success: false,
+        message: 'Learning service is temporarily unavailable. Please try again shortly.',
+        timestamp: new Date().toISOString(),
+      });
+    },
+  },
+}));
+
 
 // ── Protected Routes (JWT + HMAC Required) ────────────────────
 // User management
@@ -186,6 +205,11 @@ app.use('/api/courses',
 // and Pipeline activity features. Served by the gateway itself (not proxied):
 // the log files live on this box, one per service.
 app.use('/api/logs', asyncHandler(authenticate), logsRouter);
+
+// System Health — the admin dashboard's fan-out over every service's metrics
+// endpoint, served by the gateway itself: it is the only box that can reach
+// all seven services and the log files.
+app.use('/api/system-health', asyncHandler(authenticate), systemHealthRouter);
 
 // Activity Log — business events ("who did what"), the admin's /logs page.
 // READ-ONLY from outside: the internal /audit/record write endpoint must stay

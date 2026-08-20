@@ -20,7 +20,7 @@ const router = Router();
  */
 router.post('/session-report', async (req: Request, res: Response) => {
   try {
-    const { to, recipientId, variables, document, caption } = req.body ?? {};
+    const { to, recipientId, classId, variables, document, caption } = req.body ?? {};
 
     if (!to && !recipientId) {
       return res
@@ -53,6 +53,7 @@ router.post('/session-report', async (req: Request, res: Response) => {
     const result = await sessionReportService.sendSessionReport({
       to: phone as string,
       recipientId: typeof recipientId === 'string' ? recipientId : undefined,
+      classId: typeof classId === 'string' ? classId : undefined,
       variables: variables && typeof variables === 'object' ? variables : {},
       document,
       caption: typeof caption === 'string' ? caption : undefined,

@@ -10,6 +10,7 @@ import { roleRoutes } from './modules/role/role.routes';
 import { scheduleRoutes } from './modules/schedule/schedule.routes';
 import { schedulerGroupRoutes } from './modules/scheduler-group/scheduler-group.routes';
 import { auditRoutes } from './modules/audit/audit.routes';
+import { metricsRoutes } from './modules/metrics/metrics.routes';
 import { auditMiddleware } from './modules/shared/audit';
 
 const app = express();
@@ -35,6 +36,7 @@ app.use('/users', userRoutes);
 app.use('/roles', roleRoutes);
 app.use('/schedules', scheduleRoutes);
 app.use('/scheduler-groups', schedulerGroupRoutes);
+app.use('/metrics', metricsRoutes);
 
 // ── Health Check ───────────────────────────────────────────────
 app.get('/health', (_req, res) => {

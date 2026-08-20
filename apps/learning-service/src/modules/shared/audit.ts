@@ -64,6 +64,7 @@ export const CATEGORY_OF: Record<string, string> = {
   'ai-errors': 'ai',
   recording: 'recordings',
   meeting: 'recordings',
+  'zoom-host': 'recordings',
   storage: 'recordings',
   transcription: 'recordings',
   'ai-summary': 'ai',

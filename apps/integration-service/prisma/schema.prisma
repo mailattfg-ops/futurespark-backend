@@ -41,6 +41,48 @@ model ZoomAccount {
   updatedAt      DateTime  @updatedAt
 }
 
+/// One purchased Zoom seat, managed from the admin UI.
+///
+/// This replaces ZOOM_HOST_EMAILS as the source of the host pool, so buying a
+/// licence no longer needs an env edit and a redeploy. It lives in the
+/// integration database — not auth — because the allocator reads the seat list
+/// inside the same transaction as the overlap check (see meetings.service.ts);
+/// a cross-database read could not give that guarantee.
+///
+/// `email` is the identity: it is what Zoom's API is called with and what
+/// `Meeting.zoomHostEmail` records, so allocation still works for every meeting
+/// booked before this table existed.
+model ZoomHost {
+  id          String   @id @default(uuid())
+  name        String
+  /// Stored lowercased. The unique index is what stops the same seat being
+  /// added twice under different capitalisation and appearing to double the
+  /// number of concurrent classes the pool can run.
+  email       String   @unique
+  /// "PRO" (licensed, can host a full class) or "BASIC" (40-minute cap).
+  licenseType String   @default("PRO")
+  /// Inactive seats are skipped by the allocator. Meetings already booked on
+  /// them are untouched — the room still works, it just receives nothing new.
+  active      Boolean  @default(true)
+  /// Set when Zoom confirmed this address. Null = never checked, which is the
+  /// normal state until the account is granted the user-read scope.
+  verifiedAt   DateTime?
+  /// What Zoom said the last time it was asked: "PRO" | "BASIC" | "NOT_FOUND"
+  /// | "PENDING" (invitation not accepted yet, so it cannot host).
+  verifiedType String?
+  /// Why the last verification failed, for the admin to act on.
+  lastError    String?
+  /// Which seats were seeded from ZOOM_HOST_EMAILS during the cutover, so the
+  /// difference between "an admin added this" and "the migration did" survives.
+  source      String   @default("ADMIN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  meetings    Meeting[]
+
+  @@index([active])
+}
+
 model Meeting {
   id                 String             @id @default(uuid())
   provider           String             @default("GOOGLE_MEET") // "GOOGLE_MEET" | "ZOOM"
@@ -50,6 +92,14 @@ model Meeting {
   zoomJoinUrl        String?
   zoomStartUrl       String?
   zoomPasscode       String?
+  /// The seat this meeting was allocated. `zoomHostEmail` stays the source of
+  /// truth for allocation (every historical row has it, and Zoom is called with
+  /// it); `zoomHostId` is the join that makes "which host is busy right now"
+  /// answerable without matching on strings. Null for meetings booked before
+  /// the seat table existed, and for a mentor-hosted meeting whose address is
+  /// not a pool seat.
+  zoomHostId         String?
+  zoomHost           ZoomHost?          @relation(fields: [zoomHostId], references: [id], onDelete: SetNull)
   zoomHostEmail      String?
   meetUrl            String
   title              String

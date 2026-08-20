@@ -15,7 +15,8 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (req, res) => {
-  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP' }, 'payment-service is healthy'));
+  // uptime feeds the System Health page's per-service card.
+  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP', uptime: process.uptime() }, 'payment-service is healthy'));
 });
 
 app.use((req, res) => {
