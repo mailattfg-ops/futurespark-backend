@@ -32,7 +32,30 @@ export const leadService = {
     });
 
     if (!lead) throw new AppError('Lead not found', HTTP_STATUS.NOT_FOUND);
-    return lead;
+
+    // Fetch the latest scheduled class for this lead (if any)
+    const latestClass = await db.scheduledClass.findFirst({
+      where: { leadId: id },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        meetingLink: true,
+        startTime: true,
+        endTime: true,
+        status: true,
+        classType: true,
+      },
+    });
+
+    const extractedNotesUrl = (lead.notes || '').match(/(https?:\/\/[^\s]+)/)?.[1] || (lead.telecallerNotes || '').match(/(https?:\/\/[^\s]+)/)?.[1];
+    const meetingUrl = latestClass?.meetingLink || extractedNotesUrl || null;
+
+    return {
+      ...lead,
+      scheduledClass: latestClass || null,
+      meetingUrl,
+      meetingLink: latestClass?.meetingLink || null,
+    };
   },
 
   async createLead(input: CreateLeadInput) {
