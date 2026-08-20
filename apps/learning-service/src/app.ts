@@ -10,6 +10,7 @@ import { transcriptionRoutes } from './modules/transcription/transcription.route
 import { aiAdminRoutes } from './modules/ai-admin/ai-admin.routes';
 import { metricsRoutes } from './modules/metrics/metrics.routes';
 import { auditMiddleware } from './modules/shared/audit';
+import { migratePromptSuite } from './modules/ai-admin/ai-admin.service';
 import { startLogRetentionCron } from './cron/log-retention.cron';
 
 const app = express();
@@ -27,6 +28,13 @@ app.use(auditMiddleware);
 
 // Keep activity + AI logs at least one month (31-day floor; default 45 days).
 startLogRetentionCron();
+
+// The prompts and this code are one contract: v2 derives every count from
+// cited evidence, while a pre-v2 stored prompt tells the model to return the
+// numbers itself. An environment upgraded in place still holds that old body
+// as its ACTIVE version, so it is migrated here — at boot, because the
+// pipeline reads the active prompt whether or not anyone opens /prompts.
+void migratePromptSuite();
 
 // Mount curriculum routes
 app.use('/courses', courseRoutes);

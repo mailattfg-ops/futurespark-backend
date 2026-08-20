@@ -382,8 +382,23 @@ const drawTalkTime = (doc: Doc, report: SessionReport): void => {
   doc.roundedRect(PAGE.margin, top, PAGE.width, height, 8).lineWidth(0.8).stroke(BRAND.hairline);
   doc.restore();
 
+  /* The heading has to tell the truth about what was measured.
+   *
+   * When the transcript carries [mm:ss] stamps these really are minutes; when
+   * it does not, the split is a share of WORDS. An adult explaining runs at
+   * roughly twice a child's thinking-aloud rate, so a genuine 60/40 of minutes
+   * prints as about 75/25 in words — captioning that "TALK TIME" makes the
+   * mentor look worse than they were. `basis`/`label` are optional, so a row
+   * written before they existed still renders exactly as it used to. */
+  const talkHeading = (t.label ?? 'Talk time').toUpperCase();
   doc.font('Helvetica-Bold').fontSize(7.5).fillColor(BRAND.muted)
-    .text('TALK TIME', PAGE.margin + pad, top + 11, { characterSpacing: 1, lineBreak: false });
+    .text(talkHeading, PAGE.margin + pad, top + 11, { characterSpacing: 1, lineBreak: false });
+
+  if (t.basis === 'word-share') {
+    doc.font('Helvetica-Oblique').fontSize(6.5).fillColor(BRAND.muted)
+      .text('estimated from words spoken, not measured in minutes',
+        PAGE.margin + pad, top + 11, { width: PAGE.width - pad * 2, align: 'right', lineBreak: false });
+  }
 
   if (nothing) {
     doc.font('Helvetica-Oblique').fontSize(9).fillColor(BRAND.muted)

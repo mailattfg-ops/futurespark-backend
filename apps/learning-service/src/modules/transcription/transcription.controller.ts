@@ -305,6 +305,21 @@ export const transcriptionController = {
                   report: result.report ?? null,
                 } as any,
                 transcriptionStatus: 'COMPLETED',
+                /* A report the safety gate decided to HOLD must not go to a
+                 * parent unreviewed. Parking it at the attempt ceiling is what
+                 * the send cron already treats as "a human needs to look at
+                 * this" (report.cron.ts filters on reportAttempts < MAX), so
+                 * the hold needs no new column and no new query. The manual
+                 * send in the Recording Manager still works — that is the
+                 * review: an admin reads the reason, checks the report and
+                 * decides. Without this the flags were computed and ignored,
+                 * and a held report was queued exactly like a clean one. */
+                ...(result.heldForReview
+                  ? {
+                      reportAttempts: Number(process.env.REPORT_MAX_ATTEMPTS ?? 5),
+                      reportLastError: `[HELD_FOR_REVIEW] ${result.holdReason ?? 'The safety gate held this report.'}`.slice(0, 1000),
+                    }
+                  : {}),
               },
             });
 
@@ -317,8 +332,28 @@ export const transcriptionController = {
               entityId: scheduledClass.id,
               entityName: studentName,
               summary: `The AI pipeline generated ${studentName}'s class summary` +
-                (analysisContext.sessionTitle ? ` for "${analysisContext.sessionTitle}"` : ''),
+                (analysisContext.sessionTitle ? ` for "${analysisContext.sessionTitle}"` : '') +
+                (result.heldForReview ? ' — HELD for review, not queued to the parent' : ''),
             });
+
+            // A held report is a thing a human has to act on, so it gets its
+            // own line rather than a suffix nobody scans for.
+            if (result.heldForReview) {
+              void recordAudit({
+                actorRole: 'SYSTEM',
+                action: 'other',
+                entityType: 'ai-summary',
+                entityId: scheduledClass.id,
+                entityName: studentName,
+                summary:
+                  `${studentName}'s report was HELD for review and will not be sent automatically — ` +
+                  (result.holdReason ?? 'the safety gate flagged it'),
+              });
+              logger.warn(
+                `[Transcription Controller] Report for class ${scheduledClass.id} HELD: ${result.holdReason ?? 'safety gate'}. ` +
+                  'It is parked at the attempt ceiling; review it in the Recording Manager and send manually if it is fine.'
+              );
+            }
           } else {
             logger.warn(
               `[Transcription Controller] No matching ScheduledClass found (meetUrl: ${meetUrl ?? '-'}, ` +

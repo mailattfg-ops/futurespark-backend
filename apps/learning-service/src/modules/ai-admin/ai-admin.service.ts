@@ -340,6 +340,7 @@ export const clearErrors = async () => {
  * ────────────────────────────────────────────────────────────────────────── */
 
 import { PROMPT_TYPE_DEFS, type PromptTypeDef } from './prompt-defaults';
+import { PROMPT_SUITE_VERSION } from '@futurespark/constants';
 
 export { renderPrompt } from './prompt-defaults';
 
@@ -366,6 +367,8 @@ const seedPromptType = async (def: PromptTypeDef): Promise<void> => {
 
 export const getPromptOverview = async () => {
   for (const def of PROMPT_TYPE_DEFS) await seedPromptType(def);
+  // Self-heals a stale active version if the boot pass was missed.
+  await migratePromptSuite();
 
   const rows = await db.promptVersion.findMany({ orderBy: [{ promptType: 'asc' }, { version: 'desc' }] });
   return {
@@ -459,5 +462,94 @@ export const getActivePrompt = async (
   } catch (err: any) {
     logger.warn(`[AiAdmin] Could not read the active "${type}" prompt (${err.message}); using the code default.`);
     return cached && cached.content !== null ? { content: cached.content, version: cached.version! } : null;
+  }
+};
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * PROMPT SUITE MIGRATION
+ *
+ * The prompts and the code form one contract. v2 asks the model for an
+ * EVIDENCE ENVELOPE and derives every number itself; v1 asked for a finished
+ * SessionReport with the counts already filled in.
+ *
+ * `seedPromptType` only ever writes when a type has NO versions, so every
+ * environment that has already opened /prompts holds an ACTIVE v1 seeded from
+ * the old default — and `buildAnalysisSystemPrompt` layers that stored body in
+ * as the editable half. Deploying v2 without this migration therefore ships a
+ * prompt that tells the model to return counts AND not to return counts, in
+ * one message. It does not fail; it quietly produces worse reports.
+ *
+ * So: when the code's suite version moves, every prompt type gets a NEW version
+ * from the current default, activated. Nothing is deleted — an operator's edits
+ * stay in the version history and can be re-applied against the new contract.
+ *
+ * Runs at boot, not only from the admin page, because the pipeline reads the
+ * active prompt whether or not anyone has ever opened /prompts.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const SUITE_SETTING_KEY = 'prompt_suite_version';
+
+export const migratePromptSuite = async (): Promise<void> => {
+  try {
+    const setting = await db.appSetting.findUnique({ where: { key: SUITE_SETTING_KEY } });
+    const stored = (setting?.value as any)?.version ?? null;
+
+    if (stored === PROMPT_SUITE_VERSION) return;
+
+    for (const def of PROMPT_TYPE_DEFS) {
+      const latest = await db.promptVersion.findFirst({
+        where: { promptType: def.type },
+        orderBy: { version: 'desc' },
+      });
+
+      // Nothing stored yet: the ordinary seed path handles it correctly.
+      if (!latest) continue;
+      // Already byte-identical to the shipped default — activating a copy of
+      // it would only add noise to the history.
+      if (latest.content === def.defaultContent && latest.status === 'active') continue;
+
+      await db.$transaction([
+        db.promptVersion.updateMany({
+          where: { promptType: def.type, status: 'active' },
+          data: { status: 'archived' },
+        }),
+        db.promptVersion.create({
+          data: {
+            promptType: def.type,
+            version: latest.version + 1,
+            content: def.defaultContent,
+            status: 'active',
+            changeWhat: `Prompt suite upgraded to v${PROMPT_SUITE_VERSION}`,
+            changeWhy:
+              'The pipeline now derives every count from cited evidence rather than asking the ' +
+              'model for finished numbers. The previous prompt instructed the opposite and would ' +
+              'have contradicted the new rules. The older version is kept in the history below — ' +
+              're-apply any wording you want on top of this one.',
+            createdBy: 'system',
+          },
+        }),
+      ]);
+
+      logger.warn(
+        `[AiAdmin] Prompt "${def.type}" was on a pre-v${PROMPT_SUITE_VERSION} body; activated v${latest.version + 1} ` +
+          'from the current default. Any custom wording is preserved in the version history.'
+      );
+    }
+
+    await db.appSetting.upsert({
+      where: { key: SUITE_SETTING_KEY },
+      create: { key: SUITE_SETTING_KEY, value: { version: PROMPT_SUITE_VERSION } },
+      update: { value: { version: PROMPT_SUITE_VERSION } },
+    });
+    // The pipeline caches the active prompt; clear it so the next class uses
+    // the version that was just activated rather than the archived one.
+    activePromptCache.clear();
+  } catch (err: any) {
+    // Never fatal: a class must still be analysable if this fails. The code
+    // default is the fallback, and it is the v2 body.
+    logger.error(
+      `[AiAdmin] Could not migrate the prompt suite to v${PROMPT_SUITE_VERSION}: ${err.message}. ` +
+        'The pipeline falls back to the code defaults, which are correct — but /prompts may show a stale active version.'
+    );
   }
 };

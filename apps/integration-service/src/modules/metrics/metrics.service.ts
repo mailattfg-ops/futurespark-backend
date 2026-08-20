@@ -92,7 +92,11 @@ export async function getRecordingsMetrics(days: number, refresh = false) {
     withDbRetry(() =>
       db.meetingRecording.findMany({
         where: { ...inWindow, meeting: { classCompletedAt: { not: null } } },
-        select: { createdAt: true, meeting: { select: { classCompletedAt: true, title: true } } },
+        select: {
+          createdAt: true,
+          audioExtractedAt: true,
+          meeting: { select: { classCompletedAt: true, title: true } },
+        },
         orderBy: { createdAt: 'desc' },
         take: 5000,
       })
@@ -104,12 +108,25 @@ export async function getRecordingsMetrics(days: number, refresh = false) {
   // belongs to a different run of the same meeting. Either would poison the
   // average, so both are dropped rather than clamped.
   const arrivals: { title: string; minutes: number; at: Date }[] = [];
+  const audioReady: { title: string; minutes: number; at: Date }[] = [];
   for (const row of arrivalRows) {
     const completedAt = row.meeting.classCompletedAt;
     if (!completedAt) continue;
     const diffMs = row.createdAt.getTime() - completedAt.getTime();
     if (diffMs <= 0 || diffMs >= 48 * 60 * 60 * 1000) continue;
     arrivals.push({ title: row.meeting.title, minutes: diffMs / 60_000, at: row.createdAt });
+
+    /* Video landing and audio being READY are different moments, and it is the
+     * second one that unblocks transcription. Measured from the video's
+     * arrival rather than from sign-off, because that is the step this number
+     * is meant to expose: a slow extraction hides behind a fast download when
+     * both are folded into one figure. */
+    if (row.audioExtractedAt) {
+      const audioMs = row.audioExtractedAt.getTime() - row.createdAt.getTime();
+      if (audioMs >= 0 && audioMs < 12 * 60 * 60 * 1000) {
+        audioReady.push({ title: row.meeting.title, minutes: audioMs / 60_000, at: row.audioExtractedAt });
+      }
+    }
   }
   const arrivalMinutes = arrivals.map((a) => a.minutes).sort((a, b) => a - b);
   const arrivalAvg =
@@ -139,11 +156,41 @@ export async function getRecordingsMetrics(days: number, refresh = false) {
       avgMinutes: arrivalAvg === null ? null : round1(arrivalAvg),
       medianMinutes: arrivalMedian === null ? null : round1(arrivalMedian),
       count: arrivals.length,
+      /* Every arrival in the window, newest first.
+       *
+       * The slowest five say which ones to chase; this says when each class's
+       * video actually turned up, which is what someone checking "did
+       * yesterday's recordings come through?" needs. Capped so the payload
+       * stays a summary rather than a table dump. */
+      recent: [...arrivals]
+        .sort((a, b) => b.at.getTime() - a.at.getTime())
+        .slice(0, 60)
+        .map((a) => ({ title: a.title, minutes: round1(a.minutes), at: a.at.toISOString() })),
+
       slowest: [...arrivals]
         .sort((a, b) => b.minutes - a.minutes)
         .slice(0, 5)
         .map((a) => ({ title: a.title, minutes: round1(a.minutes), at: a.at.toISOString() })),
     },
+    audioReady: (() => {
+      const sorted = audioReady.map((a) => a.minutes).sort((x, y) => x - y);
+      const avg = audioReady.length > 0 ? audioReady.reduce((sum, a) => sum + a.minutes, 0) / audioReady.length : null;
+      return {
+        avgMinutes: avg === null ? null : round1(avg),
+        medianMinutes: medianOf(sorted) === null ? null : round1(medianOf(sorted) as number),
+        // Null, not 0: a window where nothing has been extracted yet has not
+        // measured a fast pipeline, it has measured nothing.
+        count: audioReady.length,
+        recent: [...audioReady]
+          .sort((a, b) => b.at.getTime() - a.at.getTime())
+          .slice(0, 60)
+          .map((a) => ({ title: a.title, minutes: round1(a.minutes), at: a.at.toISOString() })),
+        slowest: [...audioReady]
+          .sort((a, b) => b.minutes - a.minutes)
+          .slice(0, 5)
+          .map((a) => ({ title: a.title, minutes: round1(a.minutes), at: a.at.toISOString() })),
+      };
+    })(),
     retryPressure: {
       retried,
       exhausted,

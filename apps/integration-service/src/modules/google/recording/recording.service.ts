@@ -463,6 +463,7 @@ export class GoogleRecordingService {
           data: {
             audioPath: finalAudioPath,
             extractedAudioStatus: 'COMPLETED',
+            audioExtractedAt: new Date(),
           },
         });
 
@@ -569,6 +570,7 @@ export class GoogleRecordingService {
           data: {
             audioPath: finalAudioPath,
             extractedAudioStatus: 'COMPLETED',
+            audioExtractedAt: new Date(),
           },
         });
 
