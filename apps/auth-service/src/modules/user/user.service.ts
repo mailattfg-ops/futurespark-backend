@@ -4,6 +4,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { db } from '../../database/datasource';
 import { userRepository } from './user.repository';
 import { CreateUserInput, UpdateUserInput, ListUsersQuery } from './user.schema';
+import { logger } from '@futurespark/logger';
 import { UserWithoutPassword, PublicUser } from './user.model';
 import type { PaginatedResponse } from '@futurespark/types';
 import { sendNotification } from '../notification-helper';
@@ -201,6 +202,7 @@ export const userService = {
       select: {
         id: true,
         paymentApproved: true,
+        parentAccountId: true,
         parentAccount: {
           select: {
             programId: true,
@@ -230,6 +232,24 @@ export const userService = {
 
     const legacyProgramId = student.parentAccount?.programId;
     if (!legacyProgramId) return [];
+
+    /* The legacy columns describe ONE child, so only one may inherit them.
+     *
+     * `ParentAccount.programId` and `.paymentApproved` were written when a
+     * family could hold exactly one programme, which by definition was the
+     * child who was enrolled at the time — the eldest record. Letting every
+     * sibling fall back to them meant a second child added to a paying family
+     * appeared enrolled AND paid the moment they were created, with nobody
+     * having chosen a programme or taken any money for them.
+     *
+     * The eldest keeps the access the family paid for; a later sibling gets
+     * nothing until someone enrols them explicitly. */
+    const eldest = await db.student.findFirst({
+      where: { parentAccountId: student.parentAccountId },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+    if (eldest && eldest.id !== student.id) return [];
 
     return [
       {
@@ -448,10 +468,35 @@ export const userService = {
         passwordHash,
         firstName: input.firstName,
         lastName: input.lastName,
+        // Only the first child can inherit the family's legacy approval — the
+        // old columns describe one enrolment. A sibling starts unpaid and is
+        // approved per programme in Finance.
         paymentApproved: isParentPaid && isFirstStudent,
         requiresFtlReset: true,
       },
     });
+
+    /* Programme chosen on the Add Student form.
+     *
+     * Written as a real Enrollment, always UNPAID: enrolling a child and
+     * paying for them are two decisions, and money is Finance's to record.
+     * Creating it here (rather than leaving the child with none) is also what
+     * keeps them off the legacy fallback — a child with no enrolment row used
+     * to read the parent's programme and paid flag and appear to be enrolled
+     * in something nobody bought for them. */
+    const programId = typeof input.programId === 'string' ? input.programId.trim() : '';
+    if (programId) {
+      const program = await db.program.findUnique({ where: { id: programId }, select: { id: true, title: true } });
+      if (!program) throw new AppError('Program not found', HTTP_STATUS.NOT_FOUND);
+
+      await db.enrollment.create({
+        data: { studentId: student.id, programId, paymentApproved: false },
+      });
+      logger.info(
+        `[Student] ${normalizedEmail} enrolled in "${program.title}" as UNPAID — awaiting approval in Finance.`
+      );
+    }
+
     return student;
   },
 

@@ -111,11 +111,16 @@ export const userController = {
 
   async createStudent(req: Request, res: Response) {
     const { parentId } = req.params;
-    const { email, password, firstName, lastName } = req.body;
+    // `programId` is optional but deliberate: the form asks for an explicit
+    // choice, and an omitted one now means "no programme yet" rather than
+    // silently inheriting whatever a sibling's family already paid for.
+    const { email, password, firstName, lastName, programId } = req.body;
     if (!email || !password || !firstName || !lastName) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'All student details are required' });
     }
-    const result = await userService.createStudentForParent(parentId, { email, password, firstName, lastName });
+    const result = await userService.createStudentForParent(parentId, {
+      email, password, firstName, lastName, programId,
+    });
     logger.info(`[Student] Created: ${result.email} under Parent: ${parentId}`);
     return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Student created successfully'));
   },
