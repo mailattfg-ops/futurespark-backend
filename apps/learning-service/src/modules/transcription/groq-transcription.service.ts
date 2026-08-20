@@ -520,6 +520,12 @@ export class GroqTranscriptionService {
       //    vaguer message that hides it.
       transcript = await this.transcribeWithGroqWhisper(fileToTranscribe);
 
+      // Every stored transcript names its speakers, whichever model produced
+      // it. Whisper returns unlabelled prose; this labels it in one text pass
+      // so the transcript view and the talk-time split work the same way for
+      // every model. A no-op when the model already labelled the turns.
+      transcript = await this.ensureSpeakerLabels(transcript, studentName, mentorName);
+
       metrics = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
 
       // 2. Analyse the recording against the session slides, then pin down the
@@ -1009,42 +1015,261 @@ export class GroqTranscriptionService {
     return report;
   }
 
+  /**
+   * Guarantee the stored transcript names who is speaking.
+   *
+   * Whisper-style models return unbroken prose with no speaker markers at all,
+   * so a class transcribed that way could never yield a talk-time split, and
+   * anyone reading it had to guess who said what. Audio-capable chat models
+   * label turns themselves; this fills the gap for everything else by running
+   * one cheap TEXT pass over the transcript.
+   *
+   * It is strictly a formatting pass. The instructions forbid changing,
+   * summarising or inventing words — if the labelled version comes back with
+   * substantially different content, it is discarded and the original stands.
+   * A wrongly-labelled transcript is recoverable; a rewritten one is not, and
+   * this text is the evidence a parent's report is built from.
+   *
+   * Failure is never fatal: the original transcript is returned and the report
+   * simply reports talk time as "Not available".
+   */
+  private async ensureSpeakerLabels(
+    transcript: string,
+    studentName: string,
+    mentorName: string
+  ): Promise<string> {
+    if (!transcript || transcript.trim().length === 0) return transcript;
+
+    // Already labelled? Then the transcription model did the job — leave it.
+    const probe = this.calculateTranscriptMetrics(transcript, studentName, mentorName);
+    if (probe.mentorShareRatio !== null) return transcript;
+
+    if (!this.hasAnalysisKey) {
+      logger.warn(
+        '[GroqTranscriptionService] Transcript has no speaker labels and no analysis key is set, ' +
+          'so it cannot be labelled. Talk time will read "Not available".'
+      );
+      return transcript;
+    }
+
+    const system =
+      `You label who is speaking in a transcript of a 1:1 online class. One adult TEACHER ` +
+      `(${mentorName}) teaches one child STUDENT (${studentName}).\n\n` +
+      `Rewrite the transcript as one line per speaking turn, each line starting with exactly ` +
+      `"Teacher:" or "Student:".\n\n` +
+      `ABSOLUTE RULES — this is a formatting pass, not an edit:\n` +
+      `1. Reproduce every word exactly as given. Never translate, summarise, correct, shorten or add anything.\n` +
+      `2. Preserve the original language and script, including Malayalam.\n` +
+      `3. Keep any [mm:ss] timestamps, immediately after the label.\n` +
+      `4. Decide the speaker from the content: the teacher explains, asks questions and uses the child's ` +
+      `name; the student answers, asks back, and says short things like "yes", "okay", "mm-hmm".\n` +
+      `5. When a stretch is genuinely ambiguous, attach it to the speaker of the previous turn rather ` +
+      `than guessing a new one.\n` +
+      `6. Output ONLY the labelled transcript lines. No preamble, no commentary, no code fences.`;
+
+    /* Chunked so a long class fits the model's context, split on sentence
+     * boundaries so a turn is not cut mid-thought. The tail of the previous
+     * chunk rides along as context so the speaker carries across the seam. */
+    const chunkChars = readNumberEnv('AI_LABEL_CHUNK_CHARS', 12_000);
+    const chunks: string[] = [];
+    for (let i = 0; i < transcript.length; i += chunkChars) {
+      chunks.push(transcript.slice(i, i + chunkChars));
+    }
+
+    logger.info(
+      `[GroqTranscriptionService] Transcript has no speaker labels — labelling it in ` +
+        `${chunks.length} pass(es) so talk time and the transcript view name who is speaking.`
+    );
+
+    const provider = this.analysisProvider;
+    const labelled: string[] = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      const previousTail = labelled.length > 0 ? labelled[labelled.length - 1].slice(-400) : '';
+      const user =
+        (previousTail
+          ? `The previous part ended like this (for speaker continuity only — do NOT repeat it):\n${previousTail}\n\n`
+          : '') + `TRANSCRIPT PART ${i + 1} OF ${chunks.length}:\n${chunks[i]}`;
+
+      const startedAt = Date.now();
+      try {
+        const response = await axios.post(
+          `${provider.baseUrl}/chat/completions`,
+          {
+            model: provider.model,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            temperature: 0,
+            max_tokens: 8000,
+            usage: { include: true },
+            ...providerBodyExtras(provider),
+          },
+          { headers: providerHeaders(provider), timeout: readNumberEnv('GROQ_SUMMARY_TIMEOUT_MS', 180_000) }
+        );
+
+        const usage = response.data?.usage ?? {};
+        void recordAiUsage({
+          stage: 'analysis',
+          provider: provider.label,
+          model: provider.model,
+          inputTokens: Number(usage.prompt_tokens) || 0,
+          outputTokens: Number(usage.completion_tokens) || 0,
+          costUsd: Number(usage.cost) || 0,
+          processingMs: Date.now() - startedAt,
+          ...this.jobTag,
+        });
+
+        const content = response.data?.choices?.[0]?.message?.content;
+        if (typeof content === 'string' && content.trim().length > 0) {
+          labelled.push(content.trim());
+        } else {
+          logger.warn(`[GroqTranscriptionService] Labelling pass ${i + 1} returned nothing — keeping that part unlabelled.`);
+          labelled.push(chunks[i]);
+        }
+      } catch (err: any) {
+        logger.warn(
+          `[GroqTranscriptionService] Labelling pass ${i + 1} failed: ${err.message}. ` +
+            'Keeping that part of the transcript unlabelled.'
+        );
+        labelled.push(chunks[i]);
+      }
+    }
+
+    const result = labelled.join('\n');
+
+    /* Guard against a model that "helpfully" summarised instead of labelling.
+     * Word count is the cheap, language-agnostic check: labels ADD words, so a
+     * genuine labelling pass never comes back much shorter than the original. */
+    const originalWords = transcript.split(/\s+/).filter(Boolean).length;
+    const labelledWords = result.split(/\s+/).filter(Boolean).length;
+    if (originalWords > 0 && labelledWords < originalWords * 0.7) {
+      logger.error(
+        `[GroqTranscriptionService] The labelling pass returned ${labelledWords} words for an ` +
+          `${originalWords}-word transcript — it rewrote rather than labelled. Discarding it and ` +
+          'keeping the original transcript.'
+      );
+      return transcript;
+    }
+
+    const after = this.calculateTranscriptMetrics(result, studentName, mentorName);
+    if (after.mentorShareRatio === null) {
+      logger.warn('[GroqTranscriptionService] Labelling did not produce usable speaker labels — keeping the original.');
+      return transcript;
+    }
+
+    logger.info(
+      `[GroqTranscriptionService] Transcript labelled: teacher ${after.mentorShareRatio}% / ` +
+        `student ${after.studentShareRatio}% of spoken words.`
+    );
+    return result;
+  }
+
+  /**
+   * Word-share per speaker, and an honest null when that cannot be known.
+   *
+   * Attribution is only possible on a LABELLED transcript. The old version
+   * looked for the student's NAME anywhere in a line and defaulted everything
+   * else to the mentor, which failed two ways at once:
+   *
+   *   - A labelled transcript says "Student:", never "Insha:", so no student
+   *     line ever matched and every one of them was banked as mentor speech.
+   *   - An unlabelled Whisper transcript carries no markers at all, so the
+   *     whole lesson was banked as mentor speech.
+   *
+   * Both produced the same lie — "Teacher 100% / Student 0%" for a class the
+   * transcript plainly shows the child talking through. A split is now
+   * reported only when BOTH speakers were actually identified; otherwise the
+   * ratios are null and the report says "Not available", which is the truth.
+   */
   private calculateTranscriptMetrics(text: string, studentName: string = 'Student', mentorName: string = 'Instructor') {
     const words = text.split(/\s+/).filter(Boolean).length;
     const sentences = text.split(/[.!?]+/).filter(Boolean).length;
     const questions = (text.match(/\?/g) || []).length;
 
+    const firstName = (full: string) => (full || '').trim().split(/\s+/)[0] ?? '';
+
+    /**
+     * Does a captured label name this side of the conversation?
+     *
+     * Plain string comparison rather than a built regex: names arrive from the
+     * database and can contain regex metacharacters, and a mis-escaped pattern
+     * fails silently by matching nothing — which is exactly the class of bug
+     * this function is being repaired for.
+     */
+    const buildMatcher = (tokens: string[]) => {
+      const usable = [...new Set(tokens.map((t) => (t || '').trim().toLowerCase()).filter((t) => t.length >= 2))]
+        .sort((a, b) => b.length - a.length);
+      return (speaker: string): boolean => {
+        const value = speaker.trim().toLowerCase();
+        // Exact, or the token followed by a separator — so "Teacher" and
+        // "Teacher (Sooraj)" both match while "Teachers Union" does not.
+        return usable.some((token) => value === token || /^[\s.,('\-]/.test(value.slice(token.length)) && value.startsWith(token));
+      };
+    };
+
+    const isStudent = buildMatcher(['student', 'child', 'learner', 'pupil', studentName, firstName(studentName)]);
+    const isMentor = buildMatcher([
+      'teacher', 'mentor', 'instructor', 'tutor', 'trainer', mentorName, firstName(mentorName),
+    ]);
+
+    /**
+     * A speaker label at the START of a line: an optional list dash, an
+     * optional [mm:ss] or (mm:ss) stamp, a short name, then a colon. Anchored
+     * deliberately — matching a name anywhere in the line meant a teacher
+     * saying "good job, Insha" handed the rest of their turn to the student.
+     */
+    const LABEL_RE = /^\s*(?:[-*•–—]\s*)?(?:[[(]?\d{1,2}:\d{2}(?::\d{2})?[\])]?\s*)?([A-Za-z][A-Za-z0-9 .'_-]{0,40}?)\s*:\s*(.*)$/;
+
     let mentorWordCount = 0;
     let studentWordCount = 0;
+    let sawMentorLabel = false;
+    let sawStudentLabel = false;
+    let currentSpeaker: 'mentor' | 'student' | null = null;
 
-    const lines = text.split('\n');
-    const studentRegex = new RegExp(`${studentName}`, 'i');
-    const mentorRegex = new RegExp(`${mentorName}|mentor|instructor|teacher`, 'i');
+    const countWords = (value: string) => value.split(/\s+/).filter(Boolean).length;
 
-    let currentSpeaker: 'mentor' | 'student' = 'mentor';
+    for (const line of text.split('\n')) {
+      if (line.trim().length === 0) continue;
 
-    for (const line of lines) {
-      if (studentRegex.test(line)) {
-        currentSpeaker = 'student';
-      } else if (mentorRegex.test(line)) {
-        currentSpeaker = 'mentor';
+      let content = line;
+      const labelled = LABEL_RE.exec(line);
+      if (labelled) {
+        const speaker = labelled[1].trim();
+        if (isStudent(speaker)) {
+          currentSpeaker = 'student';
+          sawStudentLabel = true;
+          content = labelled[2];
+        } else if (isMentor(speaker)) {
+          currentSpeaker = 'mentor';
+          sawMentorLabel = true;
+          content = labelled[2];
+        }
+        // An unrecognised "word:" is ordinary speech ("So the point is:"),
+        // not a speaker change — leave the current speaker alone.
       }
 
-      const lineWords = line.split(/\s+/).filter(Boolean).length;
-      if (currentSpeaker === 'mentor') {
-        mentorWordCount += lineWords;
-      } else {
-        studentWordCount += lineWords;
-      }
+      // Speech before any label belongs to nobody we can name, so it goes
+      // uncounted rather than being guessed onto the mentor.
+      if (currentSpeaker === 'mentor') mentorWordCount += countWords(content);
+      else if (currentSpeaker === 'student') studentWordCount += countWords(content);
     }
 
-    const totalSpeakerWords = mentorWordCount + studentWordCount;
-    let mentorShareRatio = 68;
-    let studentShareRatio = 32;
+    const attributable = sawMentorLabel && sawStudentLabel && mentorWordCount + studentWordCount > 0;
+    let mentorShareRatio: number | null = null;
+    let studentShareRatio: number | null = null;
 
-    if (totalSpeakerWords > 0) {
-      mentorShareRatio = Math.round((mentorWordCount / totalSpeakerWords) * 100);
+    if (attributable) {
+      mentorShareRatio = Math.round((mentorWordCount / (mentorWordCount + studentWordCount)) * 100);
       studentShareRatio = 100 - mentorShareRatio;
+    } else {
+      logger.warn(
+        '[GroqTranscriptionService] Talk time is NOT measurable from this transcript — ' +
+          `${sawMentorLabel ? '' : 'no teacher labels; '}${sawStudentLabel ? '' : 'no student labels; '}` +
+          'the report will say "Not available" rather than invent a split. Use an audio-capable ' +
+          'chat model (e.g. google/gemini-2.5-flash) to get speaker-labelled transcripts.'
+      );
     }
 
     return {
@@ -1053,7 +1278,14 @@ export class GroqTranscriptionService {
       questionCount: questions,
       mentorShareRatio,
       studentShareRatio,
-      engagementRating: studentShareRatio >= 25 ? 'HIGH' : studentShareRatio >= 15 ? 'MEDIUM' : 'MODERATE',
+      engagementRating:
+        studentShareRatio === null
+          ? 'UNKNOWN'
+          : studentShareRatio >= 25
+            ? 'HIGH'
+            : studentShareRatio >= 15
+              ? 'MEDIUM'
+              : 'MODERATE',
     };
   }
 
