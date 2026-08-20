@@ -43,7 +43,7 @@ const transcriptionMaxAttempts = (): number => Number(process.env.TRANSCRIPTION_
 
 /** Held for a minute — connection_limit=1 makes these queries queue, and the
  *  dashboard polls on a timer. (Zoom has its own, much longer, cache below.) */
-const RECORDINGS_TTL_MS = 60_000;
+const RECORDINGS_TTL_MS = 5 * 60_000;
 const recordingsCache = new Map<number, { at: number; data: any }>();
 
 export async function getRecordingsMetrics(days: number, refresh = false) {

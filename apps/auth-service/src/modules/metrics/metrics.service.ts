@@ -25,7 +25,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * folded into single-pass SQL and why the result is held briefly: the dashboard
  * polls every 60s and several admins may watch it at once.
  */
-const CACHE_TTL_MS = 60_000;
+/**
+ * Five minutes, not one.
+ *
+ * These are 7- and 30-day aggregates: they do not meaningfully move in a
+ * minute, and every cache miss holds the service's ONE database connection
+ * (connection_limit=1 in the URL) long enough to time out an interactive page
+ * waiting behind it — measured: a metrics pass under load starved
+ * `GET /roles` into a pool-checkout timeout at 10s. Refresh forces through.
+ */
+const CACHE_TTL_MS = 5 * 60_000;
 const cache = new Map<number, { at: number; data: any }>();
 
 /**
