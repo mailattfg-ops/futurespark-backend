@@ -17,6 +17,9 @@
  * construction, which the specification also requires.
  */
 
+// Type-only, so there is no runtime cycle with session-evidence.ts.
+import type { AnalysisEnvelope, DerivedMetrics, TalkShare } from './session-evidence';
+
 /** The only three words allowed to describe a child's progress. */
 export type LearningStatus = 'Emerging' | 'Developing' | 'Proficient';
 
@@ -40,6 +43,21 @@ export interface TalkTimeSplit {
   /** 0-100. Null when the split could not be established. */
   teacherPercent: number | null;
   studentPercent: number | null;
+  /**
+   * HOW the split was arrived at. Optional so nothing that reads an older row
+   * breaks, but the renderer should print `label` beneath the bars.
+   *
+   * This exists because the panel was lying by omission. The percentages were
+   * a WORD share multiplied by the session duration, printed under the heading
+   * "TALK TIME" as though minutes had been measured. An adult explaining runs
+   * at ~150 words a minute and a ten-year-old thinking aloud at roughly half
+   * that, so a genuine 60/40 split of minutes rendered as 75/25 and made the
+   * mentor look worse than they were. 'timestamps' is a measurement;
+   * 'word-share' is an estimate and must be captioned as one.
+   */
+  basis?: 'timestamps' | 'word-share' | 'unmeasurable';
+  /** Caption for the panel: "Talk time" | "Share of words spoken". */
+  label?: string;
 }
 
 /**
@@ -134,6 +152,36 @@ export interface SessionReport {
 
   /** 15-25 concepts, weighted. Drawn by the PDF, not by the model. */
   wordCloud: WordCloudEntry[];
+
+  /**
+   * Provenance. Optional, never rendered for the parent, stored on the row.
+   *
+   * Without it, "the numbers changed between runs" is unfalsifiable — nobody
+   * can separate a prompt edit from model drift from a genuine change in the
+   * child. With it, two reports sharing a fingerprint MUST match, and if they
+   * do not, the provider is non-deterministic and should be pinned or swapped.
+   */
+  meta?: SessionReportMeta;
+}
+
+export interface SessionReportMeta {
+  /** PROMPT_SUITE_VERSION at the time of generation. */
+  suiteVersion: string;
+  /** analysisFingerprint() — the cache key and the audit key. */
+  fingerprint: string;
+  model: string;
+  /** 'full' when the whole recording was read. */
+  coverage: 'full' | 'gaps' | 'partial';
+  /** How many analysis passes produced this report. 1 = single-shot. */
+  passes: number;
+  /**
+   * Evidence items the model cited that failed validation — a nonexistent turn
+   * or the wrong speaker. A high number means the model is padding, and it is
+   * the single most useful health signal this pipeline emits.
+   */
+  discardedEvidence: number;
+  /** Populated when the parent-safety scan raised non-blocking warnings. */
+  safetyWarnings?: string[];
 }
 
 /* ── Validation ───────────────────────────────────────────────────────────
@@ -229,10 +277,28 @@ const asWordCloud = (value: unknown): WordCloudEntry[] => {
 /**
  * Coerce raw model output into a `SessionReport`.
  *
+ * LEGACY as of prompt suite v2. The analysis model no longer returns this
+ * shape — it returns an evidence envelope, and `buildSessionReport` below
+ * assembles the report from it. This is kept because `GROQ_LEGACY_SUMMARY=true`
+ * still routes through the old contract, and because it is the correct reader
+ * for report rows written before the migration.
+ *
  * Never throws. Every field either holds usable content or a clearly-marked
  * absence, because the alternative — failing the whole report because one count
  * came back as "about 12" — means the parent gets nothing at all.
  */
+/**
+ * The heading the talk-time rows print under.
+ *
+ * Derived from the basis rather than stored, so a row written before `label`
+ * existed still gets a correct heading, and the two can never disagree.
+ * "Talk time" is a measurement; "Share of words spoken" is an estimate and has
+ * to say so — an adult speaks at roughly twice a child's rate, so words and
+ * minutes are not interchangeable.
+ */
+export const talkLabelForBasis = (basis: TalkTimeSplit["basis"]): string =>
+  basis === "word-share" ? "Share of words spoken" : "Talk time";
+
 export const parseSessionReport = (raw: any, fallbacks: Partial<SessionReport> = {}): SessionReport => {
   const r = raw && typeof raw === 'object' ? raw : {};
   const timing = (r.timing ?? {}) as any;
@@ -254,12 +320,22 @@ export const parseSessionReport = (raw: any, fallbacks: Partial<SessionReport> =
       duration: asString(timing.duration, fallbacks.timing?.duration ?? NOT_AVAILABLE),
     },
 
-    talkTime: {
+    talkTime: (() => {
+      const basis: TalkTimeSplit["basis"] =
+        talk.basis === 'timestamps' || talk.basis === 'word-share' ? talk.basis : 'unmeasurable';
+      return {
       teacher: asString(talk.teacher, NOT_AVAILABLE),
       student: asString(talk.student, NOT_AVAILABLE),
       teacherPercent: asPercent(talk.teacherPercent),
       studentPercent: asPercent(talk.studentPercent),
-    },
+      basis,
+      // Never NOT_AVAILABLE: this is the heading for the talk-time rows, and
+      // defaulting it to "Not available" printed "Teacher not available: 25m
+      // 40s (60%)" for every row stored before `label` existed. Absent means
+      // "derive it from the basis", not "unknown".
+      label: asString(talk.label, "") || talkLabelForBasis(basis),
+      };
+    })(),
 
     interactions: {
       teacherQuestions: asCount(counts.teacherQuestions),
@@ -303,6 +379,30 @@ export const parseSessionReport = (raw: any, fallbacks: Partial<SessionReport> =
     parentConnection: asString(r.parentConnection),
 
     wordCloud: asWordCloud(r.wordCloud),
+
+    /* Provenance survives the round-trip.
+     *
+     * Without this the field was write-only: stored on the row, discarded the
+     * moment anything read it back, so "these two runs should be identical"
+     * could never actually be checked. Absent on rows written before v2, and
+     * on anything that genuinely has none — hence undefined rather than a
+     * fabricated default. */
+    meta: (() => {
+      const m = (r as any)?.meta;
+      if (!m || typeof m !== 'object') return undefined;
+      const coverage = m.coverage === 'gaps' || m.coverage === 'partial' ? m.coverage : 'full';
+      return {
+        suiteVersion: asString(m.suiteVersion),
+        fingerprint: asString(m.fingerprint),
+        model: asString(m.model),
+        coverage,
+        passes: Number.isFinite(Number(m.passes)) ? Number(m.passes) : 1,
+        discardedEvidence: Number.isFinite(Number(m.discardedEvidence)) ? Number(m.discardedEvidence) : 0,
+        ...(Array.isArray(m.safetyWarnings) && m.safetyWarnings.length > 0
+          ? { safetyWarnings: m.safetyWarnings.map((w: unknown) => asString(w)).filter(Boolean) }
+          : {}),
+      };
+    })(),
   };
 };
 
@@ -335,8 +435,8 @@ export const sessionReportToText = (report: SessionReport): string => {
     line('Start', report.timing.startTime),
     line('End', report.timing.endTime),
     line('Duration', report.timing.duration),
-    line('Teacher talk', `${report.talkTime.teacher} (${pct(report.talkTime.teacherPercent)})`),
-    line('Student talk', `${report.talkTime.student} (${pct(report.talkTime.studentPercent)})`),
+    line(`Teacher ${(report.talkTime.label ?? 'talk').toLowerCase()}`, `${report.talkTime.teacher} (${pct(report.talkTime.teacherPercent)})`),
+    line(`Student ${(report.talkTime.label ?? 'talk').toLowerCase()}`, `${report.talkTime.student} (${pct(report.talkTime.studentPercent)})`),
     line('Teacher questions', report.interactions.teacherQuestions),
     line('Student questions', report.interactions.studentQuestions),
     line('Higher-order questions', report.interactions.higherOrderQuestions),
@@ -387,4 +487,102 @@ export const sessionReportToText = (report: SessionReport): string => {
   }
 
   return parts.join('\n');
+};
+
+
+/* ── v2 assembly ───────────────────────────────────────────────────────────
+ * The model returns evidence and prose; everything countable is computed in
+ * session-evidence.ts; the system already knows the names, dates and times.
+ * This is where those three sources meet.
+ *
+ * Type-only imports, so there is no runtime cycle with session-evidence.ts.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+
+export interface ReportAssemblyContext {
+  student: string;
+  teacher: string;
+  sessionTopic: string;
+  weekNumber: number | null;
+  weekTotal: number | null;
+  date: string;
+  timing: SessionReportTiming;
+  /** mm ss strings for the talk-time bars, when a duration was known. */
+  talkTimeTeacher?: string;
+  talkTimeStudent?: string;
+  meta: SessionReportMeta;
+}
+
+/**
+ * Assemble the final report.
+ *
+ * The division of labour, made explicit:
+ *   - `ctx`      — facts the system holds. Names, dates, clock times.
+ *   - `derived`  — every count, band and cloud weight, computed from evidence.
+ *   - `envelope` — narrative only. The model's actual job.
+ *
+ * A narrative field the model left empty stays empty. That is deliberate: the
+ * renderer skips an empty card, and a skipped card is invisible to a parent
+ * while a hollow sentence ("The student engaged with the material") is not.
+ */
+export const buildSessionReport = (
+  envelope: AnalysisEnvelope,
+  derived: DerivedMetrics,
+  talk: TalkShare,
+  ctx: ReportAssemblyContext
+): SessionReport => {
+  const n = envelope.narrative;
+
+  return {
+    student: ctx.student || NOT_AVAILABLE,
+    teacher: ctx.teacher || NOT_AVAILABLE,
+    sessionTopic: ctx.sessionTopic || NOT_AVAILABLE,
+    weekNumber: ctx.weekNumber,
+    weekTotal: ctx.weekTotal,
+    date: ctx.date || NOT_AVAILABLE,
+
+    timing: ctx.timing,
+
+    talkTime: {
+      teacher: ctx.talkTimeTeacher ?? NOT_AVAILABLE,
+      student: ctx.talkTimeStudent ?? NOT_AVAILABLE,
+      teacherPercent: talk.teacherPercent,
+      studentPercent: talk.studentPercent,
+      basis: talk.basis,
+      label: talk.label,
+    },
+
+    interactions: derived.interactions,
+
+    learningGoals: n.learningGoals.slice(0, 4),
+
+    assessment: {
+      conceptUnderstanding: derived.statuses.conceptUnderstanding,
+      application: derived.statuses.application,
+      financialReasoning: derived.statuses.financialReasoning,
+      independence: derived.statuses.independence,
+      // A note is only shown when the area was actually rated. Printing warm
+      // evidence beside a blank level reads as an omission; printing a level
+      // with no evidence reads as an assertion. Both together, or neither.
+      conceptUnderstandingNote: derived.statuses.conceptUnderstanding ? n.conceptUnderstandingNote : '',
+      applicationNote: derived.statuses.application ? n.applicationNote : '',
+      financialReasoningNote: derived.statuses.financialReasoning ? n.financialReasoningNote : '',
+      independenceNote: derived.statuses.independence ? n.independenceNote : '',
+      highlight: n.highlight,
+    },
+
+    topicsCovered: n.topicsCovered.slice(0, 12),
+    topicsNotReached: n.topicsNotReached.slice(0, 12),
+
+    questionQuality: n.questionQuality,
+    keyLearningMoment: n.keyLearningMoment,
+    parentSummary: n.parentSummary,
+    developmentArea: n.developmentArea,
+    nextSessionFocus: n.nextSessionFocus,
+    parentConnection: n.parentConnection,
+
+    wordCloud: derived.wordCloud,
+
+    meta: ctx.meta,
+  };
 };

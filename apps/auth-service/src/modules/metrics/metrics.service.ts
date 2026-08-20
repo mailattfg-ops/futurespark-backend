@@ -285,11 +285,33 @@ export async function getPipelineMetrics(daysRaw?: unknown, refresh = false) {
   /* ── End-to-end timing: completedAt → reportSentAt ───────────────────── */
   // Timestamps only, per the median rule: the take is a safety guard, not a
   // page — 5000 completed classes in a week is far beyond current volume.
-  const sentPairs = await db.scheduledClass.findMany({
-    where: { completedAt: { gte: since }, reportSentAt: { not: null } },
-    select: { id: true, completedAt: true, reportSentAt: true },
-    take: 5000,
+  // EVERY completed class in the window, with each milestone it reached —
+  // not only the ones that finished. "Slowest five" answers which outliers to
+  // chase but not the question an operator actually asks first, which is what
+  // happened to the classes taught yesterday. A class still waiting on its
+  // recording has to be visible as such, so the filter is completedAt alone
+  // and reportSentAt is allowed to be null.
+  const journeyRows = await db.scheduledClass.findMany({
+    where: { status: 'COMPLETED', completedAt: { gte: since } },
+    orderBy: { completedAt: 'desc' },
+    select: {
+      id: true,
+      completedAt: true,
+      reportSentAt: true,
+      reportAttempts: true,
+      reportLastError: true,
+      transcriptionStatus: true,
+      classSummary: true,
+      studentId: true,
+      leadId: true,
+      sessionId: true,
+      classType: true,
+      startTime: true,
+    },
+    take: 200,
   });
+
+  const sentPairs = journeyRows.filter((r) => r.completedAt && r.reportSentAt);
   const timingPairs: { id: string; completedAt: Date; minutes: number }[] = [];
   for (const row of sentPairs) {
     // The where guarantees both stamps; the checks are for the nullable types.
@@ -301,15 +323,13 @@ export async function getPipelineMetrics(daysRaw?: unknown, refresh = false) {
     });
   }
   const slowestPairs = [...timingPairs].sort((a, b) => b.minutes - a.minutes).slice(0, 5);
+  const minutesById = new Map(timingPairs.map((p) => [p.id, p.minutes]));
 
   /* ── Stuck reports, attempts, failure kinds ───────────────────────────── */
   const [slowestDetails, stuckRows, failureRows] = await Promise.all([
-    slowestPairs.length
-      ? db.scheduledClass.findMany({
-          where: { id: { in: slowestPairs.map((p) => p.id) } },
-          select: { id: true, studentId: true, leadId: true, sessionId: true, classType: true },
-        })
-      : [],
+    // journeyRows already carries the id fields, so the names for the whole
+    // list resolve in the same batched lookup the slowest five used.
+    Promise.resolve(journeyRows),
     // Summary exists but nothing was ever accepted by Meta — these are the
     // rows waiting on a manual dispatch, newest first so the freshest failure
     // is what the admin sees first.
@@ -338,6 +358,24 @@ export async function getPipelineMetrics(daysRaw?: unknown, refresh = false) {
       take: 5000,
     }),
   ]);
+
+  const summarisedAtByClass = new Map<string, Date>();
+  if (journeyRows.length > 0) {
+    const summaryEvents = await db.auditLog.findMany({
+      where: {
+        entityType: 'ai-summary',
+        entityId: { in: journeyRows.map((r) => r.id) },
+        action: 'created',
+      },
+      orderBy: { occurredAt: 'asc' },
+      select: { entityId: true, occurredAt: true },
+    });
+    for (const e of summaryEvents) {
+      if (e.entityId && !summarisedAtByClass.has(e.entityId)) {
+        summarisedAtByClass.set(e.entityId, e.occurredAt);
+      }
+    }
+  }
 
   const refs = await loadClassRefContext([...slowestDetails, ...stuckRows]);
   const slowestDetailById = new Map(slowestDetails.map((d) => [d.id, d]));
@@ -551,6 +589,57 @@ export async function getPipelineMetrics(daysRaw?: unknown, refresh = false) {
         avgMinutes: round1OrNull(avgOrNull(timingPairs.map((p) => p.minutes))),
         medianMinutes: round1OrNull(medianOrNull(timingPairs.map((p) => p.minutes))),
         count: timingPairs.length,
+
+        /* Every completed class in the window and how far it got.
+         *
+         * The averages above say the pipeline is healthy; this says what
+         * happened to Insha's class on Tuesday, which is the question actually
+         * being asked when someone opens this page. A class with no report yet
+         * appears here with nulls rather than being filtered out — "still
+         * waiting" is the state most worth seeing, and it is exactly the one a
+         * sent-only list hides. */
+        classes: journeyRows.map((row) => {
+          const summarised = Boolean(row.classSummary && row.classSummary.trim().length > 0);
+          const minutes = minutesById.get(row.id) ?? null;
+          const held = (row.reportLastError ?? '').startsWith('[HELD_FOR_REVIEW]');
+          return {
+            classId: row.id,
+            studentName: refs.studentName(row),
+            sessionTitle: refs.sessionTitle(row),
+            classDate: row.startTime.toISOString(),
+            completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+            transcribed: row.transcriptionStatus === 'COMPLETED',
+            summarised,
+            // The two moments an operator actually asks about: when the
+            // summary appeared, and when the parent got it.
+            summarisedAt: summarisedAtByClass.get(row.id)?.toISOString() ?? null,
+            minutesToSummary: (() => {
+              const at = summarisedAtByClass.get(row.id);
+              if (!at || !row.completedAt) return null;
+              const m = (at.getTime() - row.completedAt.getTime()) / 60000;
+              return m >= 0 ? round1(m) : null;
+            })(),
+            reportSentAt: row.reportSentAt ? row.reportSentAt.toISOString() : null,
+            minutesToReport: minutes === null ? null : round1(minutes),
+            attempts: row.reportAttempts,
+            held,
+            // The reason is operator-facing and already redacted of any quoted
+            // report text (see parent-safety.ts).
+            lastError: row.reportLastError,
+            stage: row.reportSentAt
+              ? 'sent'
+              : held
+                ? 'held'
+                : summarised
+                  ? 'awaiting-send'
+                  : row.transcriptionStatus === 'COMPLETED'
+                    ? 'awaiting-summary'
+                    : row.transcriptionStatus === 'FAILED'
+                      ? 'transcription-failed'
+                      : 'awaiting-recording',
+          };
+        }),
+
         slowest: slowestPairs.map((p) => {
           const detail = slowestDetailById.get(p.id);
           return {

@@ -263,7 +263,7 @@ export class ZoomRecordingService {
         await withDbRetry(() =>
           db.meetingRecording.update({
             where: { id: recordingId },
-            data: { audioPath: localAudioPath, extractedAudioStatus: 'COMPLETED' },
+            data: { audioPath: localAudioPath, extractedAudioStatus: 'COMPLETED', audioExtractedAt: new Date() },
           })
         );
 
@@ -293,7 +293,7 @@ export class ZoomRecordingService {
         await withDbRetry(() =>
           db.meetingRecording.update({
             where: { id: recordingId },
-            data: { audioPath: localAudioPath, extractedAudioStatus: 'COMPLETED' },
+            data: { audioPath: localAudioPath, extractedAudioStatus: 'COMPLETED', audioExtractedAt: new Date() },
           })
         );
 

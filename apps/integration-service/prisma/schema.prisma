@@ -151,6 +151,11 @@ model MeetingRecording {
   audioPath            String?  // Local/storage path for extracted audio
   downloadStatus       String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
   extractedAudioStatus String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  /// When the audio track was successfully extracted and VERIFIED against the
+  /// source video. The status alone said whether it happened, never when — so
+  /// the gap between the video landing and the audio being ready (the step
+  /// that actually blocks transcription) could not be measured or shown.
+  audioExtractedAt     DateTime?
 
   // ── Transcription lifecycle ──────────────────────────────────────────────
   // Tracked separately from the two statuses above because transcription is

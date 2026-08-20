@@ -868,3 +868,5 @@ export const isClassOver = (cls: AttendanceInput, nowMs: number = Date.now()): b
 
 /* ── Post-class Student Session Report ────────────────────────────────── */
 export * from "./session-report";
+export * from "./session-evidence";
+export * from "./parent-safety";
