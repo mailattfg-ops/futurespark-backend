@@ -1,3 +1,4 @@
+import { extractVerifiedAudio } from "../../shared/audio";
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -277,19 +278,12 @@ export class ZoomRecordingService {
       return ffmpegSemaphore.run(async () => {
         logger.info(`[ZoomRecording] Extracting audio for ${recordingId}...`);
 
-        await new Promise<void>((resolve) => {
-          exec(
-            `ffmpeg -y -i "${videoPath}" -vn -acodec libmp3lame -q:a 4 "${localAudioPath}"`,
-            (err) => {
-              if (err) {
-                logger.warn(`[ZoomRecording] ffmpeg failed: ${err.message}. Creating silent MP3 fallback...`);
-                // Fallback copy if ffmpeg not available
-                fs.writeFileSync(localAudioPath, Buffer.alloc(1024));
-              }
-              resolve();
-            }
-          );
-        });
+        // Extract, then MEASURE the result against the video. The old call shelled
+        // out to a bare "ffmpeg" and, when that failed, wrote 1 KB of silence and
+        // carried on — so a class could be "transcribed" from a file containing
+        // nothing. It also never checked that the track it produced was the right
+        // length; a stretched one reached the AI and came back as gibberish.
+        await extractVerifiedAudio(videoPath, localAudioPath, { label: "ZoomRecording" });
 
         const s3Key = getS3KeyForRecording(recordingId, audioFileName, 'audio');
         if (S3Storage.isS3Enabled()) {

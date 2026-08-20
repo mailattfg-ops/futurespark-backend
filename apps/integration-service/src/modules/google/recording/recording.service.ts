@@ -1,3 +1,4 @@
+import { probeDurationSeconds } from "../../shared/audio";
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -504,6 +505,45 @@ export class GoogleRecordingService {
           }).catch(() => {});
           return reject(new Error(`Audio extraction failed. Video will re-download on next scan.`));
         }
+
+        /* Measure what ffmpeg actually produced before anything trusts it.
+         *
+         * A resample that goes wrong writes a track several times longer than
+         * the class, and a half-downloaded source writes a short one. Both are
+         * valid MP3 files, so nothing downstream notices — the transcription
+         * model simply returns nonsense for slowed-down speech, and the parent
+         * gets a confident report built from it. Cheaper to catch here. */
+        try {
+          const audioSeconds = await probeDurationSeconds(destinationPath);
+          const sizeBytes = fs.existsSync(destinationPath) ? fs.statSync(destinationPath).size : 0;
+          const expected = recording.duration ?? null;
+
+          if (sizeBytes < 4096 || audioSeconds === null) {
+            throw new Error('the extracted file is empty or has no readable duration');
+          }
+          if (expected && Math.abs(audioSeconds - expected) > Math.max(5, expected * 0.05)) {
+            throw new Error(
+              `it is ${Math.round(audioSeconds)}s but the recording is ${Math.round(expected)}s ` +
+                `(${(audioSeconds / expected).toFixed(2)}x)`
+            );
+          }
+          logger.info(
+            `[GoogleRecordingService] Audio verified: ${Math.round(audioSeconds)}s, ` +
+              `${(sizeBytes / 1048576).toFixed(1)} MB.`
+          );
+        } catch (verifyErr: any) {
+          logger.error(
+            `[GoogleRecordingService] Discarding the extracted audio for ${recordingId} — ${verifyErr.message}. ` +
+              'Sending it to the AI would produce a wrong report rather than an obvious failure.'
+          );
+          try { fs.unlinkSync(destinationPath); } catch (_) {}
+          await db.meetingRecording.update({
+            where: { id: recordingId },
+            data: { extractedAudioStatus: 'FAILED', videoPath: null },
+          }).catch(() => {});
+          return reject(new Error(`Audio extraction produced an unusable track — ${verifyErr.message}.`));
+        }
+
 
         let finalAudioPath = destinationPath;
         if (S3Storage.isS3Enabled()) {

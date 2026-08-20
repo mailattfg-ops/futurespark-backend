@@ -172,8 +172,6 @@ const loadClassRefContext = async (
             id: true,
             firstName: true,
             lastName: true,
-            studentFirstName: true,
-            studentLastName: true,
             phone: true,
           },
         })
@@ -209,7 +207,7 @@ const loadClassRefContext = async (
         if (!lead) return null;
         // Older leads carry one name for parent and child, with no way to tell
         // which — fall back to it rather than show a blank on a real demo.
-        return joinName(lead.studentFirstName, lead.studentLastName) ?? joinName(lead.firstName, lead.lastName);
+        return joinName((lead as any).studentFirstName, (lead as any).studentLastName) ?? joinName(lead.firstName, lead.lastName);
       }
       return null;
     },

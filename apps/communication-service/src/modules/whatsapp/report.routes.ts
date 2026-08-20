@@ -72,4 +72,78 @@ router.post('/session-report', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /whatsapp/session-reminder
+ *
+ * Sends a demo session reminder WhatsApp message using template "session_reminder"
+ * or free-text fallback when someone registers on the demo booking form.
+ */
+router.post('/session-reminder', async (req: Request, res: Response) => {
+  try {
+    const {
+      to,
+      parentName = 'Parent',
+      studentName = 'Student',
+      courseName = 'Financial Literacy',
+      sessionDate = new Date().toLocaleDateString('en-GB'),
+      sessionTime = '04:30 PM - 05:30 PM',
+      timezone = 'IST',
+      joinUrl = 'https://futurespark-landing-two.vercel.app/',
+    } = req.body ?? {};
+
+    if (!to || typeof to !== 'string' || !to.trim()) {
+      return res
+        .status(HTTP_STATUS.BAD_REQUEST)
+        .json(errorResponse('Phone number "to" is required.'));
+    }
+
+    const templateComponents = [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: parentName },
+          { type: 'text', text: studentName },
+          { type: 'text', text: courseName },
+          { type: 'text', text: sessionDate },
+          { type: 'text', text: sessionTime },
+          { type: 'text', text: timezone },
+          { type: 'text', text: joinUrl },
+        ],
+      },
+    ];
+
+    // 1. Attempt template send with template "session_reminder"
+    let result = await whatsappService.sendTemplateMessage(
+      to,
+      'session_reminder',
+      'en',
+      templateComponents
+    );
+
+    // 2. Fallback text send if template is not configured or fails
+    if (!result.success) {
+      const textMessage =
+        `Hi ${parentName} 👋\n\n` +
+        `⏰ Reminder: ${studentName}’s ${courseName} session is scheduled for ${sessionDate} at ${sessionTime} (${timezone}).\n\n` +
+        `💻 Please join using a laptop/desktop with a stable internet connection.\n\n` +
+        `🔗 Join Here: ${joinUrl}\n\n` +
+        `Please join the session with your child to experience their learning and improvement live.\n\n` +
+        `Thank you,\n` +
+        `FINQUO junior`;
+
+      result = await whatsappService.sendTextMessage(to, textMessage);
+    }
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(result, result.success ? 'Session reminder sent.' : 'Session reminder delivery attempted.'));
+  } catch (err: any) {
+    logger.error(`[Session Reminder] Error sending reminder: ${err.message}`);
+    return res
+      .status(HTTP_STATUS.INTERNAL_SERVER_ERROR)
+      .json(errorResponse(err.message || 'Failed to send session reminder'));
+  }
+});
+
 export { router as whatsappReportRoutes };
+
