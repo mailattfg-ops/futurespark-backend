@@ -258,6 +258,7 @@ model ScheduledClass {
   completedAt         DateTime?
   reportPdfPath       String?   // S3 key (or local path) of the rendered PDF
   reportSentAt        DateTime? // Meta accepted the WhatsApp report — the idempotency latch
+  reportSentTo        String?   // the phone number the successful send actually went to
   reportAttempts      Int       @default(0)
   reportLastError     String?   @db.Text
   doubts              ClassDoubt[]

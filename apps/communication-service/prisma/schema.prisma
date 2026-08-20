@@ -22,6 +22,7 @@ model WhatsAppMessage {
   id          String   @id @default(uuid())
   messageId   String?  @unique // Meta message ID (for status tracking)
   recipientId String?  // System user id if linked
+  classId     String?  // The ScheduledClass a report send belongs to (null for chat/notifications)
   from        String   // From phone number
   to          String   // To phone number
   direction   String   // "INBOUND" or "OUTBOUND"
@@ -31,5 +32,8 @@ model WhatsAppMessage {
   error       String?  // Error message if failed
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([classId])
+  @@index([direction, from, createdAt])
 }
 

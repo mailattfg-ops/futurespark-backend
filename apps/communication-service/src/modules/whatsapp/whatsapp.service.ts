@@ -1051,7 +1051,8 @@ export const whatsappService = {
   async sendDocumentMessage(
     to: string,
     document: { mediaId?: string; link?: string; fileName: string; caption?: string },
-    recipientId?: string
+    recipientId?: string,
+    classId?: string
   ): Promise<WhatsAppSendResult> {
     const normalized = normalizePhone(to);
     if (!normalized.ok || !normalized.value) {
@@ -1079,7 +1080,7 @@ export const whatsappService = {
       },
     };
 
-    return this.sendMetaRequest(payload, 'document', `Document: ${document.fileName}`, recipientId);
+    return this.sendMetaRequest(payload, 'document', `Document: ${document.fileName}`, recipientId, classId);
   },
 
   /**
@@ -1092,7 +1093,8 @@ export const whatsappService = {
     templateName: string,
     languageCode: string,
     components: any[] = [],
-    recipientId?: string
+    recipientId?: string,
+    classId?: string
   ): Promise<WhatsAppSendResult> {
     const normalized = normalizePhone(to);
     if (!normalized.ok || !normalized.value) {
@@ -1120,7 +1122,7 @@ export const whatsappService = {
     };
 
     const description = `Template: ${templateName} (lang: ${languageCode})`;
-    return this.sendMetaRequest(payload, 'template', description, recipientId);
+    return this.sendMetaRequest(payload, 'template', description, recipientId, classId);
   },
 
   /**
@@ -1132,7 +1134,8 @@ export const whatsappService = {
     payload: any,
     type: string,
     bodyContent: string,
-    recipientId?: string
+    recipientId?: string,
+    classId?: string
   ): Promise<WhatsAppSendResult> {
     const to = payload.to;
 
@@ -1162,6 +1165,7 @@ export const whatsappService = {
           body: bodyContent,
           status: 'pending',
           recipientId: recipientId || null,
+          classId: classId || null,
         },
       });
     } catch (dbErr: any) {

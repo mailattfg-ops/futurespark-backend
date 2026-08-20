@@ -32,6 +32,8 @@ export interface SessionReportRequest {
   /** Free-form text used when the 24h window happens to be open. */
   caption?: string;
   recipientId?: string;
+  /** The ScheduledClass this report belongs to — stamped on every message row. */
+  classId?: string;
 }
 
 export interface SessionReportResult {
@@ -148,7 +150,8 @@ export const sessionReportService = {
       const documentResult = await whatsappService.sendDocumentMessage(
         to,
         { mediaId, fileName: request.document!.fileName, caption: request.caption },
-        request.recipientId
+        request.recipientId,
+        request.classId
       );
 
       if (documentResult.success) {
@@ -197,7 +200,8 @@ export const sessionReportService = {
       templateName,
       whatsappConfig.reportTemplateLanguage,
       components,
-      request.recipientId
+      request.recipientId,
+      request.classId
     );
 
     if (!result.success) {

@@ -462,6 +462,9 @@ const deliverPreparedReport = async (
       body: JSON.stringify({
         to: phone || undefined,
         recipientId: parentId,
+        // Stored on every WhatsAppMessage row this send produces, so the send
+        // history of a class is queryable ("which numbers got this report?").
+        classId,
         variables,
         caption,
         document: {
@@ -496,6 +499,10 @@ const deliverPreparedReport = async (
       where: { id: classId },
       data: {
         reportSentAt: new Date(),
+        // The number the send actually went to — an admin can type any number
+        // into the manual dispatch card, so "the parent's number on file" is
+        // not a safe assumption about where this report ended up.
+        reportSentTo: phone,
         reportPdfPath: storedPath,
         reportAttempts: { increment: 1 },
         reportLastError: result.documentDelivered
