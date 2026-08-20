@@ -36,7 +36,7 @@ export const leadService = {
   },
 
   async createLead(input: CreateLeadInput) {
-    return db.lead.create({
+    const lead = await db.lead.create({
       data: {
         firstName: input.firstName,
         lastName: input.lastName,
@@ -68,6 +68,46 @@ export const leadService = {
         },
       },
     });
+
+    // Trigger WhatsApp session reminder asynchronously
+    if (lead.phone) {
+      const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
+      const parentName = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim() || 'Parent';
+      const studentName = [lead.studentFirstName, lead.studentLastName].filter(Boolean).join(' ').trim() || lead.studentFirstName || 'Student';
+      const courseName = lead.program?.title || 'Financial Literacy';
+      const sessionTime = lead.preferredTime || '04:30 PM - 05:30 PM';
+      const timezone = lead.preferredTimezone || 'IST';
+      const joinUrl = `https://futurespark-landing-two.vercel.app/demo-class?leadId=${lead.id}`;
+
+      let sessionDate = new Date().toLocaleDateString('en-GB');
+      if (lead.notes && typeof lead.notes === 'string') {
+        const match = lead.notes.match(/(\d{2}\/\d{2}\/\d{4})/);
+        if (match && match[1]) {
+          sessionDate = match[1];
+        }
+      } else if (Array.isArray(lead.preferredDays) && lead.preferredDays.length > 0) {
+        sessionDate = lead.preferredDays.join(', ');
+      }
+
+      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/session-reminder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: lead.phone,
+          parentName,
+          studentName,
+          courseName,
+          sessionDate,
+          sessionTime,
+          timezone,
+          joinUrl,
+        }),
+      }).catch(() => {
+        // Non-blocking catch
+      });
+    }
+
+    return lead;
   },
 
   async updateLead(id: string, input: UpdateLeadInput) {

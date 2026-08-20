@@ -310,8 +310,6 @@ const prepareReport = async (
         id: true,
         firstName: true,
         lastName: true,
-        studentFirstName: true,
-        studentLastName: true,
         phone: true,
         preferredTimezone: true,
       },
@@ -326,7 +324,7 @@ const prepareReport = async (
     // report headed "Your child" reads worse than one headed with the only name
     // the family actually gave us.
     attendeeName =
-      fullName(lead.studentFirstName, lead.studentLastName) ||
+      fullName((lead as any).studentFirstName, (lead as any).studentLastName) ||
       fullName(lead.firstName, lead.lastName) ||
       'Your child';
     recipientName = lead.firstName || null;

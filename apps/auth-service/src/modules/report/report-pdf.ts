@@ -565,7 +565,7 @@ const drawWordCloud = (doc: Doc, report: SessionReport): void => {
   const words = report.wordCloud;
   if (words.length === 0) return;
 
-  const weights = words.map((w) => w.weight);
+  const weights = words.map((w: any) => w.weight);
   const minW = Math.min(...weights);
   const maxW = Math.max(...weights);
   const MIN_PT = 10;

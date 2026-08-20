@@ -447,8 +447,6 @@ export const scheduleService = {
               id: true,
               firstName: true,
               lastName: true,
-              studentFirstName: true,
-              studentLastName: true,
             },
           })
         : [];

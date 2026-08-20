@@ -531,6 +531,8 @@ export class ZoomMeetingsService {
         // 6. Store. `zoomHostEmail` holds the seat we ASKED for, not the
         // address Zoom echoed, because that column is what the allocator reads
         // back on the next booking and it must match the pool string.
+        const hostId = await resolveHostId(chosenHost);
+
         const meeting = await tx.meeting.create({
           data: {
             provider: 'ZOOM',
@@ -539,10 +541,7 @@ export class ZoomMeetingsService {
             zoomStartUrl: startUrl,
             zoomPasscode: passcode,
             zoomHostEmail: chosenHost,
-            // Null when the seat is not in the register (a mentor-hosted room,
-            // or the env fallback carrying bookings) — the email above is what
-            // allocation actually reads, so nothing depends on this being set.
-            zoomHostId: await resolveHostId(chosenHost),
+            ...(hostId ? { zoomHostId: hostId } : {}),
             meetUrl: joinUrl,
             title: input.title,
             description: input.description || null,
