@@ -21,7 +21,7 @@ const round1 = (n: number): number => Math.round(n * 10) / 10;
  * overlap and each is a round trip to a hosted Postgres — the dashboard polling
  * every 60s should not pay that twice.
  */
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 5 * 60_000;
 const cache = new Map<number, { at: number; data: any }>();
 
 export const getAiMetrics = async (daysRaw?: unknown, refresh = false) => {

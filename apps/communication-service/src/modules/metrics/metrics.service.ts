@@ -2,7 +2,7 @@ import db from '../../database/datasource';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = 5 * 60_000;
 const cache = new Map<number, { at: number; data: any }>();
 
 /**

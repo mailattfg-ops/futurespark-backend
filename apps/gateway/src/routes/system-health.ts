@@ -284,7 +284,12 @@ systemHealthRouter.get('/', asyncHandler(async (req: Request, res: Response) => 
     logErrors: { since: new Date(sinceMs).toISOString(), byService: countLogErrors(sinceMs) },
   };
 
-  cache.set(days, { at: Date.now(), data });
+  // A failed section is cached only briefly. Caching a `{down:true}` for the
+  // full TTL meant a service that merely restarted kept being reported as down
+  // for another half minute after it was answering again — the page accused a
+  // healthy service of being down.
+  const anyDown = [pipelineR, aiR, recordingsR, zoomR, whatsappR].some((r) => r.status === 'rejected');
+  cache.set(days, { at: anyDown ? Date.now() - (CACHE_TTL_SECONDS - 5) * 1000 : Date.now(), data });
   res.status(HTTP_STATUS.OK).json(successResponse(data, 'System health.'));
 }));
 
