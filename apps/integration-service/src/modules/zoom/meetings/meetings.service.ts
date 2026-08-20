@@ -8,6 +8,7 @@ import {
   getZoomConfigErrors,
   zoomConfig,
 } from '../auth/auth.service';
+import { getActiveHostPool } from '../hosts/hosts.service';
 import { logger } from '@futurespark/logger';
 
 export interface CreateZoomMeetingInput {
@@ -72,6 +73,25 @@ const normaliseEmail = (value: unknown): string | null => {
 };
 
 const emailKey = (value: string): string => value.trim().toLowerCase();
+
+/** Seat ids for the meetings we create, so a row can be joined back to its
+ *  host without matching on the address. Email stays the allocation key. */
+let hostIdByEmailCache: { at: number; map: Map<string, string> } | null = null;
+const HOST_ID_TTL_MS = 30_000;
+
+const resolveHostId = async (email: string | null): Promise<string | null> => {
+  if (!email) return null;
+  if (!hostIdByEmailCache || Date.now() - hostIdByEmailCache.at > HOST_ID_TTL_MS) {
+    try {
+      const rows = await db.zoomHost.findMany({ select: { id: true, email: true } });
+      hostIdByEmailCache = { at: Date.now(), map: new Map(rows.map((r) => [emailKey(r.email), r.id])) };
+    } catch {
+      // The id is a convenience for the admin table; never fail a booking for it.
+      return null;
+    }
+  }
+  return hostIdByEmailCache.map.get(emailKey(email)) ?? null;
+};
 
 const formatWindow = (start: Date, end: Date, timezone: string): string => {
   try {
@@ -210,7 +230,11 @@ export class ZoomMeetingsService {
 
     const timezone = input.timezone || 'Asia/Kolkata';
     const durationMinutes = Math.max(15, Math.round((end.getTime() - start.getTime()) / (60 * 1000)));
-    const pool = zoomConfig.hostEmails;
+    // The seat register (System → Zoom Hosts), not ZOOM_HOST_EMAILS. Read
+    // before the transaction opens so the pool lock is held for as little time
+    // as possible, and it falls back to the env list whenever the table has no
+    // active seat — see hosts.service.ts for why that fallback exists.
+    const pool = await getActiveHostPool();
     const mentorHost = zoomConfig.preferMentorHost ? normaliseEmail(input.mentorEmail) : null;
 
     if (zoomConfig.preferMentorHost && !mentorHost) {
@@ -515,6 +539,10 @@ export class ZoomMeetingsService {
             zoomStartUrl: startUrl,
             zoomPasscode: passcode,
             zoomHostEmail: chosenHost,
+            // Null when the seat is not in the register (a mentor-hosted room,
+            // or the env fallback carrying bookings) — the email above is what
+            // allocation actually reads, so nothing depends on this being set.
+            zoomHostId: await resolveHostId(chosenHost),
             meetUrl: joinUrl,
             title: input.title,
             description: input.description || null,

@@ -9,6 +9,7 @@ import {
   ZoomApiError,
   ZoomAuthService,
 } from '../zoom/auth/auth.service';
+import { getActiveHostPool } from '../zoom/hosts/hosts.service';
 
 /* ══════════════════════════════════════════════════════════════════════════
  * SYSTEM HEALTH METRICS
@@ -203,7 +204,10 @@ async function buildZoomMetrics() {
   const payload: Record<string, unknown> = {
     enabled: isZoomEnabled(),
     configured: isZoomConfigured(),
-    configuredHosts: zoomConfig.hostEmails,
+    // The seat register is what the allocator actually books on, so report it
+    // rather than ZOOM_HOST_EMAILS — otherwise this page and System → Zoom
+    // Hosts would disagree the moment a seat is added in the UI.
+    configuredHosts: await getActiveHostPool(),
     // null = not measured. They stay null when Zoom is disabled, because no
     // call was made and pretending to know would be a lie.
     reachable: null as boolean | null,

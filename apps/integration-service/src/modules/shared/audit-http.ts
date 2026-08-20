@@ -46,6 +46,13 @@ const ROUTE_RULES: RouteRule[] = [
   rule('DELETE', '/google/recordings/:id', 'deleted', 'recording', (w) => `${w} deleted a class recording`),
   rule('DELETE', '/zoom/recordings/:id', 'deleted', 'recording', (w) => `${w} deleted a class recording`),
   rule('POST', '/storage/upload', 'created', 'storage', (w) => `${w} uploaded a file`),
+  // Seat changes decide how many classes can run at once and which Zoom
+  // account a child's class lands on — squarely the kind of change the
+  // Activity Log exists to answer for.
+  rule('POST', '/zoom/hosts', 'created', 'zoom-host', (w) => `${w} added a Zoom host seat`),
+  rule('PUT', '/zoom/hosts/:id', 'updated', 'zoom-host', (w) => `${w} updated a Zoom host seat`),
+  rule('DELETE', '/zoom/hosts/:id', 'deleted', 'zoom-host', (w) => `${w} removed a Zoom host seat`),
+  rule('POST', '/zoom/hosts/:id/verify', 'other', 'zoom-host', (w) => `${w} checked a Zoom seat's licence`),
 ];
 
 const actorLabel = (role: string | null): string => {
