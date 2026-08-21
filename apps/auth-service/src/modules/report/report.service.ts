@@ -5,6 +5,8 @@ import { parseSessionReport, type SessionReport } from '@futurespark/constants';
 import { S3Storage } from '@futurespark/storage';
 import db from '../../database/datasource';
 import { renderSessionReportPdf, type ReportContext } from './report-pdf';
+import { gatherCurriculum } from './report-curriculum';
+import { resolveLearningOutcomes } from './report-document';
 import { truncate } from './summary-parser';
 
 /**
@@ -370,6 +372,23 @@ const prepareReport = async (
   const { date, dateLong, time } = formatInTimezone(classSession.startTime, timezone);
   const brandName = process.env.WHATSAPP_BRAND_NAME || 'Finquo Junior';
 
+  /* The curriculum half of the report: the arc, the topic map, the outcomes,
+   * the activities and what comes next. Gathered separately from the analysis
+   * and never allowed to fail the send — see report-curriculum.ts. */
+  const curriculum = await gatherCurriculum({
+    classId: classSession.id,
+    studentId: classSession.studentId ?? null,
+    programId: classSession.programId ?? null,
+    sessionId: classSession.sessionId ?? null,
+    startTime: classSession.startTime,
+    formatWhen: (at: Date) => {
+      const parts = formatInTimezone(at, timezone);
+      return `${new Intl.DateTimeFormat('en-GB', { timeZone: timezone || 'Asia/Kolkata', weekday: 'long' })
+        .format(at)
+        .toUpperCase()}, ${parts.dateLong.toUpperCase()} · ${parts.time}`;
+    },
+  });
+
   const ctx: ReportContext = {
     studentName: attendeeName,
     parentName: recipientName,
@@ -390,6 +409,7 @@ const prepareReport = async (
     contactLine: process.env.WHATSAPP_CONTACT_WEBSITE
       ? `${brandName} — ${process.env.WHATSAPP_CONTACT_WEBSITE}`
       : null,
+    curriculum,
   };
 
   // The structured analysis, when the class was processed after the Student
@@ -409,6 +429,17 @@ const prepareReport = async (
   // Template variables. Every name here is addressable from
   // WHATSAPP_REPORT_TEMPLATE_VARIABLES, so the approved template's {{1}},
   // {{2}}, ... can be re-pointed in configuration without a code change.
+  /* Three learning points for the message body.
+   *
+   * Padded rather than left short: the template has three fixed bullets, and a
+   * missing parameter fails the send. A session with only two authored
+   * outcomes says so plainly instead of sending an empty bullet. */
+  const firstName = ctx.studentName.split(' ')[0] || ctx.studentName;
+  const outcomes = resolveLearningOutcomes(curriculum, storedReport);
+  const learningPoints: string[] = [0, 1, 2].map(
+    (i) => outcomes[i]?.trim() || 'See the attached report for the full session detail'
+  );
+
   const variables: Record<string, string> = {
     studentName: ctx.studentName.split(' ')[0] || ctx.studentName,
     studentFullName: ctx.studentName,
@@ -430,6 +461,32 @@ const prepareReport = async (
         ? `${ctx.quizScore}${ctx.quizMaxScore ? `/${ctx.quizMaxScore}` : ''}`
         : 'Awaiting review',
     brandName,
+
+    /* ── The approved parent template ────────────────────────────────────
+     *
+     * Meta rejects a template send outright when any body parameter is empty,
+     * and rejects the whole message rather than the one variable — so a
+     * session whose curriculum has not been authored yet would silently stop
+     * reaching parents. Every value below therefore falls back to something
+     * true and printable rather than to ''.
+     *
+     * The three learning points are the same three the PDF prints, resolved
+     * through the same function, because the parent reads them side by side. */
+    sessionNumberPadded: ctx.sessionNumber ? String(ctx.sessionNumber).padStart(2, '0') : '-',
+    learningPoint1: learningPoints[0],
+    learningPoint2: learningPoints[1],
+    learningPoint3: learningPoints[2],
+    sessionOutcome: truncate(
+      storedReport?.parentSummary?.trim() || rendered.parsed.headline || `${firstName} completed this session.`,
+      600
+    ),
+    nextSessionTitle: curriculum.nextSessionTitle?.trim() || storedReport?.nextSessionFocus?.trim() || 'To be confirmed',
+    nextSessionWhen: curriculum.nextSessionWhen?.trim() || 'Date to be confirmed',
+    rescheduleUrl:
+      curriculum.rescheduleUrl?.trim() ||
+      process.env.REPORT_RESCHEDULE_URL?.trim() ||
+      process.env.WHATSAPP_CONTACT_WEBSITE?.trim() ||
+      'Reply to this message to reschedule',
   };
 
   const caption =

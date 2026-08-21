@@ -180,6 +180,8 @@ export const courseService = {
         reflectionQuestions: input.reflectionQuestions ?? [],
         reflectionQuiz: (input.reflectionQuiz ?? []) as any,
         topics: (input.topics ?? []) as any,
+        learningOutcomes: input.learningOutcomes ?? [],
+        activities: (input.activities ?? { inSession: [], takeHome: [] }) as any,
       },
     });
     return withReflectionQuestions(created);
@@ -191,13 +193,14 @@ export const courseService = {
     // Json columns need an explicit cast: Prisma's InputJsonValue does not
     // accept our interface types, and passing the whole input through would
     // widen them to `never`.
-    const { reflectionQuiz, topics, ...rest } = input;
+    const { reflectionQuiz, topics, activities, ...rest } = input;
     const updated = await db.session.update({
       where: { id },
       data: {
         ...rest,
         ...(reflectionQuiz !== undefined ? { reflectionQuiz: reflectionQuiz as any } : {}),
         ...(topics !== undefined ? { topics: topics as any } : {}),
+        ...(activities !== undefined ? { activities: activities as any } : {}),
       },
     });
     return withReflectionQuestions(updated);

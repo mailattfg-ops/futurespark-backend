@@ -407,6 +407,16 @@ model Session {
   // session has no custom quiz and readers fall back to the prompts, then to
   // the platform defaults.
   reflectionQuiz Json?
+  /// What this session is meant to leave the child able to do, in the order
+  /// they are taught. Fixed per session: these are the curriculum’s outcomes,
+  /// not observations about one child, so every family on this session sees
+  /// the same five lines. Empty falls back to what the analysis observed.
+  learningOutcomes String[] @default([])
+  /// The session’s activities. Shape: SessionActivities from
+  /// @futurespark/constants — { inSession: [...], takeHome: [...] }.
+  /// Fixed per session; null means the report omits the Activities block
+  /// rather than printing an empty card.
+  activities    Json?
   // Mind map of what this session covers. Shape: SessionTopic[].
   topics        Json?
   /// The presentation text for this session: slides, key terms, activities,
