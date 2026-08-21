@@ -91,7 +91,7 @@ app.use('/api/auth', createProxyMiddleware({
 app.use('/api/leads', createProxyMiddleware({
   target: LEARN_SERVICE_URL,
   changeOrigin: true,
-  pathRewrite: { '^/api/leads': '/courses/leads' },
+  pathRewrite: { '^/': '/courses/leads/' },
   on: {
     error: (err, _req, res: any) => {
       logger.error(`[Gateway] Learning service unreachable for lead registration: ${err.message}`);
