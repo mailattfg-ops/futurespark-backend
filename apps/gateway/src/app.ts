@@ -9,6 +9,8 @@ import { createRedisClient } from '@futurespark/cache';
 import { authenticate } from './middleware/authenticate';
 import { logsRouter } from './routes/logs';
 import { systemHealthRouter } from './routes/system-health';
+import { presenceRouter } from './routes/presence';
+import { techFeedRouter } from './routes/tech-feed';
 
 const app = express();
 
@@ -210,6 +212,16 @@ app.use('/api/logs', asyncHandler(authenticate), logsRouter);
 // endpoint, served by the gateway itself: it is the only box that can reach
 // all seven services and the log files.
 app.use('/api/system-health', asyncHandler(authenticate), systemHealthRouter);
+
+// Who is on the app right now — derived from live request traffic, not a
+// registered-user headcount. Served by the gateway because it is the only
+// component every role's requests pass through.
+app.use('/api/presence', asyncHandler(authenticate), presenceRouter);
+
+// Technical Dashboard — sessions, leads, reports, summaries, WhatsApp,
+// notifications, video and audio merged into one time-ordered stream. Served
+// here because those events live in three separate service databases.
+app.use('/api/tech-feed', asyncHandler(authenticate), techFeedRouter);
 
 // Activity Log — business events ("who did what"), the admin's /logs page.
 // READ-ONLY from outside: the internal /audit/record write endpoint must stay

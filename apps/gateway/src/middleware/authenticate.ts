@@ -1,3 +1,4 @@
+import { touchPresence } from '../routes/presence';
 import { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, isTokenBlocked, signInternalHeaders } from '@futurespark/authentication';
 import { AppError } from '@futurespark/middleware';
@@ -44,6 +45,11 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     Object.entries(internalHeaders).forEach(([key, value]) => {
       req.headers[key] = value;
     });
+
+    // Every authenticated request from every role passes through here, which
+    // makes this the only honest place to answer "who is using the app right
+    // now". Fire-and-forget — presence never delays or fails a real request.
+    touchPresence(userId, payload.role || "USER");
 
     next();
   } catch (err) {

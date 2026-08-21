@@ -176,6 +176,10 @@ model Student {
   warningCount     Int              @default(0)
   warnings         String[]         @default([])
   credits          Int              @default(0)
+  /// Mirrored from auth: enrolment state, not account state.
+  status           String           @default("ACTIVE")
+  statusNote       String?
+  statusChangedAt  DateTime?
   timezone         String           @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
   schedulerGroupId String?
   schedulerGroup   SchedulerGroup?  @relation("GroupStudents", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
