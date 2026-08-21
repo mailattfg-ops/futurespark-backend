@@ -7,7 +7,7 @@ import { ZoomAuthService } from '../auth/auth.service';
 import { logger } from '@futurespark/logger';
 import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
-import { Semaphore, createInFlightMap } from '../../../utils/concurrency';
+import { Semaphore, createInFlightMap, audioExtractionsInFlight } from '../../../utils/concurrency';
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3', 10);
 const MAX_CONCURRENT_FFMPEG = parseInt(process.env.MAX_CONCURRENT_FFMPEG || '2', 10);
@@ -15,7 +15,6 @@ const MAX_CONCURRENT_FFMPEG = parseInt(process.env.MAX_CONCURRENT_FFMPEG || '2',
 const downloadSemaphore = new Semaphore(MAX_CONCURRENT_DOWNLOADS, 'zoom-download');
 const ffmpegSemaphore = new Semaphore(MAX_CONCURRENT_FFMPEG, 'zoom-ffmpeg');
 const downloadsInFlight = createInFlightMap<string | null>('zoom-download');
-const extractionsInFlight = createInFlightMap<string>('zoom-extract-audio');
 
 const DOWNLOADS_BASE = path.resolve(__dirname, '../../../../downloads');
 const VIDEO_DIR = path.join(DOWNLOADS_BASE, 'video');
@@ -245,7 +244,7 @@ export class ZoomRecordingService {
    * Extracts audio track from video file for speech-to-text / QA audit pipeline.
    */
   static async extractAudio(recordingId: string): Promise<string> {
-    return extractionsInFlight.run(recordingId, async () => {
+    return audioExtractionsInFlight.run(recordingId, async () => {
       const recording = await this.getRecordingById(recordingId);
       if (!recording) throw new Error(`Recording ${recordingId} not found.`);
 

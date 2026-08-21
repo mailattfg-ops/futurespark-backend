@@ -26,6 +26,7 @@ import { startZoomPresencePolling } from './modules/zoom/presence/presence.servi
 import zoomWebhooksRouter from './modules/zoom/webhooks/webhooks.routes';
 import { zoomHostsRouter } from './modules/zoom/hosts/hosts.routes';
 import { seedFromEnvIfEmpty } from './modules/zoom/hosts/hosts.service';
+import { backfillAudioExtractedAt } from './modules/shared/audio-backfill';
 
 const app = express();
 
@@ -65,6 +66,11 @@ startZoomPresencePolling();
 // invisible — the same seats keep hosting the same classes. No-ops forever
 // after, and never resurrects a seat an admin deleted.
 void seedFromEnvIfEmpty();
+
+// Audio extracted before `audioExtractedAt` existed has no timestamp, which
+// the dashboard could only read as "never extracted". Dated once at boot from
+// each file's own write time — the filesystem's record, not a guess.
+void backfillAudioExtractedAt();
 
 // Register Google module endpoints
 app.use('/google/auth', googleAuthRouter);

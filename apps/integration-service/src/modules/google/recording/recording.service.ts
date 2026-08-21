@@ -1,4 +1,4 @@
-import { probeDurationSeconds } from "../../shared/audio";
+import { probeDurationSeconds, extractVerifiedAudio } from "../../shared/audio";
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -10,7 +10,7 @@ import { pickBestRecording, type DriveCandidate } from './recording-match';
 import { logger } from '@futurespark/logger';
 import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
-import { Semaphore, createInFlightMap } from '../../../utils/concurrency';
+import { Semaphore, createInFlightMap, audioExtractionsInFlight } from '../../../utils/concurrency';
 
 // Ceilings for the fan-out that happens when many classes end in the same window.
 // Raise these in production (bigger instance / S3-backed storage) via env.
@@ -20,7 +20,6 @@ const MAX_CONCURRENT_FFMPEG = parseInt(process.env.MAX_CONCURRENT_FFMPEG || '2',
 const downloadSemaphore = new Semaphore(MAX_CONCURRENT_DOWNLOADS, 'drive-download');
 const ffmpegSemaphore = new Semaphore(MAX_CONCURRENT_FFMPEG, 'ffmpeg-extract');
 const downloadsInFlight = createInFlightMap<string | null>('download');
-const extractionsInFlight = createInFlightMap<string>('extract-audio');
 
 const DOWNLOADS_BASE = path.resolve(__dirname, '../../../../downloads');
 const VIDEO_DIR = path.join(DOWNLOADS_BASE, 'video');
@@ -379,7 +378,7 @@ export class GoogleRecordingService {
    * classes cannot spawn N simultaneous ffmpeg processes.
    */
   static async extractAudioFromRecording(recordingId: string, format: 'mp3' | 'wav' = 'mp3'): Promise<string> {
-    return extractionsInFlight.run(recordingId, () =>
+    return audioExtractionsInFlight.run(recordingId, () =>
       ffmpegSemaphore.run(() => GoogleRecordingService.runAudioExtraction(recordingId, format))
     );
   }
@@ -477,19 +476,26 @@ export class GoogleRecordingService {
         return resolve(finalAudioPath);
       }
 
-      let ffmpegPath = 'ffmpeg';
-      try {
-        ffmpegPath = require('@ffmpeg-installer/ffmpeg').path || require('ffmpeg-static') || 'ffmpeg';
-      } catch (e) {
+      /* ONE extractor, shared with the Zoom path.
+       *
+       * This used to be a second hand-rolled ffmpeg call, and the two drifted:
+       * this one omitted -map 0:a:0 and -write_xing 1, so a multi-stream or
+       * VBR source could produce a file whose header disagreed with its
+       * contents — the track that played as "0:00 / 14092:51:41".
+       *
+       * extractVerifiedAudio measures what it produced against the source
+       * video and refuses to leave a bad file behind, so both providers now
+       * get the same guarantee instead of the same intention. */
+      const runExtraction = async (cb: (error: any) => Promise<any>) => {
         try {
-          ffmpegPath = require('ffmpeg-static') || 'ffmpeg';
-        } catch (_) {}
-      }
+          await extractVerifiedAudio(localVideoPath, destinationPath, { label: 'GoogleRecording' });
+          return cb(null);
+        } catch (err: any) {
+          return cb(err);
+        }
+      };
 
-      const { execFile } = require('child_process');
-      const ffmpegArgs = ['-y', '-i', localVideoPath, '-vn', '-ar', '16000', '-ac', '1', '-b:a', '32k', destinationPath];
-
-      execFile(ffmpegPath, ffmpegArgs, async (error: any) => {
+      runExtraction(async (error: any) => {
         if (isVideoOnS3 && fs.existsSync(localVideoPath)) {
           try { fs.unlinkSync(localVideoPath); } catch (_) {}
         }
@@ -517,17 +523,14 @@ export class GoogleRecordingService {
         try {
           const audioSeconds = await probeDurationSeconds(destinationPath);
           const sizeBytes = fs.existsSync(destinationPath) ? fs.statSync(destinationPath).size : 0;
-          const expected = recording.duration ?? null;
-
           if (sizeBytes < 4096 || audioSeconds === null) {
             throw new Error('the extracted file is empty or has no readable duration');
           }
-          if (expected && Math.abs(audioSeconds - expected) > Math.max(5, expected * 0.05)) {
-            throw new Error(
-              `it is ${Math.round(audioSeconds)}s but the recording is ${Math.round(expected)}s ` +
-                `(${(audioSeconds / expected).toFixed(2)}x)`
-            );
-          }
+          /* No length comparison here any more. extractVerifiedAudio has
+           * already measured this track against the source video, which is the
+           * only trustworthy reference — the provider's own duration is rounded
+           * to whole minutes, so comparing against it condemns correct tracks
+           * (a 4:46 class is reported as 4:00). */
           logger.info(
             `[GoogleRecordingService] Audio verified: ${Math.round(audioSeconds)}s, ` +
               `${(sizeBytes / 1048576).toFixed(1)} MB.`

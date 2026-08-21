@@ -73,7 +73,7 @@ export const getAuthFeed = async (since: Date | null, limit: number): Promise<Fe
       where: { entityType: 'ai-summary', ...(since ? { occurredAt: window } : {}) },
       orderBy: { occurredAt: 'desc' },
       take: limit,
-      select: { occurredAt: true, entityName: true, summary: true, action: true },
+      select: { occurredAt: true, entityName: true, summary: true, action: true, entityId: true },
     }),
   ]);
 
@@ -114,6 +114,36 @@ export const getAuthFeed = async (since: Date | null, limit: number): Promise<Fe
       subtitle: r.reportSentTo ? `sent to ${r.reportSentTo}` : 'sent (number not recorded)',
       status: 'ok',
       detail: r.reportAttempts > 1 ? `after ${r.reportAttempts} attempts` : null,
+    });
+  }
+
+  /* Classes that HAVE a summary but no audit line — anything summarised
+   * before the pipeline started logging the event. */
+  const loggedClassIds = new Set(summaries.map((e) => e.entityId).filter(Boolean) as string[]);
+  const legacySummaries = await db.scheduledClass.findMany({
+    where: {
+      classSummary: { not: null },
+      ...(since ? { updatedAt: { gte: since } } : {}),
+      ...(loggedClassIds.size > 0 ? { id: { notIn: [...loggedClassIds] } } : {}),
+    },
+    orderBy: { updatedAt: 'desc' },
+    take: limit,
+    select: {
+      id: true, updatedAt: true,
+      student: { select: { firstName: true, lastName: true } },
+    },
+  });
+
+  for (const c of legacySummaries) {
+    events.push({
+      type: 'summary',
+      at: c.updatedAt.toISOString(),
+      title: name(c.student?.firstName, c.student?.lastName) || 'Class summary',
+      // Said plainly: this is when the row was last written, not when the
+      // model finished. Every summary from here on carries an exact time.
+      subtitle: 'summary on file · time approximate',
+      status: 'ok',
+      detail: null,
     });
   }
 

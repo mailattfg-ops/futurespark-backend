@@ -353,6 +353,8 @@ const resolveFfmpeg = (): string => {
   }
 };
 
+let compressionCounter = 0;
+
 export class GroqTranscriptionService {
   // Key presence is judged per RESOLVED provider, not against GROQ_API_KEY.
   // The old check tested GROQ_API_KEY specifically, so a deployment that moved
@@ -709,6 +711,21 @@ export class GroqTranscriptionService {
   /**
    * Compress audio/video file locally using ffmpeg if size > 20MB or is video format
    */
+  /** The file's real length in seconds, read from its container header. */
+  private probeSeconds(ffmpegPath: string, file: string): number | null {
+    try {
+      if (!fs.existsSync(file)) return null;
+      const { spawnSync } = require('child_process');
+      // "-i" with no real output exits non-zero by design; the header is on stderr.
+      const res = spawnSync(ffmpegPath, ['-i', file, '-f', 'null', '-t', '0', '-'], { encoding: 'utf8' });
+      const m = /Duration: ([0-9]+):([0-9]{2}):([0-9]{2})[.]([0-9]{1,2})/.exec(String(res.stderr || ''));
+      if (!m) return null;
+      return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(`0.${m[4]}`);
+    } catch {
+      return null;
+    }
+  }
+
   private compressAudioIfNeeded(filePath: string): string {
     const stats = fs.statSync(filePath);
     const fileSizeMb = stats.size / (1024 * 1024);
@@ -718,13 +735,17 @@ export class GroqTranscriptionService {
       return filePath;
     }
 
-    const tempOutput = filePath + '.compressed.mp3';
-    if (fs.existsSync(tempOutput) && fs.statSync(tempOutput).size > 1000000) {
-      logger.info(`[GroqTranscriptionService] [✓] Found existing compressed audio: ${tempOutput} - Reusing!`);
-      return tempOutput;
-    }
-
-    logger.info(`[GroqTranscriptionService] [+] File size: ${fileSizeMb.toFixed(2)}MB (${ext}). Extracting & compressing audio to MP3...`);
+    /* The compressed copy is what the AI actually hears, so it gets the same
+     * treatment as the extraction upstream: a unique temp name, a length check
+     * against the source, and only then a rename into the cache slot.
+     *
+     * This used to write to one fixed path and reuse whatever sat there if it
+     * was over 1 MB. Two transcriptions of the same recording — the auto-trigger
+     * and a retry, say — therefore wrote the same file at the same time; and
+     * once a bad file landed there, every later attempt reused it and returned
+     * the same nonsense. A stretched track still transcribes, confidently, so
+     * it has to be measured rather than assumed. */
+    const cachePath = filePath + '.compressed.mp3';
 
     let ffmpegPath = 'ffmpeg';
     try {
@@ -735,17 +756,60 @@ export class GroqTranscriptionService {
       } catch (_) { }
     }
 
+    const sourceSeconds = this.probeSeconds(ffmpegPath, filePath);
+    const matchesSource = (candidate: number | null): boolean =>
+      sourceSeconds !== null &&
+      candidate !== null &&
+      Math.abs(candidate - sourceSeconds) <= Math.max(5, sourceSeconds * 0.02);
+
+    // Reuse a cached track only when it still measures correct.
+    if (fs.existsSync(cachePath)) {
+      if (matchesSource(this.probeSeconds(ffmpegPath, cachePath))) {
+        logger.info(`[GroqTranscriptionService] Reusing verified compressed audio: ${cachePath}`);
+        return cachePath;
+      }
+      logger.warn(
+        `[GroqTranscriptionService] Discarding a cached compressed track that no longer matches its source: ${cachePath}`
+      );
+      try { fs.unlinkSync(cachePath); } catch (_) { }
+    }
+
+    logger.info(`[GroqTranscriptionService] [+] File size: ${fileSizeMb.toFixed(2)}MB (${ext}). Extracting & compressing audio to MP3...`);
+
     const { execFileSync } = require('child_process');
+    const tempOutput = `${filePath}.${process.pid}.${compressionCounter++}.tmp.mp3`;
     try {
-      execFileSync(ffmpegPath, ['-y', '-i', filePath, '-vn', '-ar', '16000', '-ac', '1', '-b:a', '32k', tempOutput], {
-        stdio: 'pipe',
-      });
-      const newStats = fs.statSync(tempOutput);
-      const newSizeMb = newStats.size / (1024 * 1024);
-      logger.info(`[GroqTranscriptionService] [✓] Compressed audio: ${tempOutput} (${newSizeMb.toFixed(2)}MB) - Ready for transcription`);
-      return tempOutput;
+      execFileSync(
+        ffmpegPath,
+        ['-y', '-i', filePath, '-vn', '-map', '0:a:0', '-ar', '16000', '-ac', '1', '-b:a', '32k', '-write_xing', '1', tempOutput],
+        { stdio: 'pipe' }
+      );
+
+      const producedSeconds = this.probeSeconds(ffmpegPath, tempOutput);
+      if (producedSeconds === null) {
+        throw new Error('the compressed track has no readable duration, which means a malformed file');
+      }
+      if (sourceSeconds !== null && !matchesSource(producedSeconds)) {
+        throw new Error(
+          `the compressed track is ${producedSeconds === null ? 'unreadable' : Math.round(producedSeconds) + 's'} ` +
+          `but the source is ${Math.round(sourceSeconds)}s — refusing to send it to the model`
+        );
+      }
+
+      const newSizeMb = fs.statSync(tempOutput).size / (1024 * 1024);
+      // Only a measured file is ever promoted into the cache slot.
+      fs.renameSync(tempOutput, cachePath);
+      logger.info(
+        sourceSeconds !== null
+          ? `[GroqTranscriptionService] Compressed audio verified against its source: ${cachePath} ` +
+            `(${newSizeMb.toFixed(2)}MB, ${Math.round(producedSeconds)}s) - Ready for transcription`
+          : `[GroqTranscriptionService] Compressed audio produced: ${cachePath} (${newSizeMb.toFixed(2)}MB, ` +
+            `${Math.round(producedSeconds)}s). The source length could not be read, so the two were NOT compared.`
+      );
+      return cachePath;
     } catch (err: any) {
-      logger.warn(`[GroqTranscriptionService] ⚠️ Compression failed: ${err.message}. Attempting fallback...`);
+      try { fs.unlinkSync(tempOutput); } catch (_) { }
+      logger.warn(`[GroqTranscriptionService] Compression failed: ${err.message}. Falling back to the original file.`);
       return filePath;
     }
   }

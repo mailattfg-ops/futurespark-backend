@@ -1,4 +1,5 @@
 import fs from 'fs';
+import pathModule from 'path';
 import { execFile } from 'child_process';
 import { logger } from '@futurespark/logger';
 
@@ -96,6 +97,8 @@ export class AudioExtractionError extends Error {
  * ceremony — it is the check for the exact failure that produced a
  * three-times-too-long track in production.
  */
+let extractionCounter = 0;
+
 export const extractVerifiedAudio = async (
   videoPath: string,
   audioPath: string,
@@ -124,22 +127,42 @@ export const extractVerifiedAudio = async (
     try { fs.unlinkSync(audioPath); } catch { /* overwritten by -y anyway */ }
   }
 
-  await run(
-    ffmpeg,
-    ['-y', '-i', videoPath, '-vn', '-map', '0:a:0', '-ar', '16000', '-ac', '1', '-b:a', '32k', '-write_xing', '1', audioPath],
-    30 * 60_000
-  );
+  /* Extract to a private temp file, then rename into place.
+   *
+   * The in-process lock stops two triggers inside ONE service from colliding,
+   * but it cannot see another process. Two backends were briefly running
+   * against this same downloads directory, and ffmpeg writing the final path
+   * directly means two of them interleave their output into one file — which
+   * is how a track ended up with frames that disagreed with its header.
+   *
+   * A rename is atomic on both NTFS and ext4, so the destination only ever
+   * holds a file that was written start-to-finish by a single process and then
+   * measured. A loser in that race overwrites with its own complete, verified
+   * track rather than corrupting the winner's. */
+  const ext = pathModule.extname(audioPath) || '.mp3';
+  const tempPath = `${audioPath.slice(0, audioPath.length - ext.length)}.${process.pid}.${extractionCounter++}.tmp${ext}`;
 
-  if (!fs.existsSync(audioPath) || fs.statSync(audioPath).size < 4096) {
+  try {
+    await run(
+      ffmpeg,
+      ['-y', '-i', videoPath, '-vn', '-map', '0:a:0', '-ar', '16000', '-ac', '1', '-b:a', '32k', '-write_xing', '1', tempPath],
+      30 * 60_000
+    );
+  } catch (err) {
+    try { fs.unlinkSync(tempPath); } catch { /* nothing to clean */ }
+    throw err;
+  }
+
+  if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size < 4096) {
     throw new AudioExtractionError(
       `${label}Audio extraction produced no usable file. Nothing was written — a silent placeholder ` +
         'would be transcribed as an empty class.'
     );
   }
 
-  const audioSeconds = await probeDurationSeconds(audioPath);
+  const audioSeconds = await probeDurationSeconds(tempPath);
   if (audioSeconds === null) {
-    try { fs.unlinkSync(audioPath); } catch { /* best effort */ }
+    try { fs.unlinkSync(tempPath); } catch { /* best effort */ }
     throw new AudioExtractionError(
       `${label}The extracted audio has no readable duration, which means a malformed file. Discarded.`
     );
@@ -149,7 +172,7 @@ export const extractVerifiedAudio = async (
   // normal; a 3x stretch or a truncated file is not.
   const tolerance = Math.max(5, sourceSeconds * 0.02);
   if (Math.abs(audioSeconds - sourceSeconds) > tolerance) {
-    try { fs.unlinkSync(audioPath); } catch { /* best effort */ }
+    try { fs.unlinkSync(tempPath); } catch { /* best effort */ }
     throw new AudioExtractionError(
       `${label}Extracted audio is ${audioSeconds.toFixed(0)}s but the video is ${sourceSeconds.toFixed(0)}s ` +
         `(${(audioSeconds / sourceSeconds).toFixed(2)}x). A stretched or truncated track transcribes into ` +
@@ -157,9 +180,16 @@ export const extractVerifiedAudio = async (
     );
   }
 
+  const sizeBytes = fs.statSync(tempPath).size;
+
+  /* Verified — promote it. Until this line the destination either does not
+   * exist or still holds the previous good track; nothing downstream can ever
+   * observe a half-written file. */
+  fs.renameSync(tempPath, audioPath);
+
   logger.info(
     `${label}Audio extracted and verified: ${Math.round(audioSeconds)}s, ` +
-      `${(fs.statSync(audioPath).size / 1048576).toFixed(1)} MB (video ${Math.round(sourceSeconds)}s).`
+      `${(sizeBytes / 1048576).toFixed(1)} MB (video ${Math.round(sourceSeconds)}s).`
   );
 
   return { audioPath, durationSeconds: audioSeconds };
