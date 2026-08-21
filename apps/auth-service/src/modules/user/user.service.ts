@@ -733,6 +733,21 @@ export const userService = {
     const student = await db.student.findUnique({ where: { id: studentId } });
     if (!student) throw new AppError('Student not found', HTTP_STATUS.NOT_FOUND);
 
+    /* Only these three mean anything. An unrecognised value would otherwise
+     * be stored and then silently match no dashboard bucket, which is how a
+     * child disappears from every count at once. */
+    const ALLOWED_STATUS = ['ACTIVE', 'DROPPED', 'COMPLETED'];
+    const nextStatus =
+      input.status !== undefined && input.status !== null
+        ? String(input.status).toUpperCase()
+        : null;
+    if (nextStatus && !ALLOWED_STATUS.includes(nextStatus)) {
+      throw new AppError(
+        `"${input.status}" is not a student status. Use one of: ${ALLOWED_STATUS.join(', ')}.`,
+        HTTP_STATUS.BAD_REQUEST
+      );
+    }
+
     if (input.email && input.email !== student.email) {
       const existing = await db.student.findUnique({ where: { email: input.email } });
       if (existing) throw new AppError('Email already in use by another student account', HTTP_STATUS.CONFLICT);
@@ -750,6 +765,24 @@ export const userService = {
         timezone: input.timezone || undefined,
         // Empty string clears the photo; undefined leaves it untouched.
         avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl || null : undefined,
+
+        /* Enrolment state, and the note that explains it.
+         *
+         * Deliberately separate from `isActive`: a child who leaves the
+         * programme keeps their login, their class history and the reports
+         * their family already received. Disabling the account instead would
+         * take all of that away to record a fact about attendance.
+         *
+         * `statusChangedAt` is only moved when the status actually changes,
+         * so it answers "when did they drop" rather than "when was this row
+         * last saved". */
+        ...(nextStatus
+          ? {
+              status: nextStatus,
+              ...(nextStatus !== student.status ? { statusChangedAt: new Date() } : {}),
+            }
+          : {}),
+        statusNote: input.statusNote !== undefined ? input.statusNote || null : undefined,
       }
     });
   },

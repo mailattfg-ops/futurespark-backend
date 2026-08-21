@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { HTTP_STATUS } from '@futurespark/constants';
+import { asyncHandler } from '@futurespark/middleware';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
 import { clampDays, getRecordingsMetrics, getZoomMetrics } from './metrics.service';
+import { getIntegrationFeed } from './feed.service';
 
 /**
  * /metrics/* — read-only aggregates for the admin System Health page, called
@@ -46,5 +48,26 @@ router.get('/zoom', async (req: Request, res: Response) => {
       .json(errorResponse(err.message || 'Failed to load Zoom metrics'));
   }
 });
+
+
+/**
+ * GET /metrics/feed — recent recordings events for the Technical Dashboard.
+ *
+ * `since` is an ISO instant; omitted means no lower bound. `limit` is PER
+ * EVENT TYPE, because the gateway merges three services and re-slices — a
+ * global limit here would let one chatty type crowd the others out before the
+ * merge ever saw them.
+ */
+router.get('/feed', asyncHandler(async (req: Request, res: Response) => {
+  if (!isAdmin(req)) {
+    return res.status(HTTP_STATUS.FORBIDDEN).json(errorResponse('Only an admin can read the technical feed.'));
+  }
+  const rawSince = typeof req.query.since === 'string' ? new Date(req.query.since) : null;
+  const since = rawSince && !Number.isNaN(rawSince.getTime()) ? rawSince : null;
+  const limit = Math.min(Math.max(Number(req.query.limit) || 40, 1), 200);
+
+  const data = await getIntegrationFeed(since, limit);
+  res.status(HTTP_STATUS.OK).json(successResponse(data, 'Feed loaded.'));
+}));
 
 export default router;

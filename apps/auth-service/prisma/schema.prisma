@@ -176,6 +176,22 @@ model Student {
   warningCount     Int              @default(0)
   warnings         String[]         @default([])
   credits          Int              @default(0)
+  /// Where the CHILD is in the programme — not whether their login works.
+  ///
+  /// `isActive` governs the ACCOUNT (can they sign in). This governs the
+  /// ENROLMENT (are they still attending), and the two are different events:
+  /// a child who drops out keeps their login, their history and their past
+  /// reports. Until this existed there was no way to record a mid-programme
+  /// drop at all — the dashboard inferred one from a disabled account, and
+  /// counted "completed" off a field Student never had, so that figure was
+  /// always zero.
+  ///
+  /// "ACTIVE" | "DROPPED" | "COMPLETED"
+  status           String           @default("ACTIVE")
+  /// Why, in the admin's own words. A drop is a conversation with a family,
+  /// and the reason is what makes the number useful months later.
+  statusNote       String?
+  statusChangedAt  DateTime?
   timezone         String           @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
   schedulerGroupId String?
   schedulerGroup   SchedulerGroup?  @relation("GroupStudents", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
