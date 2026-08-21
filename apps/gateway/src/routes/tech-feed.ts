@@ -32,7 +32,14 @@ interface FeedEvent {
   source?: string;
 }
 
-const fetchFeed = async (url: string, headers: Record<string, string>, source: string): Promise<FeedEvent[]> => {
+interface FeedResult {
+  events: FeedEvent[];
+  /** False only when the service could not be ASKED. An empty list from a
+   *  healthy service is an answer, not a failure. */
+  reachable: boolean;
+}
+
+const fetchFeed = async (url: string, headers: Record<string, string>, source: string): Promise<FeedResult> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -40,12 +47,12 @@ const fetchFeed = async (url: string, headers: Record<string, string>, source: s
     if (!res.ok) throw new Error(`${source} answered ${res.status}`);
     const body = (await res.json()) as any;
     const rows = Array.isArray(body?.data) ? body.data : [];
-    return rows.map((r: FeedEvent) => ({ ...r, source }));
+    return { events: rows.map((r: FeedEvent) => ({ ...r, source })), reachable: true };
   } catch (err: any) {
     // One service being down must not empty the whole feed — the events from
     // the other two are still true.
     logger.warn(`[TechFeed] ${source} feed unavailable: ${err.message}`);
-    return [];
+    return { events: [], reachable: false };
   } finally {
     clearTimeout(timer);
   }
@@ -77,7 +84,7 @@ techFeedRouter.get(
       fetchFeed(`${INTEGRATION_SERVICE_URL}/metrics/feed${qs}`, headers, 'integration'),
     ]);
 
-    const events = [...auth, ...comm, ...integration]
+    const events = [...auth.events, ...comm.events, ...integration.events]
       .filter((e) => e && typeof e.at === 'string' && !Number.isNaN(new Date(e.at).getTime()))
       .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
@@ -94,12 +101,16 @@ techFeedRouter.get(
         counts,
         total: events.length,
         events: events.slice(0, limit),
-        // Named so the page can say WHICH source is missing rather than
-        // quietly showing a shorter list.
+        /* ONLY services that could not be reached.
+         *
+         * This previously listed any service that returned no events, so a
+         * perfectly healthy integration-service with no recordings today was
+         * reported as possibly unreachable — an alarm about the quiet, which
+         * teaches people to ignore the banner. */
         sourcesDown: [
-          auth.length === 0 ? 'auth' : null,
-          comm.length === 0 ? 'communication' : null,
-          integration.length === 0 ? 'integration' : null,
+          auth.reachable ? null : 'auth',
+          comm.reachable ? null : 'communication',
+          integration.reachable ? null : 'integration',
         ].filter(Boolean),
       })
     );

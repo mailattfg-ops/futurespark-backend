@@ -75,3 +75,19 @@ export function createInFlightMap<T>(name: string) {
     },
   };
 }
+
+/**
+ * ONE in-flight map for audio extraction, shared by every provider.
+ *
+ * Google and Zoom each had their own, and both write into the same
+ * downloads/audio directory — so the two never saw each other and could run
+ * ffmpeg against the same output file at the same time. They also used
+ * different sample rates, which is how a file ended up holding 48 kHz frames
+ * labelled 16 kHz: three times too long, unintelligible to the transcriber,
+ * and reporting a 14,092-hour duration to the player.
+ *
+ * Keyed by recording id, which is unique across providers and is embedded in
+ * the output filename — so two jobs that would write the same file always
+ * share a key, and the second joins the first instead of racing it.
+ */
+export const audioExtractionsInFlight = createInFlightMap<string>('extract-audio');

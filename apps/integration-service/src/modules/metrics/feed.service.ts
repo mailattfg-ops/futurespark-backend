@@ -1,4 +1,5 @@
 import { db, withDbRetry } from '../../database/datasource';
+import { logger } from '@futurespark/logger';
 
 /** Same shape every service emits — see auth-service/modules/metrics/feed.service.ts. */
 export interface FeedEvent {
@@ -20,7 +21,7 @@ export const getIntegrationFeed = async (since: Date | null, limit: number): Pro
   const window = since ? { gte: since } : undefined;
   const events: FeedEvent[] = [];
 
-  const [videos, audios] = await Promise.all([
+  const [videosResult, audiosResult] = await Promise.allSettled([
     // VIDEO — the recording appearing is the event.
     withDbRetry(() =>
       db.meetingRecording.findMany({
@@ -47,6 +48,26 @@ export const getIntegrationFeed = async (since: Date | null, limit: number): Pro
       })
     ),
   ]);
+
+  /* A query that failed yields no events of ITS kind and says why in the log
+   * — rather than emptying the other kind with it. Promise.all would fail the
+   * whole call, so an environment whose audioExtractedAt migration has not
+   * been applied lost its VIDEO events too: two blank cards for one missing
+   * column, and no clue which. */
+  const videos = videosResult.status === 'fulfilled' ? videosResult.value : [];
+  const audios = audiosResult.status === 'fulfilled' ? audiosResult.value : [];
+
+  if (videosResult.status === 'rejected') {
+    logger.error(
+      `[Feed] Video events unavailable: ${videosResult.reason?.message ?? videosResult.reason}`
+    );
+  }
+  if (audiosResult.status === 'rejected') {
+    logger.error(
+      `[Feed] Audio events unavailable: ${audiosResult.reason?.message ?? audiosResult.reason}. ` +
+        'If this names audioExtractedAt, this database has not had prisma db push run since that column was added.'
+    );
+  }
 
   for (const v of videos) {
     const lag = minutesBetween(v.meeting?.classCompletedAt, v.createdAt);
