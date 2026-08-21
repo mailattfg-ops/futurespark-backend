@@ -88,7 +88,7 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
       sessionDate = new Date().toLocaleDateString('en-GB'),
       sessionTime = '04:30 PM - 05:30 PM',
       timezone = 'IST',
-      joinUrl = 'https://futurespark-landing-two.vercel.app/',
+      joinUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai/',
     } = req.body ?? {};
 
     if (!to || typeof to !== 'string' || !to.trim()) {
