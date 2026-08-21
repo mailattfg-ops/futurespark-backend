@@ -704,6 +704,54 @@ export const effectiveSessionTopics = (value: unknown): SessionTopic[] => {
   }
 };
 
+/* ── Session activities ──────────────────────────────────────────────────── */
+
+export interface SessionActivity {
+  label: string;
+}
+
+/**
+ * What the child does in the session, and what they take away from it.
+ *
+ * Fixed per session in the curriculum rather than observed from the recording:
+ * the parent report lists what the session is built around, and the mentor
+ * marks off what was actually reached. Three of each is what the report's
+ * layout holds; more are stored but not printed.
+ */
+export interface SessionActivities {
+  inSession: SessionActivity[];
+  takeHome: SessionActivity[];
+}
+
+export const MAX_SESSION_ACTIVITIES = 3;
+const MAX_ACTIVITY_LABEL_LEN = 120;
+
+const normalizeActivityList = (raw: unknown): SessionActivity[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const label =
+        typeof item === 'string'
+          ? item
+          : item && typeof item === 'object' && typeof (item as any).label === 'string'
+            ? (item as any).label
+            : '';
+      const trimmed = String(label).trim().slice(0, MAX_ACTIVITY_LABEL_LEN);
+      return trimmed ? { label: trimmed } : null;
+    })
+    .filter(Boolean) as SessionActivity[];
+};
+
+/** Reads stored activities defensively — bad data means "no activities". */
+export const effectiveSessionActivities = (value: unknown): SessionActivities => {
+  if (!value || typeof value !== 'object') return { inSession: [], takeHome: [] };
+  const raw = value as any;
+  return {
+    inSession: normalizeActivityList(raw.inSession),
+    takeHome: normalizeActivityList(raw.takeHome),
+  };
+};
+
 // ── Cross-service media grants ────────────────────────────────
 // Recordings live in integration-service; who is allowed to watch a given class
 // is known only to auth-service, which owns the student/parent/mentor graph.

@@ -8,6 +8,9 @@ import {
   normalizeSessionTopics,
   ReflectionQuestion,
   SessionTopic,
+  effectiveSessionActivities,
+  MAX_SESSION_ACTIVITIES,
+  type SessionActivities,
 } from '@futurespark/constants';
 
 const FALLBACK_REFLECTION_QUESTIONS = [
@@ -172,6 +175,8 @@ export interface CreateSessionInput {
   reflectionQuestions?: string[];
   reflectionQuiz?: ReflectionQuestion[];
   topics?: SessionTopic[];
+  learningOutcomes?: string[];
+  activities?: SessionActivities;
 }
 
 export const validateCreateSession = (data: any): CreateSessionInput => {
@@ -211,6 +216,49 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
  * Whitelisted partial update. Only keys actually present in the body are
  * returned, so a caller editing just the resources cannot blank out the title.
  */
+/**
+ * The outcomes this session teaches, as the report prints them.
+ *
+ * Capped at five because that is what the report's layout holds — accepting a
+ * sixth here would mean silently dropping it at render time, which is worse
+ * than telling the author now.
+ */
+const MAX_LEARNING_OUTCOMES = 5;
+const OUTCOME_MAX_LEN = 160;
+
+const normalizeLearningOutcomes = (raw: any): string[] => {
+  if (raw === null || raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new AppError('Learning outcomes must be a list', HTTP_STATUS.BAD_REQUEST);
+  const out = raw
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter((v) => v.length > 0)
+    .map((v) => v.slice(0, OUTCOME_MAX_LEN));
+  if (out.length > MAX_LEARNING_OUTCOMES) {
+    throw new AppError(
+      `A session can have at most ${MAX_LEARNING_OUTCOMES} learning outcomes; the report prints five.`,
+      HTTP_STATUS.BAD_REQUEST
+    );
+  }
+  return out;
+};
+
+const normalizeActivitiesInput = (raw: any): SessionActivities => {
+  if (raw === null || raw === undefined) return { inSession: [], takeHome: [] };
+  if (typeof raw !== 'object') {
+    throw new AppError('Activities must be an object with inSession and takeHome', HTTP_STATUS.BAD_REQUEST);
+  }
+  const cleaned = effectiveSessionActivities(raw);
+  for (const [key, list] of [['in-session', cleaned.inSession], ['take-home', cleaned.takeHome]] as const) {
+    if (list.length > MAX_SESSION_ACTIVITIES) {
+      throw new AppError(
+        `A session can have at most ${MAX_SESSION_ACTIVITIES} ${key} activities; the report prints three.`,
+        HTTP_STATUS.BAD_REQUEST
+      );
+    }
+  }
+  return cleaned;
+};
+
 export const validateUpdateSession = (data: any): Partial<CreateSessionInput> => {
   const out: Partial<CreateSessionInput> = {};
   const errors: string[] = [];
@@ -265,6 +313,12 @@ export const validateUpdateSession = (data: any): Partial<CreateSessionInput> =>
   }
   if (data.topics !== undefined) {
     out.topics = asBadRequest(() => normalizeSessionTopics(data.topics));
+  }
+  if (data.learningOutcomes !== undefined) {
+    out.learningOutcomes = normalizeLearningOutcomes(data.learningOutcomes);
+  }
+  if (data.activities !== undefined) {
+    out.activities = normalizeActivitiesInput(data.activities);
   }
   return out;
 };
