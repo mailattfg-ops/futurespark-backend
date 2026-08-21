@@ -100,7 +100,8 @@ export const leadService = {
       const courseName = lead.program?.title || 'Financial Literacy';
       const sessionTime = lead.preferredTime || '04:30 PM - 05:30 PM';
       const timezone = lead.preferredTimezone || 'IST';
-      const joinUrl = `https://futurespark-landing-two.vercel.app/demo-class?leadId=${lead.id}`;
+      const baseUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
+      const joinUrl = `${baseUrl.replace(/\/$/, '')}/demo-class?leadId=${lead.id}`;
 
       let sessionDate = new Date().toLocaleDateString('en-GB');
       if (lead.notes && typeof lead.notes === 'string') {
