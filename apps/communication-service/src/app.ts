@@ -9,7 +9,7 @@ import express from 'express';
 import cors from 'cors';
 import { logger } from '@futurespark/logger';
 import { successResponse, errorResponse } from '@futurespark/response';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, buildInfo } from '@futurespark/constants';
 
 import { notificationRoutes } from './modules/notification/notification.routes';
 import { metricsRoutes } from './modules/metrics/metrics.routes';
@@ -70,9 +70,27 @@ app.use('/whatsapp', express.json({ limit: '12mb' }), whatsappReportRoutes);
 // the same body ceiling they always had.
 app.use(express.json({ limit: '100kb' }));
 
+/**
+ * Behaviours compiled into THIS build.
+ *
+ * A name here cannot appear unless the code implementing it is the code
+ * running, so a missing name proves the deployment predates that fix. Add a
+ * name in the same change as the behaviour; never rename one.
+ */
+const CAPABILITIES = [
+  'report-template-14-vars',
+  'report-body-1024-budget',
+  'report-template-vars-warning',
+];
+
 app.get('/health', (req, res) => {
-  // uptime feeds the System Health page's per-service card.
-  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP', uptime: process.uptime() }, 'communication-service is healthy'));
+  // uptime feeds the System Health page; capabilities answer "is the fix live?".
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(
+      { status: 'UP', uptime: process.uptime(), build: buildInfo('communication-service', CAPABILITIES) },
+      'communication-service is healthy'
+    )
+  );
 });
 
 app.use('/notifications', notificationRoutes);

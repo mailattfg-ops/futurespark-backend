@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { logger } from '@futurespark/logger';
 import { successResponse } from '@futurespark/response';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, buildInfo } from '@futurespark/constants';
 import { errorHandler, requestId } from '@futurespark/middleware';
 import { authRoutes } from './modules/auth';
 import { userRoutes } from './modules/user';
@@ -39,11 +39,25 @@ app.use('/scheduler-groups', schedulerGroupRoutes);
 app.use('/metrics', metricsRoutes);
 
 // ── Health Check ───────────────────────────────────────────────
+/**
+ * Behaviours compiled into THIS build.
+ *
+ * A name here cannot appear unless the code implementing it is the code
+ * running, so a missing name proves the deployment predates that fix. Add a
+ * name in the same change as the behaviour; never rename one.
+ */
+const CAPABILITIES = [
+  'report-approved-design',
+  'report-curriculum-content',
+  'report-first-session-baseline',
+];
+
 app.get('/health', (_req, res) => {
+  // uptime feeds the System Health page; capabilities answer "is the fix live?".
   res.status(HTTP_STATUS.OK).json(
     successResponse(
-      { status: 'UP', uptime: process.uptime() },
-      'Auth Service is healthy'
+      { status: 'UP', uptime: process.uptime(), build: buildInfo('auth-service', CAPABILITIES) },
+      'auth-service is healthy'
     )
   );
 });
