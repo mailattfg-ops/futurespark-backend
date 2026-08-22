@@ -57,6 +57,12 @@ const fetchJson = async (url: string, headers: Record<string, string>, timeoutMs
 interface ServicePing {
   up: boolean;
   uptimeSeconds: number | null;
+  /**
+   * What the service reports it can do. Absence of a name is proof the running
+   * build predates that behaviour, which is the only reliable way to answer
+   * "did the fix actually deploy?" from outside the box.
+   */
+  build: { builtAt: string | null; startedAt: string | null; capabilities: string[] } | null;
   latencyMs: number | null;
 }
 
@@ -68,17 +74,26 @@ const ping = async (baseUrl: string): Promise<ServicePing> => {
   try {
     const response = await fetch(`${baseUrl}/health`, { signal: controller.signal });
     const latencyMs = Date.now() - started;
-    if (!response.ok) return { up: false, uptimeSeconds: null, latencyMs };
+    if (!response.ok) return { up: false, uptimeSeconds: null, latencyMs, build: null };
     let uptimeSeconds: number | null = null;
+    let build: ServicePing['build'] = null;
     try {
       const body = (await response.json()) as any;
       if (typeof body?.data?.uptime === 'number') uptimeSeconds = body.data.uptime;
+      const reported = body?.data?.build;
+      if (reported && Array.isArray(reported.capabilities)) {
+        build = {
+          builtAt: typeof reported.builtAt === 'string' ? reported.builtAt : null,
+          startedAt: typeof reported.startedAt === 'string' ? reported.startedAt : null,
+          capabilities: reported.capabilities.filter((c: unknown) => typeof c === 'string'),
+        };
+      }
     } catch {
       /* a non-JSON 200 still counts as up */
     }
-    return { up: true, uptimeSeconds, latencyMs };
+    return { up: true, uptimeSeconds, latencyMs, build };
   } catch {
-    return { up: false, uptimeSeconds: null, latencyMs: null };
+    return { up: false, uptimeSeconds: null, latencyMs: null, build: null };
   } finally {
     clearTimeout(timer);
   }
@@ -261,7 +276,14 @@ systemHealthRouter.get('/', asyncHandler(async (req: Request, res: Response) => 
   // Gateway, payment and analytics expose no metrics endpoint, hence null.
   const db = (r: PromiseSettledResult<any>): string => (r.status === 'fulfilled' ? 'ok' : 'error');
   const services = [
-    { name: 'gateway', up: true, uptimeSeconds: Math.round(process.uptime() * 10) / 10, latencyMs: 0, db: null },
+    {
+      name: 'gateway',
+      up: true,
+      uptimeSeconds: Math.round(process.uptime() * 10) / 10,
+      latencyMs: 0,
+      db: null,
+      build: null,
+    },
     { name: 'auth', ...authPing, db: db(pipelineR) },
     { name: 'learning', ...learnPing, db: db(aiR) },
     { name: 'communication', ...commPing, db: db(whatsappR) },

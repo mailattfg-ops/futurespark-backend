@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { logger } from '@futurespark/logger';
 import { successResponse, errorResponse } from '@futurespark/response';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, buildInfo } from '@futurespark/constants';
 
 import googleAuthRouter from './modules/google/auth/auth.routes';
 import googleMeetingsRouter from './modules/google/meetings/meetings.routes';
@@ -97,9 +97,29 @@ app.use('/classes', classLifecycleRouter);
 // System Health aggregates (admin-only, read by the gateway)
 app.use('/metrics', metricsRoutes);
 
+/**
+ * Behaviours compiled into THIS build.
+ *
+ * A name here cannot appear unless the code implementing it is the code
+ * running, so a missing name proves the deployment predates that fix. Add a
+ * name in the same change as the behaviour; never rename one.
+ */
+const CAPABILITIES = [
+  'audio-verified-extraction',
+  'audio-single-shared-lock',
+  'audio-temp-then-rename',
+  'audio-always-reextract',
+  'audio-processing-status',
+];
+
 app.get('/health', (_req, res) => {
-  // uptime feeds the System Health page's per-service card.
-  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP', uptime: process.uptime() }, 'integration-service is healthy'));
+  // uptime feeds the System Health page; capabilities answer "is the fix live?".
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(
+      { status: 'UP', uptime: process.uptime(), build: buildInfo('integration-service', CAPABILITIES) },
+      'integration-service is healthy'
+    )
+  );
 });
 
 app.use((_req, res) => {
