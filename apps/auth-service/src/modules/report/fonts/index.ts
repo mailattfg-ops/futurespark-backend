@@ -4,6 +4,7 @@ import { logger } from '@futurespark/logger';
 import {
   GEIST_REGULAR_B64,
   GEIST_SEMIBOLD_B64,
+  GEIST_BOLD_B64,
   GEIST_MONO_REGULAR_B64,
   GEIST_MONO_SEMIBOLD_B64,
 } from './geist.data';
@@ -27,6 +28,8 @@ export const FONT = {
   body: 'fq-body',
   /** Names, figures, anything carrying weight. */
   bodyBold: 'fq-body-bold',
+  /** Weight 700 — the word cloud's large tier, which the design sets heavy. */
+  bodyHeavy: 'fq-body-heavy',
   /** Letterspaced labels, captions, axis ticks. */
   mono: 'fq-mono',
   /** Section headings and numbered markers. */
@@ -87,6 +90,7 @@ export interface ReportFonts {
 export const registerReportFonts = (doc: PDFKit.PDFDocument): ReportFonts => {
   doc.registerFont(FONT.body, Buffer.from(GEIST_REGULAR_B64, 'base64'));
   doc.registerFont(FONT.bodyBold, Buffer.from(GEIST_SEMIBOLD_B64, 'base64'));
+  doc.registerFont(FONT.bodyHeavy, Buffer.from(GEIST_BOLD_B64, 'base64'));
   doc.registerFont(FONT.mono, Buffer.from(GEIST_MONO_REGULAR_B64, 'base64'));
   doc.registerFont(FONT.monoBold, Buffer.from(GEIST_MONO_SEMIBOLD_B64, 'base64'));
 

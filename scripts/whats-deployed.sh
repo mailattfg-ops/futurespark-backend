@@ -29,6 +29,15 @@ check() {
 }
 
 echo
+echo "CONSTANTS (shared by learning + auth)"
+K=packages/constants/dist
+check "frequency word cloud"          "$K/session-evidence.js" "buildWordCloud"
+check "deck-sentence filter"          "$K/session-evidence.js" "isConceptLike"
+check "phrases only when curated"     "$K/session-evidence.js" "phraseKeptWhole"
+check "summary heading renamed"       "$K/session-report.js"   "WORDS FROM THE SESSION"
+check "answers capped at questions"   "$K/session-report.js"   "meaningfulOutOfQuestions"
+
+echo
 echo "COMMUNICATION-SERVICE"
 C=apps/communication-service/dist/modules/whatsapp
 check "1024-char body budget"        "$C/report.service.js"  "fitBodyBudget"

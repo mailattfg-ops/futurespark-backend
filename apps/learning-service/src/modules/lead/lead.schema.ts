@@ -43,11 +43,11 @@ const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 export const validateCreateLead = (data: any): CreateLeadInput => {
   const errors: string[] = [];
 
-  if (!data.firstName || typeof data.firstName !== 'string') {
+  if (!data.firstName || typeof data.firstName !== 'string' || !data.firstName.trim()) {
     errors.push('First name is required');
   }
-  if (!data.lastName || typeof data.lastName !== 'string') {
-    errors.push('Last name is required');
+  if (data.lastName !== undefined && typeof data.lastName !== 'string') {
+    errors.push('Last name must be a string');
   }
   if (!data.email || typeof data.email !== 'string') {
     errors.push('Email is required');
@@ -84,7 +84,7 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
 
   return {
     firstName: data.firstName.trim(),
-    lastName: data.lastName.trim(),
+    lastName: data.lastName ? data.lastName.trim() : '',
     email: data.email.trim().toLowerCase(),
     phone: data.phone?.trim() || undefined,
     // Empty string collapses to undefined so a blank form field stores NULL

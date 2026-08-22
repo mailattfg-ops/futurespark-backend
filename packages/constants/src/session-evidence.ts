@@ -414,6 +414,17 @@ const CLOUD_STOPWORDS = new Set([
 /** How many terms the panel is given to lay out. */
 const CLOUD_MAX_TERMS = 30;
 
+const CURATED_LOWER = new Set(CORE_FINANCIAL_VOCABULARY.map((t) => t.toLowerCase()));
+
+/** Whether a lexicon entry deserves to stay one term in the cloud. */
+export const phraseKeptWhole = (term: string): boolean => {
+  const clean = String(term ?? '').trim();
+  if (!clean.includes(' ')) return false;
+  const words = clean.toLowerCase().split(/\s+/);
+  if (words.some((w) => COMPARISON_WORDS.has(w))) return true;
+  return CURATED_LOWER.has(clean.toLowerCase());
+};
+
 export const buildWordCloud = (
   turns: Turn[],
   exclude: string[] = [],
@@ -875,10 +886,16 @@ export const deriveMetrics = (
    * Insurance" — and a cloud of phrases is a contents page in assorted sizes.
    * The panel is captioned "most used", so it now shows the words that were
    * most used. */
-  // The lexicon doubles as the phrase list: it already holds the curated
-  // vocabulary and the deck's own filtered terms, which is precisely the set of
-  // multi-word concepts worth keeping whole.
-  const wordCloud: WordCloudEntry[] = buildWordCloud(turns, exclude, lexicon);
+  /* Phrases are the exception, not the rule.
+   *
+   * Deck terms like "Health Insurance" used to be matched whole, which put
+   * three insurance phrases in the cloud where the approved look wants
+   * "Insurance" large once and "Health", "Vehicle", "Property" as their own
+   * words. Only two kinds of phrase survive intact: a comparison ("Needs vs
+   * Wants" — splitting it destroys the idea) and a curated multi-word term
+   * ("Emergency Fund", "Compound Interest"). Everything else is counted word
+   * by word. */
+  const wordCloud: WordCloudEntry[] = buildWordCloud(turns, exclude, lexicon.filter(phraseKeptWhole));
 
   const bands = {
     // Of the responses that carried content, how many showed real thinking.

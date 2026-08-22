@@ -675,15 +675,14 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
   const minW = Math.min(...words.map((w) => w.weight));
   const spread = Math.max(1, maxW - minW);
 
-  /* The cloud's own palette.
+  /* Colour, exactly as the approved page reads.
    *
-   * Charcoal, teal, orange, purple, grey — assigned by rank rather than at
-   * random, so a re-sent report is the same document. The most-used term is
-   * always charcoal: it is the answer to "what was this lesson about", and it
-   * should read as the answer rather than as one more colour.
+   * Three registers, assigned by rank rather than at random so a re-sent
+   * report is the same document: the big words are ink, four accents sit among
+   * the upper ranks (bank teal, account amber, withdraw indigo, balance
+   * coral in the reference), and the small tail is muted grey — which is what
+   * keeps the panel airy instead of uniformly black.
    */
-  const CLOUD_INK = '#111827';
-  const CLOUD_COLOURS = ['#0EA5B7', '#F59E0B', '#8B5CF6', '#6B7280'];
 
   /* Greedy placement on an outward spiral.
    *
@@ -701,20 +700,27 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
     placed.some((p) => !(b.x1 < p.x0 || b.x0 > p.x1 || b.y1 < p.y0 || b.y0 > p.y1));
 
   words.forEach((entry, i) => {
-    let size = 10 + ((entry.weight - minW) / spread) * 26;
+    // 11–33.4pt: the range measured from the approved PDF itself.
+    let size = 11 + ((entry.weight - minW) / spread) * 22.4;
 
-    // The busiest term is charcoal; four accents then rotate. Colouring every
-    // other word turns the panel into confetti, which reads as decoration
-    // rather than as the words a child actually used.
+    // Accents land on ranks 3, 5, 7 and 9 — never the top two, which anchor
+    // the panel in ink. Everything else: ink when large, grey when small.
     const accentSlot = i >= 2 && i % 2 === 0 ? (i - 2) / 2 : -1;
     const color =
-      i === 0
-        ? CLOUD_INK
-        : accentSlot >= 0 && accentSlot < CLOUD_COLOURS.length
-          ? CLOUD_COLOURS[accentSlot]
-          : CLOUD_INK;
+      accentSlot >= 0 && accentSlot < ACCENTS.length
+        ? ACCENTS[accentSlot]
+        : size < 16
+          ? C.body
+          : C.ink;
 
-    doc.font(FONT.body).fontSize(size);
+    /* Weight rises with size, as the approved image sets it.
+     *
+     * Everything was drawn in Regular, which is why the panel read as thin next
+     * to the reference even with the sizes right — at 33pt a Regular "savings"
+     * is a big light word, not a headline. Large tier 700, middle tier 600,
+     * and the small grey tail stays Regular so it recedes. */
+    const face = size >= 20 ? FONT.bodyHeavy : size >= 14.5 ? FONT.bodyBold : FONT.body;
+    doc.font(face).fontSize(size);
     let tw = doc.widthOfString(entry.word, { lineBreak: false });
 
     /* A phrase is several words long and can be wider than the panel at full
