@@ -1,4 +1,4 @@
-import { NOT_AVAILABLE, type SessionReport } from '@futurespark/constants';
+import { NOT_AVAILABLE, meaningfulOutOfQuestions, type SessionReport } from '@futurespark/constants';
 import { toPdfSafeText } from './summary-parser';
 import type { ActivityItem, CloudWord, ReportDocument, TopicChip } from './report-design';
 
@@ -139,19 +139,14 @@ export const buildReportDocument = (
       ? Math.round(history[history.length - 1] - history[history.length - 2])
       : null;
 
-  /* Every answer the child gave, which is what "meaningful answers" is a
-   * fraction OF.
+  /* Meaningful answers, out of the questions asked.
    *
-   * The analysis counts meaningful responses against the child's substantive
-   * turns, never against the mentor's questions — one question can draw three
-   * answers, and a child can speak unprompted. Independent plus prompted IS the
-   * total by construction upstream, so it is the only denominator that cannot
-   * produce a figure above 100%. */
-  const interactions = report?.interactions;
-  const totalResponses =
-    interactions && interactions.independentResponses !== null && interactions.promptedResponses !== null
-      ? interactions.independentResponses + interactions.promptedResponses
-      : null;
+   * Shown the way it is read: of the N questions the mentor asked, how many
+   * drew a real answer. The analysis counts meaningful RESPONSES, which can
+   * exceed N because one question often draws several answers — so the pair is
+   * capped, and the same helper feeds the text summary so the two documents
+   * cannot disagree. */
+  const answered = report ? meaningfulOutOfQuestions(report.interactions) : null;
 
   const arcName = clean(curriculum.arcName);
   const arcDescription = clean(curriculum.arcDescription);
@@ -192,8 +187,8 @@ export const buildReportDocument = (
     shareHistory: history,
     talkMeasured: measured,
     questionsAsked: report?.interactions?.teacherQuestions ?? null,
-    meaningfulAnswers: report?.interactions?.meaningfulResponses ?? null,
-    answersOutOf: totalResponses,
+    meaningfulAnswers: answered ? answered.answered : null,
+    answersOutOf: answered ? answered.asked : null,
     highlights: buildHighlights(report),
     wordCloud: buildWordCloud(report),
 

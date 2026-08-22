@@ -82,6 +82,32 @@ export interface InteractionCounts {
   selfCorrections: number | null;
 }
 
+/**
+ * Meaningful answers, counted against the questions that were asked.
+ *
+ * The analysis counts meaningful RESPONSES, and a child can answer one question
+ * across several turns — so the raw number can exceed the question count and
+ * once rendered "18 / 9 · 200%", which is not a thing that can happen.
+ *
+ * The report shows it the way it is read: of the N questions the mentor asked,
+ * how many drew a real answer. Capped at N for that reason, so the pair is
+ * always sane. The uncapped figures stay in `interactions` for anyone who wants
+ * the raw counts.
+ */
+export const meaningfulOutOfQuestions = (
+  interactions: InteractionCounts
+): { answered: number; asked: number } | null => {
+  const { meaningfulResponses, teacherQuestions } = interactions;
+  if (meaningfulResponses === null || teacherQuestions === null || teacherQuestions <= 0) return null;
+  return { answered: Math.min(meaningfulResponses, teacherQuestions), asked: teacherQuestions };
+};
+
+/** "9 of 10 questions", or null when either side was not measured. */
+export const meaningfulOutOfQuestionsLabel = (interactions: InteractionCounts): string | null => {
+  const pair = meaningfulOutOfQuestions(interactions);
+  return pair ? `${pair.answered} of ${pair.asked} questions` : null;
+};
+
 export interface LearningAssessment {
   conceptUnderstanding: LearningStatus | null;
   application: LearningStatus | null;
@@ -440,7 +466,7 @@ export const sessionReportToText = (report: SessionReport): string => {
     line('Teacher questions', report.interactions.teacherQuestions),
     line('Student questions', report.interactions.studentQuestions),
     line('Higher-order questions', report.interactions.higherOrderQuestions),
-    line('Meaningful responses', report.interactions.meaningfulResponses),
+    line('Meaningful responses', meaningfulOutOfQuestionsLabel(report.interactions)),
     line('Independent responses', report.interactions.independentResponses),
     line('Prompted responses', report.interactions.promptedResponses),
     '',
