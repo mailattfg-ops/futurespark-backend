@@ -40,6 +40,13 @@ export interface ReportCurriculum {
   nextSessionTitle?: string | null;
   nextSessionWhen?: string | null;
   rescheduleUrl?: string | null;
+  /**
+   * Whether the curriculum has a session after this one.
+   *
+   * `false` means this was the last one — a different message entirely from
+   * `null`, which only means we could not tell.
+   */
+  nextSessionExists?: boolean | null;
 }
 
 const clean = (value: string | null | undefined): string | null => {
@@ -197,8 +204,16 @@ export const buildReportDocument = (
     takeHome: sanitiseActivities(curriculum.takeHome),
 
     nextSessionNumber: curriculum.nextSessionNumber ?? null,
-    nextSessionTitle: clean(curriculum.nextSessionTitle) ?? clean(report?.nextSessionFocus),
+    /* The curriculum's title only — never the analysis's "next session focus".
+     *
+     * That field is a sentence ("Practicing with policy terms like premiums,
+     * deductibles, and claims through interactive plan comparison"), and set as
+     * a title it ran straight off the edge of the footer band and under the
+     * reschedule box. A heading needs a name. */
+    nextSessionTitle: clean(curriculum.nextSessionTitle),
     nextSessionWhen: clean(curriculum.nextSessionWhen),
+    isFinalSession: curriculum.nextSessionExists === false,
+    programmeName: arcName,
     rescheduleUrl: clean(curriculum.rescheduleUrl),
 
     brandName: clean(base.brandName) ?? 'Finquo Junior',

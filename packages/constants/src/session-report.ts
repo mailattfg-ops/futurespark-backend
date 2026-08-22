@@ -483,7 +483,9 @@ export const sessionReportToText = (report: SessionReport): string => {
   if (report.nextSessionFocus) parts.push('NEXT SESSION FOCUS', '-'.repeat(50), report.nextSessionFocus, '');
   if (report.parentConnection) parts.push('TRY THIS AT HOME', '-'.repeat(50), report.parentConnection, '');
   if (report.wordCloud.length > 0) {
-    parts.push('KEY CONCEPTS DISCUSSED', '-'.repeat(50), report.wordCloud.map((w) => w.word).join(' · '), '');
+    // Renamed with the content: these are the words most used in the session,
+    // counted from the transcript, not a list of concepts off the deck.
+    parts.push('WORDS FROM THE SESSION', '-'.repeat(50), report.wordCloud.map((w) => w.word).join(' · '), '');
   }
 
   return parts.join('\n');
