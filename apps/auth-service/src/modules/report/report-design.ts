@@ -227,6 +227,10 @@ export interface ReportDocument {
   nextSessionTitle: string | null;
   nextSessionWhen: string | null;
   rescheduleUrl: string | null;
+  /** True when the curriculum has nothing after this session. */
+  isFinalSession: boolean;
+  /** The programme's own name, used to sign off the final session by name. */
+  programmeName: string | null;
 
   brandName: string;
   footerNote: string;
@@ -835,25 +839,52 @@ const activities = (doc: Doc, d: ReportDocument): void => {
 const nextSessionBand = (doc: Doc, d: ReportDocument): void => {
   doc.roundedRect(M, 735.8, W, 65.2, 6).fill(C.ink);
 
-  const num = d.nextSessionNumber !== null ? ` · ${String(d.nextSessionNumber).padStart(2, '0')}` : '';
-  line(doc, `NEXT SESSION${num}`, 53.2, 747.5, {
-    size: 4.9,
-    font: FONT.mono,
-    color: C.amber,
-    spacing: 1.2,
-  });
+  /* The last session of the arc is an occasion, not a blank. */
+  const eyebrow = d.isFinalSession
+    ? 'PROGRAMME COMPLETE'
+    : `NEXT SESSION${d.nextSessionNumber !== null ? ` · ${String(d.nextSessionNumber).padStart(2, '0')}` : ''}`;
+  /* The sign-off.
+   *
+   * A parent reaching the end of an arc should be told so warmly and by name.
+   * "Aarav has finished every session in this programme" is a status line; this
+   * is the last thing the family reads from us, so it reads like a send-off.
+   * Named rather than pronouned — the child's pronouns are not something this
+   * system is told, and guessing them in a congratulation is worse than not. */
+  const heading = d.isFinalSession
+    ? d.programmeName
+      ? `The last session of ${d.programmeName}`
+      : 'The last session of this programme'
+    : d.nextSessionTitle || 'To be scheduled';
+  const footnote = d.isFinalSession
+    ? `Wishing ${d.studentName.split(' ')[0]} all the best for the journeys ahead.`
+    : d.nextSessionWhen;
+
+  line(doc, eyebrow, 53.2, 747.5, { size: 4.9, font: FONT.mono, color: C.amber, spacing: 1.2 });
+
+  /* Bounded by the reschedule box, not by hope.
+   *
+   * A title long enough to reach it used to run underneath it and off the page.
+   * The heading is a NAME, so if one ever arrives long it is cut rather than
+   * allowed to collide. */
+  const headingLimit = (d.rescheduleUrl ? 393.4 : R) - 53.2 - 14;
+  doc.font(FONT.display).fontSize(13.5);
+  let shown = heading;
+  if (doc.widthOfString(shown, { lineBreak: false }) > headingLimit) {
+    while (shown.length > 8 && doc.widthOfString(`${shown}…`, { lineBreak: false }) > headingLimit) {
+      shown = shown.slice(0, -1);
+    }
+    shown = `${shown.trimEnd()}…`;
+  }
   // Clear of the eyebrow: a 13.5pt display face needs its ascent, and at 756
   // the two lines collided.
-  line(doc, d.nextSessionTitle || 'To be scheduled', 53.2, 759.5, {
-    size: 13.5,
-    font: FONT.display,
-    color: C.cream,
-  });
-  if (d.nextSessionWhen) {
-    line(doc, d.nextSessionWhen, 53.2, 780, { size: 6, font: FONT.mono, color: C.cream, spacing: 0.5 });
+  line(doc, shown, 53.2, 759.5, { size: 13.5, font: FONT.display, color: C.cream });
+
+  if (footnote) {
+    line(doc, footnote, 53.2, 780, { size: 6, font: FONT.mono, color: C.cream, spacing: 0.5 });
   }
 
-  if (d.rescheduleUrl) {
+  // Nothing left to reschedule once the programme is finished.
+  if (d.rescheduleUrl && !d.isFinalSession) {
     doc.roundedRect(393.4, 753.4, 148.5, 29.2, 4).lineWidth(0.75).stroke(C.cream);
     line(doc, 'NEED TO RESCHEDULE?', 0, 760.1, {
       size: 4.9,

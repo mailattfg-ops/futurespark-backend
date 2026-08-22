@@ -357,6 +357,102 @@ export const tidyDeckTerm = (raw: string): string => {
     .join(' ');
 };
 
+/* ── The word cloud ──────────────────────────────────────────────────────────
+ *
+ * "WORDS FROM THE SESSION · most used" means exactly that: the words actually
+ * spoken, counted. It was previously built from the concept lexicon, which is a
+ * list of PHRASES — so the panel filled with "Health Insurance", "SHARING RISK"
+ * and, before the deck filter, whole sentences off a slide. None of that is a
+ * word cloud; it is a table of contents set in different sizes.
+ */
+
+/** Words that carry no meaning in a cloud: grammar, and the noise of speech. */
+const CLOUD_STOPWORDS = new Set([
+  // grammar
+  'the', 'and', 'that', 'have', 'for', 'not', 'with', 'you', 'this', 'but', 'his', 'her',
+  'they', 'she', 'him', 'from', 'their', 'what', 'about', 'which', 'who', 'when', 'will',
+  'there', 'can', 'all', 'would', 'has', 'one', 'our', 'out', 'get', 'been', 'them', 'into',
+  'him', 'some', 'could', 'other', 'than', 'then', 'its', 'also', 'because', 'any', 'these',
+  'those', 'how', 'why', 'where', 'was', 'were', 'are', 'did', 'does', 'doing', 'done',
+  'had', 'having', 'here', 'more', 'most', 'much', 'very', 'such', 'own', 'same', 'over',
+  'under', 'again', 'once', 'both', 'each', 'few', 'nor', 'too', 'only', 'off', 'onto',
+  'per', 'via', 'yet', 'let', 'lets', 'may', 'might', 'must', 'shall', 'should', 'still',
+  'upon', 'while', 'with', 'within', 'without', 'your', 'yours', 'mine', 'ours', 'theirs',
+  // speech
+  'yeah', 'yes', 'okay', 'right', 'like', 'know', 'think', 'just', 'actually', 'really',
+  'mean', 'sort', 'kind', 'well', 'now', 'see', 'say', 'said', 'says', 'tell', 'told',
+  'going', 'gonna', 'want', 'need', 'good', 'great', 'nice', 'sure', 'maybe', 'thing',
+  'things', 'something', 'anything', 'nothing', 'everything', 'someone', 'everyone',
+  'lot', 'lots', 'bit', 'little', 'big', 'small', 'new', 'old', 'first', 'last', 'next',
+  'come', 'came', 'take', 'took', 'give', 'gave', 'make', 'made', 'put', 'look', 'looks',
+  'use', 'used', 'try', 'trying', 'let', 'even', 'ever', 'never', 'always', 'sometimes',
+  'today', 'yesterday', 'tomorrow', 'time', 'times', 'way', 'ways', 'part', 'point',
+  'question', 'answer', 'correct', 'wrong', 'exactly', 'perfect', 'understand', 'understood',
+  'hello', 'hi', 'bye', 'please', 'thanks', 'thank', 'sorry', 'welcome', 'session', 'class',
+  'teacher', 'student', 'sir', 'madam', 'ma’am',
+  // Words that carry the sentence rather than the subject. A lesson is full of
+  // "means", "happens" and "people"; none of them is what the lesson was about.
+  'mean', 'means', 'meaning', 'happen', 'happens', 'happened', 'give', 'gives',
+  'given', 'keep', 'keeps', 'ask', 'asks', 'asked', 'help', 'helps', 'people',
+  'person', 'every', 'many', 'higher', 'lower', 'bad', 'better', 'best', 'worse',
+  'call', 'calls', 'called', 'important', 'different', 'difference', 'example',
+  'number', 'numbers', 'start', 'starts', 'started', 'end', 'ends', 'ended',
+  // Spoken numbers. "five thousand rupees" should leave rupees, not five.
+  'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy',
+  'eighty', 'ninety', 'hundred', 'thousand', 'lakh', 'lakhs', 'crore', 'crores',
+  'million', 'billion', 'half', 'zero',
+  'yourself', 'myself', 'himself', 'herself', 'itself', 'themselves', 'ourselves',
+]);
+
+/**
+ * The most-spoken meaningful words, largest first.
+ *
+ * `exclude` takes the names in the room: a child's own name is among the most
+ * frequent words in any lesson and tells a parent nothing they do not know.
+ */
+export const buildWordCloud = (turns: Turn[], exclude: string[] = []): WordCloudEntry[] => {
+  const skip = new Set(CLOUD_STOPWORDS);
+  for (const name of exclude) {
+    for (const part of String(name ?? '').toLowerCase().split(/\s+/)) {
+      if (part.length > 1) skip.add(part);
+    }
+  }
+
+  const counts = new Map<string, { display: string; n: number }>();
+  for (const turn of turns) {
+    for (const raw of String(turn.text ?? '').split(/[^A-Za-z'’]+/)) {
+      const word = raw.replace(/^['’]+|['’]+$/g, '');
+      if (word.length < 3 || word.length > 18) continue;
+      const lower = word.toLowerCase();
+      if (skip.has(lower)) continue;
+      // No vowel means a transcription artefact, not a word.
+      if (!/[aeiou]/.test(lower)) continue;
+
+      // Counted on the singular, so "saving" and "savings" are one entry rather
+      // than two sizes of the same idea sitting side by side.
+      const key = lexiconKey(lower);
+      const display = ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower;
+      const existing = counts.get(key);
+      if (existing) existing.n += 1;
+      else counts.set(key, { display, n: 1 });
+    }
+  }
+
+  // Said once is not "most used" — it is a word that happened to occur.
+  const ranked = [...counts.values()]
+    .filter((e) => e.n >= 2)
+    .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
+    .slice(0, 24);
+  if (ranked.length === 0) return [];
+
+  const max = ranked[0].n;
+  return ranked.map((e) => ({
+    word: e.display,
+    weight: Math.max(1, Math.min(10, Math.round((e.n / max) * 9) + 1)),
+  }));
+};
+
 /** Singular, lowercase form — the identity a concept is deduped on. */
 const lexiconKey = (word: string): string => {
   const w = word.trim().toLowerCase();
@@ -681,7 +777,10 @@ export interface DerivedMetrics {
 export const deriveMetrics = (
   envelope: AnalysisEnvelope,
   turns: Turn[],
-  lexicon: string[]
+  lexicon: string[],
+  /** Names in the room. Kept out of the word cloud, where a child's own name
+   *  would otherwise be one of the largest words and tell a parent nothing. */
+  exclude: string[] = []
 ): DerivedMetrics => {
   const index = new Map(turns.map((t) => [t.id, t]));
   const raw = envelope.evidence;
@@ -719,30 +818,13 @@ export const deriveMetrics = (
   const reasoning = studentResponses.filter((r) => r.kind === 'reasoning' || r.kind === 'calculation').length;
   const selfCorrections = studentResponses.filter((r) => r.kind === 'self_correction').length;
 
-  // Concepts are matched back to the lexicon case-insensitively and emitted in
-  // LEXICON order, so two runs selecting the same concepts in a different
-  // sequence still render an identical cloud.
-  const allowed = new Map(lexicon.map((term) => [term.toLowerCase(), term]));
-  const turnsByConcept = new Map<string, Set<number>>();
-  for (const item of conceptsTaught) {
-    const canonical = allowed.get((item.concept ?? '').trim().toLowerCase());
-    if (!canonical) continue;
-    if (!turnsByConcept.has(canonical)) turnsByConcept.set(canonical, new Set());
-    turnsByConcept.get(canonical)!.add(item.turn);
-  }
-
-  const maxMentions = Math.max(1, ...[...turnsByConcept.values()].map((s) => s.size));
-  const wordCloud: WordCloudEntry[] = lexicon
-    .filter((term) => turnsByConcept.has(term))
-    .map((term) => {
-      const mentions = turnsByConcept.get(term)!.size;
-      // 1-10, banded off the busiest concept in this session. Integer by
-      // construction so it cannot wobble on a rounding boundary.
-      const weight = Math.max(1, Math.min(10, Math.round((mentions / maxMentions) * 9) + 1));
-      return { word: term, weight };
-    })
-    .sort((a, b) => b.weight - a.weight || a.word.localeCompare(b.word))
-    .slice(0, 25);
+  /* Counted from what was said, not from the concept list.
+   *
+   * The lexicon holds phrases — "Health Insurance", "Emergency Saving vs
+   * Insurance" — and a cloud of phrases is a contents page in assorted sizes.
+   * The panel is captioned "most used", so it now shows the words that were
+   * most used. */
+  const wordCloud: WordCloudEntry[] = buildWordCloud(turns, exclude);
 
   const bands = {
     // Of the responses that carried content, how many showed real thinking.

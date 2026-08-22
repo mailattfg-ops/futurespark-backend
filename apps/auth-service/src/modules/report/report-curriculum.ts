@@ -116,6 +116,10 @@ export const gatherCurriculum = async (input: CurriculumLookup): Promise<ReportC
           orderBy: { order: 'asc' },
           select: { title: true, order: true },
         });
+        // Definitive either way, which is what lets the report distinguish
+        // "the next one is not booked yet" from "there is no next one" — the
+        // second deserves congratulations, not a date to be confirmed.
+        out.nextSessionExists = Boolean(next);
         if (next) {
           out.nextSessionNumber = next.order;
           out.nextSessionTitle = next.title;

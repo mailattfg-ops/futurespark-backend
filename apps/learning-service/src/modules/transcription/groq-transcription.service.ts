@@ -1597,7 +1597,7 @@ Return the JSON object now.`;
     if (!complete && envelope.coverageNote === 'full') envelope.coverageNote = 'partial';
 
     /* ── Every number on the report is computed here ──────────────────────── */
-    const derived = deriveMetrics(envelope, turns, lexicon);
+    const derived = deriveMetrics(envelope, turns, lexicon, [studentName, mentorName]);
     const talk = deriveTalkShare(turns, context.audioSeconds ?? null);
 
     if (derived.discarded > 0) {
@@ -1865,7 +1865,7 @@ Return the JSON now.`;
      * rather than producing its own, which is what stops the pass path and the
      * single-shot path from telling a parent two different stories.
      * ─────────────────────────────────────────────────────────────────── */
-    const interim = deriveMetrics(merged, turns, lexicon);
+    const interim = deriveMetrics(merged, turns, lexicon, [studentName, mentorName]);
 
     const reduceUser = `STUDENT: ${studentName}
 TEACHER: ${mentorName}
