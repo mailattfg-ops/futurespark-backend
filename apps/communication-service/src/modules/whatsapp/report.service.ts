@@ -53,6 +53,79 @@ const asTemplateParameter = (value: unknown): string => {
   return (flattened.length > 0 ? flattened : '-').slice(0, 1024);
 };
 
+/* ── The 1024-character body budget ──────────────────────────────────────── */
+
+/**
+ * Meta measures the template's fixed text PLUS every substituted value against
+ * one limit, and rejects the whole message when the total goes over:
+ *
+ *   "Length of the parameters and the template text is 1123, which exceeds the
+ *    allowed length of 1024"
+ *
+ * Checking each parameter on its own passes happily and still fails the send,
+ * which is how this got through the first time.
+ */
+const META_BODY_LIMIT = 1024;
+
+/**
+ * How much of that limit the template's own words occupy.
+ *
+ * Not derivable here — the template text lives in Meta's console and can be
+ * edited without a deploy — so it is configurable, with a default measured from
+ * the approved template (287 characters) plus headroom for an edit and for the
+ * fact that Meta's counting of emoji is not something we can reproduce exactly.
+ */
+const staticTextAllowance = (): number => {
+  const raw = Number.parseInt(process.env.WHATSAPP_REPORT_TEMPLATE_STATIC_LENGTH ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 && raw < META_BODY_LIMIT ? raw : 340;
+};
+
+/** Below this a value stops being informative, so it is never cut further. */
+const MIN_KEEP = 20;
+
+/**
+ * Values that must arrive whole. A truncated link does not work, and a
+ * truncated date or session number is misinformation rather than a shortening.
+ */
+const NEVER_TRIM = new Set(['rescheduleUrl', 'classDate', 'classTime', 'sessionNumberPadded']);
+
+const ellipsise = (value: string, max: number): string => {
+  if (value.length <= max) return value;
+  const cut = value.slice(0, Math.max(MIN_KEEP, max - 1));
+  const lastSpace = cut.lastIndexOf(' ');
+  const body = lastSpace > MIN_KEEP ? cut.slice(0, lastSpace) : cut;
+  return `${body.trimEnd()}…`;
+};
+
+/**
+ * Shrink the longest trimmable value until the body fits, and say what was cut.
+ *
+ * Longest-first rather than proportionally: one long AI-written outcome is the
+ * usual cause of an overrun, and taking it out of that one field leaves the
+ * short factual fields — names, dates, the mentor — untouched and exact.
+ */
+export const fitBodyBudget = (
+  resolved: Array<{ name: string; value: string }>,
+  budget: number
+): { resolved: Array<{ name: string; value: string }>; trimmed: string[]; total: number } => {
+  const trimmed: string[] = [];
+  const total = () => resolved.reduce((n, r) => n + r.value.length, 0);
+
+  // Bounded: every pass either shortens a value or breaks out.
+  for (let pass = 0; pass < 50 && total() > budget; pass++) {
+    const over = total() - budget;
+    const candidate = resolved
+      .filter((r) => !NEVER_TRIM.has(r.name) && r.value.length > MIN_KEEP)
+      .sort((a, b) => b.value.length - a.value.length)[0];
+    if (!candidate) break; // nothing left that may be cut
+
+    candidate.value = ellipsise(candidate.value, Math.max(MIN_KEEP, candidate.value.length - over));
+    if (!trimmed.includes(candidate.name)) trimmed.push(candidate.name);
+  }
+
+  return { resolved, trimmed, total: total() };
+};
+
 /**
  * Build the template components.
  *
@@ -78,6 +151,19 @@ const buildComponents = (
 
   const order = whatsappConfig.reportTemplateVariables;
   const resolved = order.map((name) => ({ name, value: asTemplateParameter(variables[name]) }));
+
+  // Fit the whole body, not each field. Done here rather than upstream because
+  // this is the last point before the send and the only place that knows how
+  // many values the template actually takes.
+  const budget = META_BODY_LIMIT - staticTextAllowance();
+  const { trimmed, total } = fitBodyBudget(resolved, budget);
+  if (trimmed.length > 0) {
+    logger.warn(
+      `[WhatsApp] Report body exceeded its ${budget}-character budget, so ${trimmed.join(', ')} ` +
+        `${trimmed.length === 1 ? 'was' : 'were'} shortened to fit (now ${total}). ` +
+        'The full text is in the attached PDF.'
+    );
+  }
 
   if (resolved.length > 0) {
     components.push({
