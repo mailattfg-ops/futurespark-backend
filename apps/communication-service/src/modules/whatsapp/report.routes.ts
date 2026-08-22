@@ -86,7 +86,7 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
       studentName = 'Student',
       courseName = 'Financial Literacy',
       sessionDate = new Date().toLocaleDateString('en-GB'),
-      sessionTime = '04:30 PM - 05:30 PM',
+      sessionTime = '04:00 PM',
       timezone = 'IST',
       joinUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai/',
     } = req.body ?? {};
@@ -97,6 +97,22 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
         .json(errorResponse('Phone number "to" is required.'));
     }
 
+    const formatTimezone = (tz?: string): string => {
+      if (!tz) return 'India';
+      const raw = tz.trim();
+      if (/asia\/kolkata|ist|india/i.test(raw)) return 'India';
+      if (/asia\/dubai|gst|uae/i.test(raw)) return 'UAE';
+      if (/europe\/london|gmt|bst|uk/i.test(raw)) return 'UK';
+      if (/america\/new_york|est|us east/i.test(raw)) return 'US East';
+      if (/america\/los_angeles|pst|us west/i.test(raw)) return 'US West';
+      if (/asia\/singapore|sgt|singapore/i.test(raw)) return 'Singapore';
+      if (/asia\/riyadh|ast|saudi/i.test(raw)) return 'Saudi Arabia';
+      if (/australia\/sydney|aest|australia/i.test(raw)) return 'Australia';
+      return raw;
+    };
+
+    const displayTimezone = formatTimezone(timezone);
+
     const templateComponents = [
       {
         type: 'body',
@@ -106,7 +122,7 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
           { type: 'text', text: courseName },
           { type: 'text', text: sessionDate },
           { type: 'text', text: sessionTime },
-          { type: 'text', text: timezone },
+          { type: 'text', text: displayTimezone },
           { type: 'text', text: joinUrl },
         ],
       },
@@ -124,12 +140,15 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
     if (!result.success) {
       const textMessage =
         `Hi ${parentName} 👋\n\n` +
-        `⏰ Reminder: ${studentName}’s ${courseName} session is scheduled for ${sessionDate} at ${sessionTime} (${timezone}).\n\n` +
+        `⏰ Reminder: ${studentName}’s *${courseName}* session is scheduled:\n\n` +
+        `📅 *Date:* ${sessionDate}\n` +
+        `⏰ *Time:* ${sessionTime} (${displayTimezone})\n\n` +
         `💻 Please join using a laptop/desktop with a stable internet connection.\n\n` +
-        `🔗 Join Here: ${joinUrl}\n\n` +
+        `🔗 *Join & Reschedule Here:* ${joinUrl}\n` +
+        `_(You can also request to reschedule your session on this page if needed.)_\n\n` +
         `Please join the session with your child to experience their learning and improvement live.\n\n` +
         `Thank you,\n` +
-        `FINQUO junior`;
+        `*FINQUO junior*`;
 
       result = await whatsappService.sendTextMessage(to, textMessage);
     }
