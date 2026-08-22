@@ -276,6 +276,18 @@ export class ZoomRecordingService {
 
       return ffmpegSemaphore.run(async () => {
         logger.info(`[ZoomRecording] Extracting audio for ${recordingId}...`);
+        /* Say so, in the database.
+         *
+         * ffmpeg on an hour of video takes minutes, and until now nothing
+         * recorded that it had started — the admin’s "extraction in progress"
+         * state existed in the UI but could never be reached, so a class being
+         * worked on looked identical to one nobody had touched. */
+        await withDbRetry(() =>
+          db.meetingRecording.update({
+            where: { id: recordingId },
+            data: { extractedAudioStatus: 'PROCESSING' },
+          })
+        ).catch(() => { /* a status write must never fail the extraction */ });
 
         // Extract, then MEASURE the result against the video. The old call shelled
         // out to a bare "ffmpeg" and, when that failed, wrote 1 KB of silence and

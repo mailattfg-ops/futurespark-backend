@@ -490,11 +490,14 @@ export class GoogleRecordingController {
 
           if (shouldStart) {
             startTranscriptionJob(recording.id, async () => {
-              const fresh = await GoogleRecordingService.getRecordingById(recording.id);
-              if (!fresh?.audioPath) {
-                logger.info(`[GoogleRecordingController] No audio track yet for ${recording.id} — extracting first.`);
-                await GoogleRecordingService.extractAudioFromRecording(recording.id);
-              }
+              /* Always ask the extractor, never the row.
+               *
+               * This used to skip extraction whenever audioPath was set. Delete
+               * the file from disk and the row still says COMPLETED, so nothing
+               * ever re-extracted and the class sat with a dead audio player
+               * that no retry could clear. The extractor checks the FILE and
+               * returns immediately when a usable track is really there. */
+              await GoogleRecordingService.extractAudioFromRecording(recording.id);
               const built = await GoogleRecordingService.transcribeRecording(recording.id);
               if (built?.classSummary && summaryPath && !built.usedFallback) {
                 try { fs.writeFileSync(summaryPath, built.classSummary, 'utf-8'); } catch (_) { }
