@@ -600,7 +600,17 @@ const topicsCovered = (doc: Doc, d: ReportDocument): void => {
   doc.font(FONT.display).fontSize(12.2);
   const hubW = Math.max(60, doc.widthOfString(hub, { lineBreak: false }) + 30);
   doc.roundedRect(47.9, 550.6, hubW, 28.7, 14.35).fill(C.ink);
-  centered(doc, hub, 47.9 + hubW / 2, 556.5, { size: 12.2, font: FONT.display, color: C.cream });
+  /* Optically centred, not arithmetically.
+   *
+   * The pill runs 550.6–579.3, so its middle is 564.95. A display face sets
+   * its glyphs low in the em box, so placing the text box at the true centre
+   * leaves it sitting high in the pill — which is the "little alignment issue"
+   * on DEMO. The lift is the difference between the em box and the cap height. */
+  centered(doc, hub, 47.9 + hubW / 2, 550.6 + (28.7 - 12.2 * 0.72) / 2 - 12.2 * 0.19, {
+    size: 12.2,
+    font: FONT.display,
+    color: C.cream,
+  });
 
   const spineStart = 47.9 + hubW + 1.5;
   doc.moveTo(spineStart, spineY).lineTo(543.2, spineY).lineWidth(1).stroke(C.border);
@@ -608,7 +618,9 @@ const topicsCovered = (doc: Doc, d: ReportDocument): void => {
   // The last node stops short of the spine's end so its chip stays inside the
   // card even when the label is a long one.
   const first = spineStart + 35.7;
-  const step = chips.length > 1 ? (510.1 - first) / (chips.length - 1) : 0;
+  // 500, not 510: the last chip is centred on its node, so the node has to sit
+  // far enough from the card edge for a real label to fit beside it.
+  const step = chips.length > 1 ? (500 - first) / (chips.length - 1) : 0;
 
   chips.forEach((chip, i) => {
     const x = first + i * step;
@@ -618,11 +630,38 @@ const topicsCovered = (doc: Doc, d: ReportDocument): void => {
     doc.moveTo(x, up ? 535.5 : spineY).lineTo(x, up ? spineY : 594.3).lineWidth(0.86).stroke(C.border);
     doc.circle(x, spineY, 2.3).fill(color);
 
-    const label = chip.label.length > 18 ? `${chip.label.slice(0, 17)}…` : chip.label;
+    /* Fit the label to the space, rather than cutting at 18 characters.
+     *
+     * A fixed character cut turned every curriculum topic into "Understanding
+     * ris…", "Types of insuranc…" — the ellipsis did the talking. The gap
+     * between neighbouring nodes is what actually constrains a chip, and chips
+     * alternate above and below the spine, so each one may use nearly the full
+     * step. Only what genuinely will not fit is trimmed, and then on a word
+     * boundary so a reader loses a word rather than half of one. */
     doc.font(FONT.body).fontSize(6.6);
+    // Chips alternate above and below, so a chip's same-row neighbours are two
+    // steps away; 1.75 of a step leaves a visible gap between them even after
+    // the edge clamp below has nudged one sideways.
+    const maxChipW = Math.max(64, (step || 120) * 1.75);
+    let label = chip.label.trim();
+    if (doc.widthOfString(label, { lineBreak: false }) + 26 > maxChipW) {
+      const budget = maxChipW - 26 - doc.widthOfString('…', { lineBreak: false });
+      while (label.length > 6 && doc.widthOfString(label, { lineBreak: false }) > budget) {
+        const cut = label.slice(0, -1).trimEnd();
+        const lastSpace = cut.lastIndexOf(' ');
+        label = lastSpace > 6 && cut.length - lastSpace < 12 ? cut.slice(0, lastSpace) : cut;
+      }
+      label = `${label}…`;
+    }
     const textW = doc.widthOfString(label, { lineBreak: false });
     const chipW = textW + 26;
-    const chipX = x - chipW / 2;
+    /* Centred on its node, but never over the card's edge.
+     *
+     * The last node sits near the right of the spine, so a wide label centred
+     * on it hung outside the panel. Nudging the chip back inside keeps the
+     * whole label readable; its connector still points at the node, so which
+     * chip belongs to which thread stays unambiguous. */
+    const chipX = Math.min(Math.max(x - chipW / 2, M + 6), R - chipW - 6);
     const chipY = up ? 519.7 : 594.3;
 
     doc.roundedRect(chipX, chipY, chipW, 15.8, 7.9).lineWidth(0.72).fillAndStroke(C.white, C.border);
@@ -732,13 +771,21 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
      * grey tail Regular so it recedes; accents on ranks 3, 5, 7, 9 — never the
      * top two, which anchor the panel in ink. */
     const face = size >= 20 ? FONT.bodyHeavy : size >= 14.5 ? FONT.bodyBold : FONT.body;
-    const accentSlot = i >= 2 && i % 2 === 0 ? (i - 2) / 2 : -1;
-    const color =
-      accentSlot >= 0 && accentSlot < ACCENTS.length
-        ? ACCENTS[accentSlot]
-        : size < 16
-          ? C.body
-          : C.ink;
+
+    /* Accents run the length of the cloud, not just its top.
+     *
+     * The rotation used to be spent on ranks 3, 5, 7 and 9 only — four colours
+     * inside the first nine words, then a solid block of ink from rank 10 to
+     * rank 16 and grey below. On a real 24-word cloud that reads as a wall of
+     * black with a coloured hat. Every third word now takes the next accent,
+     * so colour is distributed the whole way down while the top two stay ink
+     * to anchor the panel and roughly two-thirds of words remain neutral. */
+    const accented = i >= 2 && (i - 2) % 3 === 0;
+    const color = accented
+      ? ACCENTS[Math.floor((i - 2) / 3) % ACCENTS.length]
+      : size < 16
+        ? C.body
+        : C.ink;
     doc.font(face).fontSize(size);
     tw = doc.widthOfString(entry.word, { lineBreak: false });
     // Geist's cap height leaves a lot of air in the em box; measuring the glyphs
