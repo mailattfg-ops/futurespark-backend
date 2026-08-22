@@ -203,13 +203,13 @@ export interface ReportDocument {
   questionsAsked: number | null;
   meaningfulAnswers: number | null;
   /**
-   * How many answers the child gave in total — the denominator meaningful
-   * answers are counted against.
+   * The questions asked — the denominator meaningful answers are shown against.
    *
-   * NOT the number of questions asked. A child can answer one question in three
-   * turns, or speak without being asked; against the question count this read
-   * "18 / 9 · 200% answered with reasoning", which is not a thing that can
-   * happen and told a parent the report was not being checked.
+   * The analysis counts meaningful RESPONSES, which can exceed the number of
+   * questions because one question often draws several answers; against that
+   * raw figure the card once read "18 / 9 · 200%". `meaningfulAnswers` is
+   * therefore capped at this number upstream, so the pair reads the way a
+   * parent reads it: of the N questions asked, how many drew a real answer.
    */
   answersOutOf: number | null;
   highlights: string[];
@@ -657,9 +657,11 @@ const sessionHighlights = (doc: Doc, d: ReportDocument): void => {
 
 const wordCloud = (doc: Doc, d: ReportDocument): void => {
   sectionHeader(doc, 'WORDS FROM THE SESSION', 70.5, 'most used');
-  card(doc, M, 86.6, W, 189.8, C.cream);
+  // #F5F5F3 for this panel specifically, per the approved cloud design.
+  card(doc, M, 86.6, W, 189.8, '#F5F5F3');
 
-  const words = d.wordCloud.slice(0, 24).filter((w) => w.word.trim().length > 0);
+  // 30 offered; the placer lays out as many as genuinely fit the panel.
+  const words = d.wordCloud.slice(0, 30).filter((w) => w.word.trim().length > 0);
   if (words.length === 0) {
     line(doc, 'No vocabulary was captured for this session.', 56, 175, {
       size: 7.5,
@@ -672,6 +674,16 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
   const maxW = Math.max(...words.map((w) => w.weight)) || 1;
   const minW = Math.min(...words.map((w) => w.weight));
   const spread = Math.max(1, maxW - minW);
+
+  /* The cloud's own palette.
+   *
+   * Charcoal, teal, orange, purple, grey — assigned by rank rather than at
+   * random, so a re-sent report is the same document. The most-used term is
+   * always charcoal: it is the answer to "what was this lesson about", and it
+   * should read as the answer rather than as one more colour.
+   */
+  const CLOUD_INK = '#111827';
+  const CLOUD_COLOURS = ['#0EA5B7', '#F59E0B', '#8B5CF6', '#6B7280'];
 
   /* Greedy placement on an outward spiral.
    *
@@ -689,15 +701,32 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
     placed.some((p) => !(b.x1 < p.x0 || b.x0 > p.x1 || b.y1 < p.y0 || b.y0 > p.y1));
 
   words.forEach((entry, i) => {
-    const size = 11 + ((entry.weight - minW) / spread) * 22.4;
-    // Only the first four accent slots are spent — colour every other word and
-    // the panel turns into confetti, which reads as decoration rather than as
-    // the words a child actually used.
+    let size = 10 + ((entry.weight - minW) / spread) * 26;
+
+    // The busiest term is charcoal; four accents then rotate. Colouring every
+    // other word turns the panel into confetti, which reads as decoration
+    // rather than as the words a child actually used.
     const accentSlot = i >= 2 && i % 2 === 0 ? (i - 2) / 2 : -1;
-    const color = accentSlot >= 0 && accentSlot < ACCENTS.length ? ACCENTS[accentSlot] : C.ink;
+    const color =
+      i === 0
+        ? CLOUD_INK
+        : accentSlot >= 0 && accentSlot < CLOUD_COLOURS.length
+          ? CLOUD_COLOURS[accentSlot]
+          : CLOUD_INK;
 
     doc.font(FONT.body).fontSize(size);
-    const tw = doc.widthOfString(entry.word, { lineBreak: false });
+    let tw = doc.widthOfString(entry.word, { lineBreak: false });
+
+    /* A phrase is several words long and can be wider than the panel at full
+     * size — "Emergency Fund" at 36pt is not a small object. Shrink it until it
+     * fits rather than dropping it, because a concept the session actually
+     * taught is worth more than a strict size ladder. */
+    const maxTermWidth = (bounds.x1 - bounds.x0) * 0.62;
+    while (tw > maxTermWidth && size > 9) {
+      size -= 1;
+      doc.fontSize(size);
+      tw = doc.widthOfString(entry.word, { lineBreak: false });
+    }
     // Geist's cap height leaves a lot of air in the em box; measuring the glyphs
     // rather than the line lets neighbours sit close without touching.
     const th = size * 0.72;

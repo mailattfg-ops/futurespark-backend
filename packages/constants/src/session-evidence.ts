@@ -411,7 +411,22 @@ const CLOUD_STOPWORDS = new Set([
  * `exclude` takes the names in the room: a child's own name is among the most
  * frequent words in any lesson and tells a parent nothing they do not know.
  */
-export const buildWordCloud = (turns: Turn[], exclude: string[] = []): WordCloudEntry[] => {
+/** How many terms the panel is given to lay out. */
+const CLOUD_MAX_TERMS = 30;
+
+export const buildWordCloud = (
+  turns: Turn[],
+  exclude: string[] = [],
+  /**
+   * Multi-word concepts to look for before single words are counted.
+   *
+   * The session lexicon is exactly this list — the curated financial vocabulary
+   * plus the deck's own filtered terms — so "Needs vs Wants" and "Health
+   * Insurance" survive as one idea instead of being shredded into "needs",
+   * "wants" and two copies of "insurance".
+   */
+  phrases: string[] = []
+): WordCloudEntry[] => {
   const skip = new Set(CLOUD_STOPWORDS);
   for (const name of exclude) {
     for (const part of String(name ?? '').toLowerCase().split(/\s+/)) {
@@ -419,23 +434,59 @@ export const buildWordCloud = (turns: Turn[], exclude: string[] = []): WordCloud
     }
   }
 
+  /* Phrases are matched longest-first and their words consumed.
+   *
+   * Without consuming, "health insurance" would also add a point to "health"
+   * and to "insurance" — the same breath counted three times, which inflates
+   * whichever generic word the session repeats most. A standalone "insurance"
+   * elsewhere in the transcript still counts on its own, which is right. */
+  const candidates = phrases
+    .map((p) => String(p ?? '').trim().replace(/\s+/g, ' '))
+    .filter((p) => {
+      const n = p.split(' ').length;
+      return n >= 2 && n <= 3;
+    })
+    .map((p) => ({ display: p, tokens: p.toLowerCase().split(' ') }))
+    .sort((a, b) => b.tokens.length - a.tokens.length);
+
   const counts = new Map<string, { display: string; n: number }>();
+  const bump = (key: string, display: string) => {
+    const existing = counts.get(key);
+    if (existing) existing.n += 1;
+    else counts.set(key, { display, n: 1 });
+  };
+
   for (const turn of turns) {
-    for (const raw of String(turn.text ?? '').split(/[^A-Za-z'’]+/)) {
-      const word = raw.replace(/^['’]+|['’]+$/g, '');
+    const raw = String(turn.text ?? '').split(/[^A-Za-z'’]+/).filter(Boolean);
+    const words = raw.map((w) => w.replace(/^['’]+|['’]+$/g, ''));
+    const lower = words.map((w) => w.toLowerCase());
+    const consumed = new Array(words.length).fill(false);
+
+    for (const phrase of candidates) {
+      const len = phrase.tokens.length;
+      for (let i = 0; i + len <= lower.length; i++) {
+        if (consumed.slice(i, i + len).some(Boolean)) continue;
+        let match = true;
+        for (let j = 0; j < len; j++) {
+          if (lexiconKey(lower[i + j]) !== lexiconKey(phrase.tokens[j])) { match = false; break; }
+        }
+        if (!match) continue;
+        for (let j = 0; j < len; j++) consumed[i + j] = true;
+        bump(phrase.tokens.join(' '), phrase.display);
+      }
+    }
+
+    for (let i = 0; i < words.length; i++) {
+      if (consumed[i]) continue;
+      const word = words[i];
       if (word.length < 3 || word.length > 18) continue;
-      const lower = word.toLowerCase();
-      if (skip.has(lower)) continue;
+      if (skip.has(lower[i])) continue;
       // No vowel means a transcription artefact, not a word.
-      if (!/[aeiou]/.test(lower)) continue;
+      if (!/[aeiou]/.test(lower[i])) continue;
 
       // Counted on the singular, so "saving" and "savings" are one entry rather
       // than two sizes of the same idea sitting side by side.
-      const key = lexiconKey(lower);
-      const display = ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower;
-      const existing = counts.get(key);
-      if (existing) existing.n += 1;
-      else counts.set(key, { display, n: 1 });
+      bump(lexiconKey(lower[i]), ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower[i]);
     }
   }
 
@@ -443,7 +494,7 @@ export const buildWordCloud = (turns: Turn[], exclude: string[] = []): WordCloud
   const ranked = [...counts.values()]
     .filter((e) => e.n >= 2)
     .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
-    .slice(0, 24);
+    .slice(0, CLOUD_MAX_TERMS);
   if (ranked.length === 0) return [];
 
   const max = ranked[0].n;
@@ -824,7 +875,10 @@ export const deriveMetrics = (
    * Insurance" — and a cloud of phrases is a contents page in assorted sizes.
    * The panel is captioned "most used", so it now shows the words that were
    * most used. */
-  const wordCloud: WordCloudEntry[] = buildWordCloud(turns, exclude);
+  // The lexicon doubles as the phrase list: it already holds the curated
+  // vocabulary and the deck's own filtered terms, which is precisely the set of
+  // multi-word concepts worth keeping whole.
+  const wordCloud: WordCloudEntry[] = buildWordCloud(turns, exclude, lexicon);
 
   const bands = {
     // Of the responses that carried content, how many showed real thinking.
