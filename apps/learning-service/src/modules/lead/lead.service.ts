@@ -98,7 +98,7 @@ export const leadService = {
       const parentName = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim() || 'Parent';
       const studentName = [lead.studentFirstName, lead.studentLastName].filter(Boolean).join(' ').trim() || lead.studentFirstName || 'Student';
       const courseName = lead.program?.title || 'Financial Literacy';
-      const sessionTime = lead.preferredTime || '04:30 PM - 05:30 PM';
+      const sessionTime = lead.preferredTime || '04:00 PM';
       const timezone = lead.preferredTimezone || 'IST';
       const baseUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
       const joinUrl = `${baseUrl.replace(/\/$/, '')}/demo-class?leadId=${lead.id}`;
