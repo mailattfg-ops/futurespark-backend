@@ -40,6 +40,12 @@ check "summary heading renamed"       "$K/session-report.js"   "WORDS FROM THE S
 check "answers capped at questions"   "$K/session-report.js"   "meaningfulOutOfQuestions"
 
 echo
+echo "LEARNING-SERVICE"
+L=apps/learning-service/dist/modules/transcription
+check "verified compression cache"    "$L/groq-transcription.service.js" "matchesSource"
+check "unique transcription chunks"   "$L/groq-transcription.service.js" "runTag"
+
+echo
 echo "COMMUNICATION-SERVICE"
 C=apps/communication-service/dist/modules/whatsapp
 check "1024-char body budget"        "$C/report.service.js"  "fitBodyBudget"
@@ -53,6 +59,7 @@ check "temp file then atomic rename"  "$I/shared/audio.js"                 "rena
 check "one shared extraction lock"    "apps/integration-service/dist/utils/concurrency.js" "audioExtractionsInFlight"
 check "always re-extract missing audio" "$I/zoom/recording/recording.controller.js" "Always ask the extractor"
 check "PROCESSING status written"     "$I/zoom/recording/recording.service.js" "'PROCESSING'"
+check "transcription single-flight"    "$I/zoom/recording/recording.service.js" "zoom-transcribe"
 
 echo
 echo "AUTH-SERVICE"

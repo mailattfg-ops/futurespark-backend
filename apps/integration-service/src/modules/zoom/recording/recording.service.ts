@@ -15,6 +15,7 @@ const MAX_CONCURRENT_FFMPEG = parseInt(process.env.MAX_CONCURRENT_FFMPEG || '2',
 const downloadSemaphore = new Semaphore(MAX_CONCURRENT_DOWNLOADS, 'zoom-download');
 const ffmpegSemaphore = new Semaphore(MAX_CONCURRENT_FFMPEG, 'zoom-ffmpeg');
 const downloadsInFlight = createInFlightMap<string | null>('zoom-download');
+const transcriptionsInFlight = createInFlightMap<any>('zoom-transcribe');
 
 const DOWNLOADS_BASE = path.resolve(__dirname, '../../../../downloads');
 const VIDEO_DIR = path.join(DOWNLOADS_BASE, 'video');
@@ -320,7 +321,19 @@ export class ZoomRecordingService {
     });
   }
 
+  /**
+   * Every trigger funnels through one in-flight run per recording.
+   *
+   * The transcript job and the extractor’s auto-trigger both fire this, and
+   * two concurrent runs once shared chunk files — the first to finish deleted
+   * the second’s pieces, and a report with a fifteen-minute hole overwrote a
+   * complete one. A second caller now joins the first instead of racing it.
+   */
   static async transcribeRecording(recordingId: string) {
+    return transcriptionsInFlight.run(recordingId, () => ZoomRecordingService.runTranscription(recordingId));
+  }
+
+  private static async runTranscription(recordingId: string) {
     try {
       const recording = await db.meetingRecording.findUnique({
         where: { id: recordingId },
