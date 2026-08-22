@@ -476,9 +476,13 @@ const prepareReport = async (
     learningPoint1: learningPoints[0],
     learningPoint2: learningPoints[1],
     learningPoint3: learningPoints[2],
+    /* 280, not 600. Meta measures the template's own text plus every value
+     * against a single 1024-character limit, which leaves roughly 700 for all
+     * fourteen — a 600-character outcome eats most of that on its own and gets
+     * cut at the last moment anyway. The full text is in the PDF regardless. */
     sessionOutcome: truncate(
       storedReport?.parentSummary?.trim() || rendered.parsed.headline || `${firstName} completed this session.`,
-      600
+      280
     ),
     nextSessionTitle: curriculum.nextSessionTitle?.trim() || storedReport?.nextSessionFocus?.trim() || 'To be confirmed',
     nextSessionWhen: curriculum.nextSessionWhen?.trim() || 'Date to be confirmed',
