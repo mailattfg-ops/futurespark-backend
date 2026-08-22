@@ -132,6 +132,20 @@ export const buildReportDocument = (
       ? Math.round(history[history.length - 1] - history[history.length - 2])
       : null;
 
+  /* Every answer the child gave, which is what "meaningful answers" is a
+   * fraction OF.
+   *
+   * The analysis counts meaningful responses against the child's substantive
+   * turns, never against the mentor's questions — one question can draw three
+   * answers, and a child can speak unprompted. Independent plus prompted IS the
+   * total by construction upstream, so it is the only denominator that cannot
+   * produce a figure above 100%. */
+  const interactions = report?.interactions;
+  const totalResponses =
+    interactions && interactions.independentResponses !== null && interactions.promptedResponses !== null
+      ? interactions.independentResponses + interactions.promptedResponses
+      : null;
+
   const arcName = clean(curriculum.arcName);
   const arcDescription = clean(curriculum.arcDescription);
   const arcLine =
@@ -172,6 +186,7 @@ export const buildReportDocument = (
     talkMeasured: measured,
     questionsAsked: report?.interactions?.teacherQuestions ?? null,
     meaningfulAnswers: report?.interactions?.meaningfulResponses ?? null,
+    answersOutOf: totalResponses,
     highlights: buildHighlights(report),
     wordCloud: buildWordCloud(report),
 
