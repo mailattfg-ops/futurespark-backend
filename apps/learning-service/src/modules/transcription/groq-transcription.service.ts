@@ -354,6 +354,8 @@ const resolveFfmpeg = (): string => {
 };
 
 let compressionCounter = 0;
+// Distinguishes concurrent splits inside one process; the pid covers processes.
+let splitRunCounter = 0;
 
 export class GroqTranscriptionService {
   // Key presence is judged per RESOLVED provider, not against GROQ_API_KEY.
@@ -1131,14 +1133,29 @@ export class GroqTranscriptionService {
     const ext = path.extname(filePath) || '.mp3';
     const dir = path.dirname(filePath);
     const base = path.basename(filePath, ext);
-    const pattern = path.join(dir, `${base}.chunk-%03d${ext}`);
 
-    // Clear any chunks left behind by a previous crashed run, so a stale piece
-    // from an earlier class cannot be picked up and transcribed into this one.
-    for (const stale of fs.readdirSync(dir)) {
-      if (stale.startsWith(`${base}.chunk-`)) {
-        try { fs.unlinkSync(path.join(dir, stale)); } catch (_) { /* best effort */ }
-      }
+    /* Chunk names are unique PER RUN.
+     *
+     * They used to be derived from the audio filename alone, so two
+     * transcriptions of the same recording shared every chunk path — and in
+     * production the first run to finish cleaned up "its" chunks while the
+     * second was still transcribing them. Chunk 4 vanished mid-flight, the
+     * report was built from three quarters of the class, and it overwrote the
+     * complete report the first run had just written. */
+    const runTag = `${process.pid}-${splitRunCounter++}`;
+    const prefix = `${base}.${runTag}.chunk-`;
+    const pattern = path.join(dir, `${prefix}%03d${ext}`);
+
+    /* The stale sweep is age-based, never name-based. A name match cannot tell
+     * a crashed run's leftovers from a concurrent run's live pieces; age can —
+     * no transcription holds a chunk for two hours. */
+    const STALE_MS = 2 * 60 * 60 * 1000;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.chunk-\d+/.test(name)) continue;
+      try {
+        const full = path.join(dir, name);
+        if (Date.now() - fs.statSync(full).mtimeMs > STALE_MS) fs.unlinkSync(full);
+      } catch (_) { /* best effort */ }
     }
 
     const { execFileSync } = require('child_process');
@@ -1157,7 +1174,7 @@ export class GroqTranscriptionService {
     // that reads as nonsense — and readdir order is not guaranteed.
     return fs
       .readdirSync(dir)
-      .filter((name) => name.startsWith(`${base}.chunk-`) && name.endsWith(ext))
+      .filter((name) => name.startsWith(prefix) && name.endsWith(ext))
       .sort()
       .map((name) => path.join(dir, name));
   }

@@ -671,10 +671,6 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
     return;
   }
 
-  const maxW = Math.max(...words.map((w) => w.weight)) || 1;
-  const minW = Math.min(...words.map((w) => w.weight));
-  const spread = Math.max(1, maxW - minW);
-
   /* Colour, exactly as the approved page reads.
    *
    * Three registers, assigned by rank rather than at random so a re-sent
@@ -700,8 +696,17 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
     placed.some((p) => !(b.x1 < p.x0 || b.x0 > p.x1 || b.y1 < p.y0 || b.y0 > p.y1));
 
   words.forEach((entry, i) => {
-    // 11–33.4pt: the range measured from the approved PDF itself.
-    let size = 11 + ((entry.weight - minW) / spread) * 22.4;
+    /* Sized by RANK, not by raw frequency.
+     *
+     * Real speech is steep: one word dominates and the rest sit in a long flat
+     * tail. Sizing proportionally to counts rendered a genuine session as one
+     * enormous "insurance" over a field of small regular words — the approved
+     * page never looks like that. Its measured sizes (33.4, 30.8, 29.5, 25.3,
+     * 24, 22.3 … 11.1) are a smooth geometric decay down the ranks, so that is
+     * what is drawn: position in the most-used ORDER sets the size, and the
+     * order itself still comes from the counts. */
+    const n = words.length;
+    let size = n <= 1 ? 33.4 : 33.4 * Math.pow(11 / 33.4, i / (n - 1));
 
     // Accents land on ranks 3, 5, 7 and 9 — never the top two, which anchor
     // the panel in ink. Everything else: ink when large, grey when small.
