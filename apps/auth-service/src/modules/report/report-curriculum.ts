@@ -157,7 +157,10 @@ export const gatherCurriculum = async (input: CurriculumLookup): Promise<ReportC
         .map((c) => studentShareOf(c.interactionMetrics))
         .filter((v): v is number => v !== null);
 
-      if (history.length >= 2) out.shareHistory = history;
+      // A single reading is kept, not discarded. On a first session it is the
+      // only thing there is, and the report plots it as the baseline the next
+      // one will be compared against — an empty panel says nothing to a parent.
+      if (history.length >= 1) out.shareHistory = history;
     }
 
     const base = process.env.REPORT_RESCHEDULE_URL;

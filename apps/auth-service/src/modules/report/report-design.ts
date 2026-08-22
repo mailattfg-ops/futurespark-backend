@@ -376,7 +376,15 @@ const voiceBalance = (doc: Doc, d: ReportDocument): void => {
   /* ── Right: the trend ── */
   card(doc, 274.1, 218.6, 281.3, 142.5);
   const firstName = d.studentName.split(' ')[0].toUpperCase();
-  line(doc, `${firstName}'S SHARE · LAST ${d.shareHistory.length} SESSIONS (%)`, 283.7, 227.6, {
+  // "LAST 1 SESSIONS" is the kind of detail that tells a parent the document
+  // was assembled by a machine that was not paying attention.
+  const trendCaption =
+    d.shareHistory.length === 1
+      ? `${firstName}'S SHARE · FIRST SESSION (%)`
+      : d.shareHistory.length > 1
+        ? `${firstName}'S SHARE · LAST ${d.shareHistory.length} SESSIONS (%)`
+        : `${firstName}'S SHARE (%)`;
+  line(doc, trendCaption, 283.7, 227.6, {
     size: 4.9,
     font: FONT.mono,
     color: C.body,
@@ -385,24 +393,46 @@ const voiceBalance = (doc: Doc, d: ReportDocument): void => {
 
   const plotX0 = 302.5;
   const plotX1 = 538.35;
-  const yFor = (v: number) => 329.5 - (v - 20) * 2.0025;
+  const plotBottom = 329.5;
+  const plotTop = 249.4;
 
-  for (const v of [20, 40, 60]) {
-    doc.rect(302.4, yFor(v), 235.9, 0.5).fill(C.border);
-    line(doc, String(v), 0, yFor(v) - 2.9, { size: 4.7, font: FONT.mono, color: C.body, rightAt: 299 });
-  }
+  /* The axis fits the data instead of being fixed at 20–60.
+   *
+   * The approved design was drawn against a child sitting in the thirties and
+   * forties, so a fixed 20–60 looked right. A real first session came back at
+   * 16%, which a fixed axis clamps onto the bottom gridline — the chart would
+   * then show 20 while the label said 16, which is worse than no chart.
+   *
+   * Rounded outwards to tens with a little air, so the common case still
+   * produces exactly the 20/40/60 the design specifies. */
+  const values = d.shareHistory.length > 0 ? d.shareHistory : [0];
+  const axisLo = Math.max(0, Math.floor((Math.min(...values) - 10) / 10) * 10);
+  const axisHi = Math.min(100, Math.max(axisLo + 20, Math.ceil((Math.max(...values) + 10) / 10) * 10));
+  const yFor = (v: number) =>
+    plotBottom - ((v - axisLo) / (axisHi - axisLo)) * (plotBottom - plotTop);
 
   const pts = d.shareHistory;
+
+  // Only draw the axis when something is going to be plotted against it. An
+  // empty grid with a sentence running through it reads as a broken chart
+  // rather than as an honest "we could not measure this".
+  if (pts.length > 0) {
+    for (const v of [axisLo, (axisLo + axisHi) / 2, axisHi]) {
+      doc.rect(302.4, yFor(v), 235.9, 0.5).fill(C.border);
+      line(doc, String(Math.round(v)), 0, yFor(v) - 2.9, { size: 4.7, font: FONT.mono, color: C.body, rightAt: 299 });
+    }
+  }
+
   if (pts.length >= 2) {
     const step = (plotX1 - plotX0) / (pts.length - 1);
-    const xy = pts.map((v, i) => [plotX0 + i * step, yFor(Math.max(20, Math.min(60, v)))] as const);
+    const xy = pts.map((v, i) => [plotX0 + i * step, yFor(v)] as const);
 
     // Area first, so the line sits on top of its own shading.
     withOpacity(doc, 0.09, () => {
       doc.moveTo(xy[0][0], xy[0][1]);
       for (const [x, y] of xy.slice(1)) doc.lineTo(x, y);
-      doc.lineTo(xy[xy.length - 1][0], 329.5);
-      doc.lineTo(xy[0][0], 329.5);
+      doc.lineTo(xy[xy.length - 1][0], plotBottom);
+      doc.lineTo(xy[0][0], plotBottom);
       doc.fill(C.teal);
     });
 
@@ -423,8 +453,37 @@ const voiceBalance = (doc: Doc, d: ReportDocument): void => {
       color: C.ink,
       rightAt: lx + 5,
     });
+  } else if (pts.length === 1) {
+    /* A first session.
+     *
+     * One reading is not a trend, so nothing is joined up and no direction is
+     * implied — but it is plotted against the same axis the later sessions will
+     * use, which makes it the baseline rather than an empty box. A parent
+     * opening report one and report two should see the same chart growing, not
+     * a blank panel replaced by a line. */
+    const x = (plotX0 + plotX1) / 2;
+    const y = yFor(pts[0]);
+
+    // A drop line reads as a measurement taken; a lone dot reads as a stray mark.
+    withOpacity(doc, 0.35, () => {
+      doc.moveTo(x, y).lineTo(x, plotBottom).lineWidth(1).dash(2, { space: 2 }).stroke(C.teal);
+    });
+    doc.undash();
+
+    doc.circle(x, y, 3.05).lineWidth(1.75).fillAndStroke(C.white, C.teal);
+    centered(doc, `${Math.round(pts[0])}%`, x, y - 14, {
+      size: 6.2,
+      font: FONT.bodyBold,
+      color: C.ink,
+    });
+    centered(doc, 'S1', x, 336.9, { size: 4.9, font: FONT.mono, color: C.body });
+    centered(doc, 'First session · the baseline next week is measured against', x, 347, {
+      size: 5.6,
+      font: FONT.body,
+      color: C.muted,
+    });
   } else {
-    line(doc, 'Not enough sessions yet to show a trend.', 302.5, 285, {
+    centered(doc, 'The talk split could not be measured for this session.', (plotX0 + plotX1) / 2, 285, {
       size: 6.6,
       font: FONT.body,
       color: C.muted,

@@ -115,7 +115,17 @@ export const buildReportDocument = (
   const talk = report?.talkTime;
   const measured = Boolean(talk && talk.basis !== 'unmeasurable' && talk.studentPercent !== null);
 
-  const history = (curriculum.shareHistory ?? []).filter((n) => Number.isFinite(n));
+  const gathered = (curriculum.shareHistory ?? []).filter((n) => Number.isFinite(n));
+  /* This session's own reading is the last point on the chart.
+   *
+   * It normally arrives with the history, since that query includes the class
+   * being reported on. The fallback covers a first session whose analysis was
+   * written after the history was read — without it the very report that
+   * measured a share would be the one plotting nothing. */
+  const history =
+    gathered.length === 0 && measured && talk!.studentPercent !== null
+      ? [talk!.studentPercent]
+      : gathered;
   // The delta is only honest against a real previous reading.
   const shareDelta =
     history.length >= 2
