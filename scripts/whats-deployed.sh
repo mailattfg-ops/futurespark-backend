@@ -34,6 +34,8 @@ K=packages/constants/dist
 check "frequency word cloud"          "$K/session-evidence.js" "buildWordCloud"
 check "deck-sentence filter"          "$K/session-evidence.js" "isConceptLike"
 check "phrases only when curated"     "$K/session-evidence.js" "phraseKeptWhole"
+check "possessive + proper-noun drop" "$K/session-evidence.js" "midCap"
+check "talk share without Not-avail"  "$K/session-report.js"   "talkValue"
 check "summary heading renamed"       "$K/session-report.js"   "WORDS FROM THE SESSION"
 check "answers capped at questions"   "$K/session-report.js"   "meaningfulOutOfQuestions"
 
