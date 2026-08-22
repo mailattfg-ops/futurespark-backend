@@ -403,6 +403,12 @@ const CLOUD_STOPWORDS = new Set([
   'eighty', 'ninety', 'hundred', 'thousand', 'lakh', 'lakhs', 'crore', 'crores',
   'million', 'billion', 'half', 'zero',
   'yourself', 'myself', 'himself', 'herself', 'itself', 'themselves', 'ourselves',
+  // Seen leaking through on real sessions: sequence words, lesson furniture and
+  // units of time. "years" next to "premium" tells a parent nothing.
+  'after', 'before', 'during', 'comes', 'move', 'moves', 'moved', 'check',
+  'checks', 'checked', 'checking', 'amount', 'amounts', 'year', 'years',
+  'month', 'months', 'day', 'days', 'week', 'weeks', 'hour', 'hours',
+  'scenario', 'scenarios', 'case', 'cases', 'step', 'steps', 'later', 'earlier',
 ]);
 
 /**
@@ -460,16 +466,51 @@ export const buildWordCloud = (
     .map((p) => ({ display: p, tokens: p.toLowerCase().split(' ') }))
     .sort((a, b) => b.tokens.length - a.tokens.length);
 
-  const counts = new Map<string, { display: string; n: number }>();
-  const bump = (key: string, display: string) => {
+  /* `cap` and `midCap` catch proper nouns the exclude list cannot know about.
+   *
+   * Decks carry story characters ("What if Aarav Falls!"), and once the
+   * possessive is folded away "Aarav" reads like vocabulary. But a name betrays
+   * itself: it is capitalised at EVERY occurrence, including mid-sentence,
+   * which no ordinary word is. Words that also occur lowercase — insurance,
+   * premium — are untouched. Countries go with the names, which is right: a
+   * parent learns nothing from "japan" in a cloud about insurance. */
+  const counts = new Map<string, { display: string; n: number; cap: number; midCap: number }>();
+  const bump = (key: string, display: string, capitalised = false, midSentence = false) => {
     const existing = counts.get(key);
-    if (existing) existing.n += 1;
-    else counts.set(key, { display, n: 1 });
+    if (existing) {
+      existing.n += 1;
+      if (capitalised) {
+        existing.cap += 1;
+        if (midSentence) existing.midCap += 1;
+      }
+    } else {
+      counts.set(key, {
+        display,
+        n: 1,
+        cap: capitalised ? 1 : 0,
+        midCap: capitalised && midSentence ? 1 : 0,
+      });
+    }
   };
 
   for (const turn of turns) {
-    const raw = String(turn.text ?? '').split(/[^A-Za-z'’]+/).filter(Boolean);
-    const words = raw.map((w) => w.replace(/^['’]+|['’]+$/g, ''));
+    const text = String(turn.text ?? '');
+    const raw: string[] = [];
+    const atSentenceStart: boolean[] = [];
+    const tokenRe = /[A-Za-z'’]+/g;
+    let match: RegExpExecArray | null;
+    while ((match = tokenRe.exec(text))) {
+      raw.push(match[0]);
+      // A capital after . ! ? : or at the turn's opening is ordinary sentence
+      // casing; a capital anywhere else is the word's own.
+      const before = text.slice(0, match.index).replace(/["'’”)\]\s]+$/g, '');
+      const prev = before.slice(-1);
+      atSentenceStart.push(before.length === 0 || prev === '.' || prev === '!' || prev === '?' || prev === ':');
+    }
+    // Possessives and contractions fold onto their base word: "let's" becomes
+    // "let" (a stopword), "Aarav's" becomes "Aarav". Without this the
+    // apostrophe form dodges every filter and lands in the cloud verbatim.
+    const words = raw.map((w) => w.replace(/^['’]+|['’]+$/g, '').replace(/['’]s$/i, ''));
     const lower = words.map((w) => w.toLowerCase());
     const consumed = new Array(words.length).fill(false);
 
@@ -497,13 +538,20 @@ export const buildWordCloud = (
 
       // Counted on the singular, so "saving" and "savings" are one entry rather
       // than two sizes of the same idea sitting side by side.
-      bump(lexiconKey(lower[i]), ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower[i]);
+      bump(
+        lexiconKey(lower[i]),
+        ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower[i],
+        /^[A-Z]/.test(word),
+        !atSentenceStart[i]
+      );
     }
   }
 
   // Said once is not "most used" — it is a word that happened to occur.
   const ranked = [...counts.values()]
     .filter((e) => e.n >= 2)
+    // Capitalised at every occurrence including mid-sentence = a proper noun.
+    .filter((e) => !(e.cap === e.n && e.midCap > 0 && !ACRONYMS.has(e.display.toUpperCase())))
     .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
     .slice(0, CLOUD_MAX_TERMS);
   if (ranked.length === 0) return [];
