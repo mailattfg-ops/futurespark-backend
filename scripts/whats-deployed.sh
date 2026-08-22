@@ -60,6 +60,7 @@ check "one shared extraction lock"    "apps/integration-service/dist/utils/concu
 check "always re-extract missing audio" "$I/zoom/recording/recording.controller.js" "Always ask the extractor"
 check "PROCESSING status written"     "$I/zoom/recording/recording.service.js" "'PROCESSING'"
 check "transcription single-flight"    "$I/zoom/recording/recording.service.js" "zoom-transcribe"
+check "zoom local-time display (IST)"  "$I/zoom/meetings/meetings.service.js" "zoomLocalTime"
 
 echo
 echo "AUTH-SERVICE"
