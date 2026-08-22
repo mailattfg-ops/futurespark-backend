@@ -445,6 +445,12 @@ export const sessionReportToText = (report: SessionReport): string => {
     `- ${label}: ${value === null || value === '' ? NOT_AVAILABLE : value}`;
 
   const pct = (v: number | null) => (v === null ? NOT_AVAILABLE : `${v}%`);
+  const talkValue = (time: string, percent: number | null): string => {
+    const hasTime = time && time !== NOT_AVAILABLE;
+    if (hasTime && percent !== null) return `${time} (${percent}%)`;
+    if (hasTime) return time;
+    return pct(percent);
+  };
 
   const parts: string[] = [
     'STUDENT SESSION REPORT',
@@ -461,8 +467,12 @@ export const sessionReportToText = (report: SessionReport): string => {
     line('Start', report.timing.startTime),
     line('End', report.timing.endTime),
     line('Duration', report.timing.duration),
-    line(`Teacher ${(report.talkTime.label ?? 'talk').toLowerCase()}`, `${report.talkTime.teacher} (${pct(report.talkTime.teacherPercent)})`),
-    line(`Student ${(report.talkTime.label ?? 'talk').toLowerCase()}`, `${report.talkTime.student} (${pct(report.talkTime.studentPercent)})`),
+    /* On a word-share basis the PERCENTAGE is known but the minutes are not,
+     * and gluing the two together printed "Not available (82%)" — which reads
+     * as a broken report rather than as an estimate. Show whichever half is
+     * actually known. */
+    line(`Teacher ${(report.talkTime.label ?? 'talk').toLowerCase()}`, talkValue(report.talkTime.teacher, report.talkTime.teacherPercent)),
+    line(`Student ${(report.talkTime.label ?? 'talk').toLowerCase()}`, talkValue(report.talkTime.student, report.talkTime.studentPercent)),
     line('Teacher questions', report.interactions.teacherQuestions),
     line('Student questions', report.interactions.studentQuestions),
     line('Higher-order questions', report.interactions.higherOrderQuestions),
