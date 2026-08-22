@@ -364,11 +364,14 @@ export class ZoomRecordingController {
             startTranscriptionJob(recording.id, async () => {
               // The STT provider needs audio, not a 135 MB mp4. extractAudio is
               // idempotent and returns immediately when the track already exists.
-              const fresh = await ZoomRecordingService.getRecordingById(recording.id);
-              if (!fresh?.audioPath) {
-                logger.info(`[ZoomRecordingController] No audio track yet for ${recording.id} — extracting first.`);
-                await ZoomRecordingService.extractAudio(recording.id);
-              }
+              /* Always ask the extractor, never the row.
+               *
+               * This used to skip extraction whenever audioPath was set. Delete
+               * the file from disk and the row still says COMPLETED, so nothing
+               * ever re-extracted and the class sat with a dead audio player
+               * that no retry could clear. The extractor checks the FILE and
+               * returns immediately when a usable track is really there. */
+              await ZoomRecordingService.extractAudio(recording.id);
               const result = await ZoomRecordingService.transcribeRecording(recording.id);
               if (result?.classSummary && summaryPath && !result.usedFallback) {
                 try { fs.writeFileSync(summaryPath, result.classSummary, 'utf-8'); } catch (_) { }
