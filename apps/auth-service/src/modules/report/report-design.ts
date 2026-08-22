@@ -627,46 +627,74 @@ const topicsCovered = (doc: Doc, d: ReportDocument): void => {
     const color = ACCENTS[i % ACCENTS.length];
     const up = i % 2 === 0;
 
-    doc.moveTo(x, up ? 535.5 : spineY).lineTo(x, up ? spineY : 594.3).lineWidth(0.86).stroke(C.border);
+    doc.font(FONT.body).fontSize(6.6);
+    // Same-row neighbours are two steps apart, so 1.75 of a step leaves a
+    // visible gap even after the edge clamp has nudged one sideways.
+    const maxChipW = Math.max(64, (step || 120) * 1.75);
+    const textBudget = maxChipW - 26;
+
+    /* Curriculum topics are sentences, and the chips were drawn for words.
+     *
+     * "Types of insurance: vehicle, health, property, life, supplementary" was
+     * being cut to "Types of insuranc…" — the ellipsis doing all the talking.
+     * Two things fix that. The head of such a topic IS the topic: everything
+     * after a colon, a dash or a bracket is elaboration, so it is dropped when
+     * the head can stand alone. Then the remainder is WRAPPED over two lines
+     * rather than truncated, which roughly doubles what fits. */
+    const full = chip.label.trim();
+    const head = full.split(/\s*[:(–—]|\s+-\s+/)[0].trim();
+    const source = head.length >= 12 ? head : full;
+
+    const words = source.split(/\s+/);
+    const lines: string[] = [];
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (current && doc.widthOfString(candidate, { lineBreak: false }) > textBudget) {
+        lines.push(current);
+        current = word;
+        if (lines.length === 2) break;
+      } else {
+        current = candidate;
+      }
+    }
+    if (lines.length < 2 && current) lines.push(current);
+
+    // Only what genuinely will not fit in two lines is trimmed, and then on a
+    // character boundary at the very end of the second line.
+    if (lines.length === 2) {
+      const used = lines.join(' ').split(/\s+/).length;
+      if (used < words.length) {
+        while (lines[1].length > 4 && doc.widthOfString(`${lines[1]}…`, { lineBreak: false }) > textBudget) {
+          lines[1] = lines[1].slice(0, -1).trimEnd();
+        }
+        lines[1] = `${lines[1]}…`;
+      }
+    }
+
+    const lineH = 8.2;
+    const chipH = lines.length > 1 ? 15.8 + lineH : 15.8;
+    const chipW = Math.max(...lines.map((l) => doc.widthOfString(l, { lineBreak: false }))) + 26;
+
+    /* Centred on its node, but never over the card's edge. The last node sits
+     * near the right of the spine, so a wide label centred on it would hang
+     * outside the panel; nudging it back keeps the label readable, and the
+     * connector still points at the node. */
+    const chipX = Math.min(Math.max(x - chipW / 2, M + 6), R - chipW - 6);
+    // Chips grow AWAY from the spine, so the gap to it stays constant however
+    // many lines a label needs.
+    const chipY = up ? 535.5 - chipH : 594.3;
+
+    doc.moveTo(x, up ? chipY + chipH : spineY).lineTo(x, up ? spineY : chipY).lineWidth(0.86).stroke(C.border);
     doc.circle(x, spineY, 2.3).fill(color);
 
-    /* Fit the label to the space, rather than cutting at 18 characters.
-     *
-     * A fixed character cut turned every curriculum topic into "Understanding
-     * ris…", "Types of insuranc…" — the ellipsis did the talking. The gap
-     * between neighbouring nodes is what actually constrains a chip, and chips
-     * alternate above and below the spine, so each one may use nearly the full
-     * step. Only what genuinely will not fit is trimmed, and then on a word
-     * boundary so a reader loses a word rather than half of one. */
-    doc.font(FONT.body).fontSize(6.6);
-    // Chips alternate above and below, so a chip's same-row neighbours are two
-    // steps away; 1.75 of a step leaves a visible gap between them even after
-    // the edge clamp below has nudged one sideways.
-    const maxChipW = Math.max(64, (step || 120) * 1.75);
-    let label = chip.label.trim();
-    if (doc.widthOfString(label, { lineBreak: false }) + 26 > maxChipW) {
-      const budget = maxChipW - 26 - doc.widthOfString('…', { lineBreak: false });
-      while (label.length > 6 && doc.widthOfString(label, { lineBreak: false }) > budget) {
-        const cut = label.slice(0, -1).trimEnd();
-        const lastSpace = cut.lastIndexOf(' ');
-        label = lastSpace > 6 && cut.length - lastSpace < 12 ? cut.slice(0, lastSpace) : cut;
-      }
-      label = `${label}…`;
-    }
-    const textW = doc.widthOfString(label, { lineBreak: false });
-    const chipW = textW + 26;
-    /* Centred on its node, but never over the card's edge.
-     *
-     * The last node sits near the right of the spine, so a wide label centred
-     * on it hung outside the panel. Nudging the chip back inside keeps the
-     * whole label readable; its connector still points at the node, so which
-     * chip belongs to which thread stays unambiguous. */
-    const chipX = Math.min(Math.max(x - chipW / 2, M + 6), R - chipW - 6);
-    const chipY = up ? 519.7 : 594.3;
+    doc.roundedRect(chipX, chipY, chipW, chipH, Math.min(7.9, chipH / 2)).lineWidth(0.72).fillAndStroke(C.white, C.border);
+    doc.circle(chipX + 7.9, chipY + chipH / 2, 1.85).fill(color);
 
-    doc.roundedRect(chipX, chipY, chipW, 15.8, 7.9).lineWidth(0.72).fillAndStroke(C.white, C.border);
-    doc.circle(chipX + 7.9, chipY + 7.9, 1.85).fill(color);
-    line(doc, label, chipX + 13.8, chipY + 4.7, { size: 6.6, font: FONT.body, color: C.ink });
+    const firstBaseline = chipY + (chipH - lines.length * lineH) / 2 + 0.6;
+    lines.forEach((text, n) => {
+      line(doc, text, chipX + 13.8, firstBaseline + n * lineH, { size: 6.6, font: FONT.body, color: C.ink });
+    });
   });
 };
 
