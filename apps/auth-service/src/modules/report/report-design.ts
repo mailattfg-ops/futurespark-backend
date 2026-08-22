@@ -708,8 +708,30 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
     const n = words.length;
     let size = n <= 1 ? 33.4 : 33.4 * Math.pow(11 / 33.4, i / (n - 1));
 
-    // Accents land on ranks 3, 5, 7 and 9 — never the top two, which anchor
-    // the panel in ink. Everything else: ink when large, grey when small.
+    /* A phrase is several words long and can be wider than the panel at full
+     * size — "Emergency Fund" at 33pt is not a small object. Shrink it until it
+     * fits (never below 9pt) rather than dropping it, because a concept the
+     * session actually taught is worth more than a strict size ladder.
+     *
+     * Width is measured in the HEAVIEST face so the fit holds whatever weight
+     * the final size lands on — Bold is the widest of the three. */
+    doc.font(FONT.bodyHeavy).fontSize(size);
+    let tw = doc.widthOfString(entry.word, { lineBreak: false });
+    const maxTermWidth = (bounds.x1 - bounds.x0) * 0.62;
+    while (tw > maxTermWidth && size > 9) {
+      size -= 1;
+      doc.fontSize(size);
+      tw = doc.widthOfString(entry.word, { lineBreak: false });
+    }
+
+    /* Weight and colour follow the FINAL size, after any shrink.
+     *
+     * They were chosen before it, so a long phrase shrunk from 33pt to 19pt
+     * kept its Bold and its large-tier ink — breaking the very weight table
+     * the sizes exist to enforce. Large tier 700, middle tier 600, the small
+     * grey tail Regular so it recedes; accents on ranks 3, 5, 7, 9 — never the
+     * top two, which anchor the panel in ink. */
+    const face = size >= 20 ? FONT.bodyHeavy : size >= 14.5 ? FONT.bodyBold : FONT.body;
     const accentSlot = i >= 2 && i % 2 === 0 ? (i - 2) / 2 : -1;
     const color =
       accentSlot >= 0 && accentSlot < ACCENTS.length
@@ -717,27 +739,8 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
         : size < 16
           ? C.body
           : C.ink;
-
-    /* Weight rises with size, as the approved image sets it.
-     *
-     * Everything was drawn in Regular, which is why the panel read as thin next
-     * to the reference even with the sizes right — at 33pt a Regular "savings"
-     * is a big light word, not a headline. Large tier 700, middle tier 600,
-     * and the small grey tail stays Regular so it recedes. */
-    const face = size >= 20 ? FONT.bodyHeavy : size >= 14.5 ? FONT.bodyBold : FONT.body;
     doc.font(face).fontSize(size);
-    let tw = doc.widthOfString(entry.word, { lineBreak: false });
-
-    /* A phrase is several words long and can be wider than the panel at full
-     * size — "Emergency Fund" at 36pt is not a small object. Shrink it until it
-     * fits rather than dropping it, because a concept the session actually
-     * taught is worth more than a strict size ladder. */
-    const maxTermWidth = (bounds.x1 - bounds.x0) * 0.62;
-    while (tw > maxTermWidth && size > 9) {
-      size -= 1;
-      doc.fontSize(size);
-      tw = doc.widthOfString(entry.word, { lineBreak: false });
-    }
+    tw = doc.widthOfString(entry.word, { lineBreak: false });
     // Geist's cap height leaves a lot of air in the em box; measuring the glyphs
     // rather than the line lets neighbours sit close without touching.
     const th = size * 0.72;

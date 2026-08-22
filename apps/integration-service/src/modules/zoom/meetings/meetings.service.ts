@@ -93,6 +93,44 @@ const resolveHostId = async (email: string | null): Promise<string | null> => {
   return hostIdByEmailCache.map.get(emailKey(email)) ?? null;
 };
 
+/**
+ * The instant, written as a wall-clock time in `timeZone`, for Zoom's API.
+ *
+ * Zoom reads `start_time` two ways: with a `Z` suffix it is GMT and the
+ * `timezone` field becomes display decoration; without one it is local to the
+ * `timezone` sent beside it. We were sending GMT-with-Z, so a class booked for
+ * 7:00 PM IST showed in the Zoom client as its UTC clock time — "01:30 PM
+ * Mumbai, Kolkata, New Delhi". The INSTANT was always right; the presentation
+ * was not.
+ *
+ * The database keeps storing UTC. Only this outbound string is local, and it
+ * is derived from the UTC instant through Intl — so DST and every other zone
+ * rule is the ICU library's problem, not ours.
+ */
+export const zoomLocalTime = (at: Date, timeZone: string): string => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(at);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00';
+    // Some ICU builds render midnight as 24:00; Zoom wants 00:00.
+    const hour = get('hour') === '24' ? '00' : get('hour');
+    return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}:${get('second')}`;
+  } catch {
+    // An invalid IANA zone reached us. GMT-with-Z keeps the INSTANT correct,
+    // which beats refusing to book; the display zone is then Zoom's default.
+    logger.warn(`[ZoomMeetingsService] "${timeZone}" is not a valid IANA timezone — sending GMT to Zoom instead.`);
+    return at.toISOString();
+  }
+};
+
 const formatWindow = (start: Date, end: Date, timezone: string): string => {
   try {
     const fmt = new Intl.DateTimeFormat('en-GB', {
@@ -409,11 +447,12 @@ export class ZoomMeetingsService {
           topic: input.title,
           agenda: input.description || `FutureSpark Session: ${input.title}`,
           type: 2, // Scheduled meeting
-          // The parsed instant, not the raw string. Both the DB row and Zoom
-          // then describe the same moment: a bare "2026-08-12T10:00:00" was
-          // previously stored as server-local and sent to Zoom as local to
-          // `timezone`, which are the same time only by luck.
-          start_time: start.toISOString(),
+          // The parsed instant, re-expressed as wall-clock time in `timezone`.
+          // Derived from the UTC instant — never the raw request string, which
+          // was once forwarded verbatim and only meant the right moment by
+          // luck. Local-without-Z is what makes the Zoom client display the
+          // booked 7:00 PM as 7:00 PM; see zoomLocalTime.
+          start_time: zoomLocalTime(start, timezone),
           duration: durationMinutes,
           timezone,
           settings: {
@@ -700,7 +739,11 @@ export class ZoomMeetingsService {
     if (input.description !== undefined && (input.description || null) !== meeting.description) {
       zoomPatch.agenda = input.description ?? '';
     }
-    if (startChanged) zoomPatch.start_time = nextStart.toISOString();
+    // The zone the patched times should read in — the new one when the caller
+    // is changing it, else whatever the meeting was booked under.
+    const nextTimezone = input.timezone ?? meeting.timezone ?? 'Asia/Kolkata';
+
+    if (startChanged) zoomPatch.start_time = zoomLocalTime(nextStart, nextTimezone);
     if (timesChanged) {
       // Recomputed from the EFFECTIVE window, so moving only the end time
       // still resizes the meeting. The old code only sent a duration when both
@@ -709,7 +752,13 @@ export class ZoomMeetingsService {
     }
     if (timezoneChanged) {
       zoomPatch.timezone = input.timezone;
-      zoomPatch.start_time = zoomPatch.start_time ?? nextStart.toISOString();
+      zoomPatch.start_time = zoomPatch.start_time ?? zoomLocalTime(nextStart, nextTimezone);
+    }
+    // A local start_time only means what the timezone beside it says it means,
+    // so the two always travel together — a bare local time would otherwise be
+    // read in whatever zone the meeting happened to hold before.
+    if (zoomPatch.start_time !== undefined && zoomPatch.timezone === undefined) {
+      zoomPatch.timezone = nextTimezone;
     }
 
     const dbData = {
