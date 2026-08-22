@@ -238,6 +238,125 @@ export const CORE_FINANCIAL_VOCABULARY = [
  * core vocabulary fills the budget. Capped at 80: a longer list stops
  * constraining anything and starts costing tokens the transcript needs.
  */
+/* ── Is this a concept, or just a line off a slide? ──────────────────────────
+ *
+ * The deck is read line by line, and every line used to become a "key concept".
+ * A real session produced this list for a parent to read:
+ *
+ *   QUICK CHECK · Now think about it · THE STORM · WHO ARE INVOLVED ·
+ *   Suddenly a ball hit the kitchen window - · What is Insurance?
+ *
+ * Those are slide headings and narration, not vocabulary. They tell a parent
+ * nothing, and they crowd out the terms that do — premium, deductible, claim.
+ *
+ * Applied ONLY to deck-derived lines. CORE_FINANCIAL_VOCABULARY is hand-written
+ * and contains deliberate exceptions ("Needs vs Wants", "Buy It For Life") that
+ * these rules would throw away.
+ */
+
+/**
+ * "X vs Y" is a concept in this curriculum, not a sentence.
+ *
+ * Needs vs Wants, Saving vs Investing, Emergency Saving vs Insurance — the
+ * comparison IS the lesson, so the connective is allowed and the phrase is
+ * given room for four words instead of three.
+ */
+const COMPARISON_WORDS = new Set(['vs', 'v', 'versus']);
+
+/**
+ * Capitals that are the word, not shouting.
+ *
+ * De-shouting a deck turns INSURANCE into Insurance, which is right, and UPI
+ * into Upi, which is wrong — and these are exactly the terms an Indian family
+ * would recognise on sight. Listed explicitly rather than guessed from length,
+ * because RISK and ATM are both short and only one of them is an acronym.
+ */
+const ACRONYMS = new Set([
+  'UPI', 'EMI', 'ATM', 'PIN', 'KYC', 'NAV', 'SIP', 'FD', 'RD', 'PPF', 'NPS',
+  'GST', 'TDS', 'IPO', 'NFO', 'FOMO', 'FOBO', 'EPF', 'UAN', 'CIBIL', 'IFSC',
+  'OTP', 'NEFT', 'RTGS', 'IMPS', 'PAN', 'ROI', 'CTC', 'HRA', 'LIC', 'IRDAI',
+]);
+
+/** A term almost never contains one of these; a sentence almost always does. */
+const FUNCTION_WORDS = new Set([
+  'the', 'a', 'an', 'of', 'and', 'or', 'is', 'are', 'was', 'were', 'be', 'been',
+  'if', 'that', 'this', 'these', 'those', 'how', 'what', 'who', 'whom', 'why', 'when',
+  'where', 'which', 'about', 'above', 'below', 'it', 'its', 'to', 'for', 'with', 'in',
+  'on', 'at', 'from', 'by', 'your', 'my', 'our', 'their', 'his', 'her', 'you', 'we',
+  'they', 'i', 'let', 'lets', 'do', 'does', 'did', 'can', 'will', 'would', 'should',
+  'into', 'than', 'then', 'so', 'but', 'as', 'up', 'out', 'now', 'here', 'there',
+]);
+
+/** Headings every deck has, which describe the slide rather than the subject. */
+const SLIDE_FURNITURE = new Set([
+  'quick check', 'check', 'recap', 'summary', 'review', 'activity', 'exercise',
+  'warm up', 'warmup', 'wrap up', 'wrapup', 'agenda', 'objective', 'objectives',
+  'outcome', 'outcomes', 'intro', 'introduction', 'discussion', 'scenario',
+  'example', 'examples', 'task', 'question', 'questions', 'answer', 'answers',
+  'homework', 'takeaway', 'takeaways', 'key term', 'key terms', 'mind map',
+  'fun fact', 'stop', 'level', 'welcome', 'next', 'conclusion', 'overview',
+  'contents', 'index', 'title', 'thank you', 'thanks', 'quiz', 'poll', 'note',
+  'notes', 'tip', 'tips', 'remember', 'checkpoint', 'reflection', 'practice',
+  'story', 'case study', 'did you know', 'lets begin', 'begin', 'end', 'the end',
+  'group activity', 'class activity', 'your turn', 'my turn', 'think', 'imagine',
+]);
+
+/** True when a deck line reads like a term rather than a sentence or a heading. */
+export const isConceptLike = (raw: string): boolean => {
+  const term = (raw ?? '').trim().replace(/\s+/g, ' ');
+  if (term.length < 3 || term.length > 40) return false;
+
+  // Sentence punctuation is the clearest tell: a term does not end in a comma,
+  // ask a question or shout.
+  if (/[?!,;:]/.test(term)) return false;
+  if (/[-–—]$/.test(term)) return false;
+  if (/\d/.test(term) && /\s/.test(term)) return false; // "STOP 2", "Level 3 recap"
+
+  const words = term.split(' ');
+  const lower = words.map((w) => w.toLowerCase().replace(/[^a-z']/g, ''));
+  const isComparison = lower.some((w) => COMPARISON_WORDS.has(w));
+
+  // A comparison earns one extra word: "Emergency Saving vs Insurance".
+  if (words.length > (isComparison ? 4 : 3)) return false;
+
+  if (lower.some((w) => FUNCTION_WORDS.has(w))) return false;
+  if (lower.some((w) => w.includes("'"))) return false; // "That's", "Let's"
+
+  if (SLIDE_FURNITURE.has(term.toLowerCase())) return false;
+
+  return true;
+};
+
+/**
+ * Decks shout their headings. A cloud of SHARING RISK next to "premium" reads
+ * as two different kinds of thing, so an all-caps line is title-cased back.
+ */
+export const tidyDeckTerm = (raw: string): string => {
+  const term = (raw ?? '').trim().replace(/\s+/g, ' ');
+
+  /* Is it shouted? Judged on the real words only.
+   *
+   * "EMERGENCY SAVING vs INSURANCE" is shouted, but a plain toUpperCase()
+   * comparison says otherwise because the connective is already lowercase —
+   * which left it shouting in the middle of an otherwise title-cased cloud. */
+  const spoken = term
+    .split(' ')
+    .filter((w) => !COMPARISON_WORDS.has(w.toLowerCase()) && !ACRONYMS.has(w.toUpperCase()));
+  const shouted = spoken.length > 0 && spoken.every((w) => w === w.toUpperCase());
+  if (!shouted) return term; // already mixed case, or all acronyms — leave it
+  return term
+    .toLowerCase()
+    .split(' ')
+    // "Vs" reads as a typo; the connective stays lowercase the way anyone
+    // writing "Needs vs Wants" by hand would.
+    .map((w) => {
+      if (COMPARISON_WORDS.has(w)) return w;
+      if (ACRONYMS.has(w.toUpperCase())) return w.toUpperCase();
+      return w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w;
+    })
+    .join(' ');
+};
+
 /** Singular, lowercase form — the identity a concept is deduped on. */
 const lexiconKey = (word: string): string => {
   const w = word.trim().toLowerCase();
@@ -251,7 +370,10 @@ const lexiconKey = (word: string): string => {
 export const buildSessionLexicon = (deckTerms: string[]): string[] => {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const term of [...(deckTerms ?? []), ...CORE_FINANCIAL_VOCABULARY]) {
+  // Deck lines are filtered and de-shouted; the curated list is trusted as-is.
+  const fromDeck = (deckTerms ?? []).filter(isConceptLike).map(tidyDeckTerm);
+
+  for (const term of [...fromDeck, ...CORE_FINANCIAL_VOCABULARY]) {
     const clean = (term ?? '').trim().replace(/\s+/g, ' ');
     if (clean.length < 2 || clean.length > 40) continue;
     if (/^\d/.test(clean)) continue;

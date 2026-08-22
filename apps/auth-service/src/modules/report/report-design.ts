@@ -202,6 +202,16 @@ export interface ReportDocument {
   talkMeasured: boolean;
   questionsAsked: number | null;
   meaningfulAnswers: number | null;
+  /**
+   * How many answers the child gave in total — the denominator meaningful
+   * answers are counted against.
+   *
+   * NOT the number of questions asked. A child can answer one question in three
+   * turns, or speak without being asked; against the question count this read
+   * "18 / 9 · 200% answered with reasoning", which is not a thing that can
+   * happen and told a parent the report was not being checked.
+   */
+  answersOutOf: number | null;
   highlights: string[];
   wordCloud: CloudWord[];
 
@@ -522,15 +532,26 @@ const participation = (doc: Doc, d: ReportDocument): void => {
   });
 
   const answers = d.meaningfulAnswers;
-  const asked = d.questionsAsked;
-  if (answers === null || asked === null || asked === 0) {
-    line(doc, '—', 312.3, 411.7, { size: 18.8, font: FONT.bodyBold, color: C.muted });
-    line(doc, 'NOT MEASURED FOR THIS SESSION.', 312.3, 447, {
-      size: 6,
-      font: FONT.mono,
-      color: C.body,
-      spacing: 0.2,
+  const asked = d.answersOutOf;
+  if (answers === null || asked === null || asked === 0 || answers > asked) {
+    /* Show the count alone rather than a ratio that cannot be right.
+     *
+     * A percentage over 100 is always a bug somewhere upstream, and printing it
+     * to a parent is worse than printing nothing — so the number that IS
+     * trustworthy is kept and the ratio is dropped. */
+    const showable = answers !== null && answers >= 0;
+    line(doc, showable ? String(answers) : '—', 312.3, 411.7, {
+      size: 18.8,
+      font: FONT.bodyBold,
+      color: showable ? C.ink : C.muted,
     });
+    line(
+      doc,
+      showable ? 'ANSWERS THAT SHOWED REAL THINKING.' : 'NOT MEASURED FOR THIS SESSION.',
+      312.3,
+      447,
+      { size: 6, font: FONT.mono, color: C.body, spacing: 0.2 }
+    );
   } else {
     const after = line(doc, String(answers), 312.3, 411.7, {
       size: 18.8,
@@ -543,7 +564,9 @@ const participation = (doc: Doc, d: ReportDocument): void => {
     const trackW = 233.3;
     doc.roundedRect(312, 440.2, trackW, 3, 1.5).fill(C.border);
     doc.roundedRect(312, 440.2, Math.max(2, trackW * Math.min(1, answers / asked)), 3, 1.5).fill(C.amber);
-    line(doc, `${pct}% ANSWERED WITH REASONING, NOT JUST YES/NO.`, 312.3, 447, {
+    // "Of the answers given" — the denominator is the child's own answers, so
+    // saying so keeps the sentence true to the arithmetic above it.
+    line(doc, `${pct}% OF ANSWERS SHOWED REASONING, NOT JUST YES/NO.`, 312.3, 447, {
       size: 6,
       font: FONT.mono,
       color: C.body,
@@ -652,9 +675,10 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
    * every time it is rendered, or a re-sent report looks like a different one.
    * Words are placed largest first from the centre, and anything that cannot
    * find a free box inside the panel is dropped rather than allowed to overlap. */
-  const bounds = { x0: M + 10, y0: 96, x1: R - 10, y1: 268 };
+  const bounds = { x0: M + 8, y0: 94, x1: R - 8, y1: 270 };
   const cx = (bounds.x0 + bounds.x1) / 2;
   const cy = (bounds.y0 + bounds.y1) / 2;
+  const aspect = (bounds.y1 - bounds.y0) / (bounds.x1 - bounds.x0);
   const placed: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
 
   const hits = (b: { x0: number; y0: number; x1: number; y1: number }): boolean =>
@@ -670,18 +694,40 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
 
     doc.font(FONT.body).fontSize(size);
     const tw = doc.widthOfString(entry.word, { lineBreak: false });
-    const th = size * 0.98;
+    // Geist's cap height leaves a lot of air in the em box; measuring the glyphs
+    // rather than the line lets neighbours sit close without touching.
+    const th = size * 0.72;
 
-    for (let step = 0; step < 900; step++) {
-      const angle = step * 0.5;
-      const radius = step * 0.55;
+    /* A tight archimedean spiral.
+     *
+     * The steps are small (0.28 rad, 0.22pt) so a word tries hundreds of near
+     * positions before giving up any ground — that is what makes the mass read
+     * as one block rather than a scatter. The 0.5 vertical factor squashes the
+     * spiral into the panel's landscape shape so the cloud fills the width
+     * without leaving a band of empty paper top and bottom. */
+    for (let step = 0; step < 4000; step++) {
+      const angle = step * 0.28;
+      const radius = step * 0.22;
       const x = cx + radius * Math.cos(angle) - tw / 2;
-      const y = cy + radius * 0.42 * Math.sin(angle) - th / 2;
-      const box = { x0: x - 3, y0: y - 1.5, x1: x + tw + 3, y1: y + th + 1.5 };
+      // Squashed to the panel's own proportions. A circular spiral packs into a
+      // tight disc floating in the middle of a landscape box; matching the
+      // aspect pushes words outward sideways first, so the mass grows into the
+      // width instead of leaving empty paper either side of it.
+      const y = cy + radius * aspect * Math.sin(angle) - th / 2;
+      /* Breathing room is what makes the cloud FILL the panel.
+       *
+       * Counter-intuitively, tighter padding produced a smaller cloud: the
+       * words packed into a dense blob floating in the middle with paper all
+       * round it. Pushing them apart grows the whole mass outward until it
+       * meets the panel edges, which is what the approved design looks like —
+       * the words are the same size either way, they just occupy the box. */
+      const box = { x0: x - 4.5, y0: y - 3, x1: x + tw + 4.5, y1: y + th + 3 };
       if (box.x0 < bounds.x0 || box.x1 > bounds.x1 || box.y0 < bounds.y0 || box.y1 > bounds.y1) continue;
       if (hits(box)) continue;
       placed.push(box);
-      doc.fillColor(color).text(entry.word, x, y, { lineBreak: false });
+      // pdfkit positions text by its em box, so lift by the difference between
+      // that and the glyph height measured above.
+      doc.fillColor(color).text(entry.word, x, y - size * 0.19, { lineBreak: false });
       break;
     }
   });
