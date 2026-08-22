@@ -68,6 +68,9 @@ const readIntEnv = (name: string, fallback: number, min: number, max: number): n
   return parsed;
 };
 
+/** One warning per process, not one per send. */
+let warnedAboutDefaultTemplateVars = false;
+
 export const whatsappConfig = {
   get accessToken(): string | undefined {
     return readEnv('WHATSAPP_ACCESS_TOKEN');
@@ -163,7 +166,23 @@ export const whatsappConfig = {
    */
   get reportTemplateVariables(): string[] {
     const raw = readEnv('WHATSAPP_REPORT_TEMPLATE_VARIABLES');
-    if (!raw) return ['studentName', 'sessionTitle', 'classDate', 'mentorName'];
+    if (!raw) {
+      /* The default is four names, and a template expecting any other count
+       * rejects the whole message with "localizable_params (4) does not match".
+       * That error names the count but not the reason, and four is also what
+       * the previous configuration held — so the two causes look identical
+       * from the outside. Say plainly which one this is. */
+      if (!warnedAboutDefaultTemplateVars) {
+        warnedAboutDefaultTemplateVars = true;
+        logger.warn(
+          '[WhatsApp] WHATSAPP_REPORT_TEMPLATE_VARIABLES is not set in this process, so the report ' +
+            'template is falling back to its four built-in variables. If the approved template expects a ' +
+            'different number, every send fails at Meta. Check that the root .env is reachable from this ' +
+            'service and that the process was restarted after the file changed.'
+        );
+      }
+      return ['studentName', 'sessionTitle', 'classDate', 'mentorName'];
+    }
     return raw
       .split(',')
       .map((name) => name.trim())
