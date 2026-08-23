@@ -1374,7 +1374,13 @@ export class GroqTranscriptionService {
               ],
             },
           ],
-          max_tokens: 16_000,
+          /* A transcript of a 30-minute class is long, and a reasoning model
+           * spends part of this budget thinking before it writes a word. At
+           * 16k the budget ran out mid-thought: the provider answered 200 with
+           * ~15,99x completion tokens and an EMPTY content field, which read
+           * here as "this model heard nothing". Configurable because the right
+           * number depends on the model and the class length. */
+          max_tokens: readNumberEnv('AI_TRANSCRIPTION_MAX_TOKENS', 32_000),
           temperature: 0,
           usage: { include: true },
           ...providerBodyExtras(provider),
@@ -1402,11 +1408,52 @@ export class GroqTranscriptionService {
         ...this.jobTag,
       });
 
-      const content = response.data?.choices?.[0]?.message?.content;
+      const choice = response.data?.choices?.[0];
+      const content = choice?.message?.content;
+      const finishReason = choice?.finish_reason;
+      const completionTokens = Number(usage.completion_tokens) || 0;
+      const budget = readNumberEnv('AI_TRANSCRIPTION_MAX_TOKENS', 32_000);
+
       if (typeof content !== 'string' || content.trim().length === 0) {
-        // A typed error so the fallback ladder can tell 'this model heard
-        // nothing' apart from 'the request failed'.
+        /* Say WHICH kind of nothing this is.
+         *
+         * "Returned an empty transcript" was true but useless: it reads as
+         * "there was no speech" when the actual cause was the output budget
+         * running out — a setting, not the audio. finish_reason 'length', or
+         * a completion that lands within a whisker of the cap, is the tell.
+         * A reasoning model can spend the whole budget thinking and emit no
+         * content at all, which is exactly what happened here.
+         */
+        const hitCap = finishReason === 'length' || completionTokens >= budget * 0.97;
+        if (hitCap) {
+          throw new GroqError(
+            describeGroqFailure(
+              new Error(
+                `"${model}" used its entire ${budget}-token output budget ` +
+                  `(${completionTokens} tokens, finish_reason="${finishReason ?? 'unknown'}") without ` +
+                  'returning any transcript text. The audio is not the problem — the model ran out of ' +
+                  'room. Raise AI_TRANSCRIPTION_MAX_TOKENS, shorten the chunks with GROQ_CHUNK_SECONDS, ' +
+                  'or use a dedicated speech-to-text model such as openai/whisper-large-v3-turbo.'
+              ),
+              'transcription',
+              { model, provider: provider.label }
+            )
+          );
+        }
+
+        // Genuinely nothing heard — the ladder may usefully try another model.
         throw new EmptyTranscriptError(model, 'chat');
+      }
+
+      /* Truncated, but not empty: keep what came back and say so. Half a
+       * lesson analysed knowingly beats half a lesson passed off as whole. */
+      if (finishReason === 'length') {
+        this.transcriptionGaps += 1;
+        logger.error(
+          `[GroqTranscriptionService] "${model}" hit its ${budget}-token output limit mid-transcript ` +
+            `(${completionTokens} tokens). The transcript is CUT SHORT — coverage will be marked as gaps. ` +
+            'Raise AI_TRANSCRIPTION_MAX_TOKENS or lower GROQ_CHUNK_SECONDS.'
+        );
       }
 
       return content.trim();
