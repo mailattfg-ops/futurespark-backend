@@ -54,6 +54,22 @@ export interface ShareReading {
   basis: string;
 }
 
+/** Why a stored analysis yielded no plottable talk-share reading. */
+const shareDropReason = (metrics: unknown): string => {
+  if (!metrics || typeof metrics !== 'object') return 'no analysis stored — never transcribed';
+  const raw = (metrics as any).report;
+  if (!raw || typeof raw !== 'object') return 'no structured report — summary never attached, or predates the format';
+  try {
+    const talk = parseSessionReport(raw).talkTime;
+    if (!talk) return 'analysis has no talkTime block';
+    if (talk.basis === 'unmeasurable') return 'talk split could not be measured';
+    if (typeof talk.studentPercent !== 'number') return 'no student percentage recorded';
+    return 'plottable';
+  } catch {
+    return 'stored analysis could not be parsed';
+  }
+};
+
 const studentShareOf = (metrics: unknown): ShareReading | null => {
   if (!metrics || typeof metrics !== 'object') return null;
   const raw = (metrics as any).report;
@@ -161,21 +177,50 @@ export const gatherCurriculum = async (input: CurriculumLookup): Promise<ReportC
        * so the sparkline and each week's report always agree. Sessions whose
        * split could not be measured are skipped rather than plotted as zero —
        * a dip to nothing would read as a child who stopped speaking. */
+      /* Not filtered on status COMPLETED.
+       *
+       * A class that has a stored analysis definitionally happened — the
+       * recording was found, transcribed and analysed. Requiring the mentor to
+       * have also pressed "Completed" silently dropped real sessions from the
+       * sparkline, so a child's second report plotted one point and called
+       * itself their first session. CANCELLED is still excluded. */
       const previous = await db.scheduledClass.findMany({
         where: {
           studentId: input.studentId,
           startTime: { lte: input.startTime },
-          status: 'COMPLETED',
+          status: { not: 'CANCELLED' },
         },
         orderBy: { startTime: 'desc' },
         take: HISTORY_WINDOW,
         select: { id: true, interactionMetrics: true },
       });
 
-      const history = previous
-        .reverse()
-        .map((c) => studentShareOf(c.interactionMetrics))
+      /* Why a past session is missing from the sparkline is invisible from the
+       * chart itself — it just quietly has fewer points. Name every drop. */
+      const readings = previous.reverse().map((c) => ({
+        id: c.id,
+        reading: studentShareOf(c.interactionMetrics),
+        why: shareDropReason(c.interactionMetrics),
+      }));
+
+      const dropped = readings.filter((r) => r.reading === null);
+      if (dropped.length > 0) {
+        logger.warn(
+          `[Report] ${dropped.length} of ${readings.length} past session(s) contribute no talk-share ` +
+            `point: ${dropped.map((d) => `${d.id} (${d.why})`).join('; ')}.`
+        );
+      }
+
+      const history = readings
+        .map((r) => r.reading)
         .filter((v): v is ShareReading => v !== null);
+
+      if (history.length > 0) {
+        logger.info(
+          `[Report] Talk-share history: ${history.length} point(s) — ` +
+            `${history.map((h) => `${h.percent}% (${h.basis})`).join(', ')}.`
+        );
+      }
 
       // A single reading is kept, not discarded. On a first session it is the
       // only thing there is, and the report plots it as the baseline the next

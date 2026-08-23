@@ -122,19 +122,24 @@ export const buildReportDocument = (
   const talk = report?.talkTime;
   const measured = Boolean(talk && talk.basis !== 'unmeasurable' && talk.studentPercent !== null);
 
-  /* Only readings measured the same way as this one.
+  /* EVERY measured session is plotted — a child's second report must show two
+   * points, their third three. Dropping readings measured a different way left
+   * a two-session child with a chart captioned "first session", which is worse
+   * than an imperfect axis: it tells a parent something plainly untrue.
    *
-   * A fallback to a different transcription model can change the basis from
-   * timestamps to word-share mid-programme. Mixing them on one sparkline, or
-   * differencing across the change, produces a large invented swing in the
-   * child's share — the kind of thing a parent reads as a real change in their
-   * child. Points on another basis are dropped rather than converted: there is
-   * no honest conversion between minutes and words. */
-  const currentBasis = measured ? String(talk!.basis) : null;
-  const gathered = (curriculum.shareHistory ?? [])
-    .filter((h) => h && Number.isFinite(h.percent))
-    .filter((h) => currentBasis === null || h.basis === currentBasis)
-    .map((h) => h.percent);
+   * The real harm of mixing was never the line, it was the DELTA. Timestamps
+   * measure minutes, word-share counts words, and an adult speaks about twice
+   * as fast as a child — so a genuine 60/40 of minutes reads as roughly 75/25
+   * in words. Differencing across that change printed a large invented drop
+   * next to the child's name. So: plot everything, compare only like with
+   * like. */
+  const readings = (curriculum.shareHistory ?? []).filter((h) => h && Number.isFinite(h.percent));
+  const gathered = readings.map((h) => h.percent);
+
+  /* True when the series was not all measured the same way. The chart says so
+   * rather than implying every point is directly comparable. */
+  const bases = new Set(readings.map((h) => h.basis));
+  const mixedBasis = bases.size > 1;
   /* This session's own reading is the last point on the chart.
    *
    * It normally arrives with the history, since that query includes the class
@@ -145,9 +150,15 @@ export const buildReportDocument = (
     gathered.length === 0 && measured && talk!.studentPercent !== null
       ? [talk!.studentPercent]
       : gathered;
-  // The delta is only honest against a real previous reading.
+  /* The delta is only honest against a real previous reading measured the SAME
+   * way. Across a change of basis the difference is an artefact of the method,
+   * not a change in the child, so no number is shown at all. */
+  const lastTwoComparable =
+    readings.length >= 2 &&
+    readings[readings.length - 1].basis === readings[readings.length - 2].basis;
+
   const shareDelta =
-    history.length >= 2
+    history.length >= 2 && (readings.length < 2 || lastTwoComparable)
       ? Math.round(history[history.length - 1] - history[history.length - 2])
       : null;
 
@@ -197,6 +208,8 @@ export const buildReportDocument = (
     mentorTime: measured ? clean(talk!.teacher) ?? '' : '',
     shareDelta,
     shareHistory: history,
+    /* Not every point on the chart was measured the same way. */
+    shareHistoryMixedBasis: mixedBasis,
     talkMeasured: measured,
     questionsAsked: report?.interactions?.teacherQuestions ?? null,
     meaningfulAnswers: answered ? answered.answered : null,

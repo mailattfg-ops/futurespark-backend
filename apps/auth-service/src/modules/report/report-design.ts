@@ -198,6 +198,8 @@ export interface ReportDocument {
   shareDelta: number | null;
   /** Student share for the last few sessions, oldest first, this one last. */
   shareHistory: number[];
+  /** Points on the chart were not all measured the same way. */
+  shareHistoryMixedBasis?: boolean;
   /** Null when the split could not be measured — never shown as a zero. */
   talkMeasured: boolean;
   questionsAsked: number | null;
@@ -398,6 +400,14 @@ const voiceBalance = (doc: Doc, d: ReportDocument): void => {
       : d.shareHistory.length > 1
         ? `${firstName}'S SHARE · LAST ${d.shareHistory.length} SESSIONS (%)`
         : `${firstName}'S SHARE (%)`;
+
+  /* When the series was not all measured the same way, say so under the chart.
+   * The points are still worth plotting, but a parent should not read a step
+   * between two of them as a change in their child when it is a change in how
+   * the class was measured. */
+  const mixedNote = d.shareHistoryMixedBasis && d.shareHistory.length > 1
+    ? 'Measured differently across sessions — compare the shape, not the step'
+    : null;
   line(doc, trendCaption, 283.7, 227.6, {
     size: 4.9,
     font: FONT.mono,
@@ -467,6 +477,14 @@ const voiceBalance = (doc: Doc, d: ReportDocument): void => {
       color: C.ink,
       rightAt: lx + 5,
     });
+
+    if (mixedNote) {
+      centered(doc, mixedNote, (plotX0 + plotX1) / 2, 347, {
+        size: 5.6,
+        font: FONT.body,
+        color: C.muted,
+      });
+    }
   } else if (pts.length === 1) {
     /* A first session.
      *

@@ -466,6 +466,37 @@ export const buildWordCloud = (
     .map((p) => ({ display: p, tokens: p.toLowerCase().split(' ') }))
     .sort((a, b) => b.tokens.length - a.tokens.length);
 
+  /* ── The allowlist ────────────────────────────────────────────────────────
+   *
+   * A word reaches the cloud because the lesson is ABOUT it, not because it
+   * failed to appear on a list of bad words. The blocklist this replaces was
+   * unwinnable by construction: every class produced filler nobody had
+   * enumerated ("you're", "basically", "discussing", "goes"), we added those
+   * exact words, and the next class produced different ones.
+   *
+   * The lexicon — the deck's own terms plus the curated financial vocabulary —
+   * decides membership, supplies the canonical spelling, and folds word forms:
+   * "saving", "savings" and "saves" all resolve to the deck's own "Saving"
+   * instead of occupying three slots at three sizes.
+   * ──────────────────────────────────────────────────────────────────────── */
+  const allowed = new Map<string, string>();
+  for (const phrase of phrases) {
+    const term = String(phrase ?? '').trim();
+    if (!term || term.includes(' ')) continue; // multi-word terms are handled above
+    for (const key of wordVariants(term)) {
+      if (!allowed.has(key)) allowed.set(key, term);
+    }
+  }
+
+  /** The lesson's own word for this spoken form, or null if it is not one. */
+  const canonicalFor = (word: string): string | null => {
+    for (const key of wordVariants(word)) {
+      const hit = allowed.get(key);
+      if (hit) return hit;
+    }
+    return null;
+  };
+
   /* `cap` and `midCap` catch proper nouns the exclude list cannot know about.
    *
    * Decks carry story characters ("What if Aarav Falls!"), and once the
@@ -474,11 +505,21 @@ export const buildWordCloud = (
    * which no ordinary word is. Words that also occur lowercase — insurance,
    * premium — are untouched. Countries go with the names, which is right: a
    * parent learns nothing from "japan" in a cloud about insurance. */
-  const counts = new Map<string, { display: string; n: number; cap: number; midCap: number }>();
-  const bump = (key: string, display: string, capitalised = false, midSentence = false) => {
+  const counts = new Map<
+    string,
+    { display: string; n: number; cap: number; midCap: number; inLexicon: boolean }
+  >();
+  const bump = (
+    key: string,
+    display: string,
+    capitalised = false,
+    midSentence = false,
+    inLexicon = false
+  ) => {
     const existing = counts.get(key);
     if (existing) {
       existing.n += 1;
+      if (inLexicon) existing.inLexicon = true;
       if (capitalised) {
         existing.cap += 1;
         if (midSentence) existing.midCap += 1;
@@ -489,6 +530,7 @@ export const buildWordCloud = (
         n: 1,
         cap: capitalised ? 1 : 0,
         midCap: capitalised && midSentence ? 1 : 0,
+        inLexicon,
       });
     }
   };
@@ -510,7 +552,7 @@ export const buildWordCloud = (
     // Possessives and contractions fold onto their base word: "let's" becomes
     // "let" (a stopword), "Aarav's" becomes "Aarav". Without this the
     // apostrophe form dodges every filter and lands in the cloud verbatim.
-    const words = raw.map((w) => w.replace(/^['’]+|['’]+$/g, '').replace(/['’]s$/i, ''));
+    const words = raw.map(stripContraction);
     const lower = words.map((w) => w.toLowerCase());
     const consumed = new Array(words.length).fill(false);
 
@@ -524,7 +566,7 @@ export const buildWordCloud = (
         }
         if (!match) continue;
         for (let j = 0; j < len; j++) consumed[i + j] = true;
-        bump(phrase.tokens.join(' '), phrase.display);
+        bump(phrase.tokens.join(' '), phrase.display, false, false, true);
       }
     }
 
@@ -536,20 +578,36 @@ export const buildWordCloud = (
       // No vowel means a transcription artefact, not a word.
       if (!/[aeiou]/.test(lower[i])) continue;
 
-      // Counted on the singular, so "saving" and "savings" are one entry rather
-      // than two sizes of the same idea sitting side by side.
+      /* Folded onto the lesson's own term where there is one, so every form of
+       * a concept — saving / savings / saves — is one entry at one size, spelled
+       * the way the deck spells it. */
+      const canonical = canonicalFor(lower[i]);
       bump(
-        lexiconKey(lower[i]),
-        ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower[i],
+        canonical ? lexiconKey(canonical.toLowerCase()) : lexiconKey(lower[i]),
+        canonical ?? (ACRONYMS.has(word.toUpperCase()) ? word.toUpperCase() : lower[i]),
         /^[A-Z]/.test(word),
-        !atSentenceStart[i]
+        !atSentenceStart[i],
+        canonical !== null
       );
     }
   }
 
+  /* ── The gate ─────────────────────────────────────────────────────────────
+   *
+   * Lesson vocabulary is in. Anything else needs to have been said often
+   * enough that leaving it out would misrepresent the class — the escape
+   * hatch for a genuinely central word the deck never happened to name.
+   *
+   * The bar is deliberately high. Filler is frequent by nature, so a low
+   * threshold would reinstate exactly the words this replaced; a word said
+   * this many times that is also absent from a rich deck is rare.
+   * ──────────────────────────────────────────────────────────────────────── */
+  const ESCAPE_MIN_MENTIONS = 6;
+
   // Said once is not "most used" — it is a word that happened to occur.
   const ranked = [...counts.values()]
     .filter((e) => e.n >= 2)
+    .filter((e) => e.inLexicon || e.n >= ESCAPE_MIN_MENTIONS)
     // Capitalised at every occurrence including mid-sentence = a proper noun.
     .filter((e) => !(e.cap === e.n && e.midCap > 0 && !ACRONYMS.has(e.display.toUpperCase())))
     .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
@@ -561,6 +619,51 @@ export const buildWordCloud = (
     word: e.display,
     weight: Math.max(1, Math.min(10, Math.round((e.n / max) * 9) + 1)),
   }));
+};
+
+/**
+ * Strip a contraction's clitic, leaving the base word.
+ *
+ * "you're" -> "you", "don't" -> "do", "we'll" -> "we", "Aarav's" -> "Aarav".
+ * Only `'s` was handled before, so every other contraction reached the cloud
+ * verbatim — `you're` and `don't` are not words anyone would think to put on a
+ * stopword list, because they should never have survived tokenising.
+ */
+const stripContraction = (word: string): string =>
+  word
+    .replace(/^['’]+|['’]+$/g, '')
+    .replace(/n['’]t$/i, '')
+    .replace(/['’](re|ll|ve|d|m|s)$/i, '');
+
+/**
+ * Every form one word might be spoken in.
+ *
+ * Used to match what was SAID against what the lesson is ABOUT, so "saving",
+ * "savings" and "saves" all find the deck's "Saving". Deliberately generous
+ * and approximate: a wrong variant simply fails to match anything, whereas a
+ * missing one splits a single concept across three entries at three sizes —
+ * which is what put `buy`/`buying` and `save`/`saving` in the same cloud.
+ */
+const wordVariants = (word: string): string[] => {
+  const w = word.trim().toLowerCase();
+  if (w.length < 3) return [w];
+
+  const out = new Set<string>([w, lexiconKey(w)]);
+  const add = (v: string) => { if (v.length >= 3) out.add(v); };
+
+  // "-ing" / "-ed": drop it, then also try the two spellings English uses —
+  // a restored "e" (saving -> save) and an undoubled consonant (running -> run).
+  for (const suffix of ['ing', 'ed']) {
+    if (!w.endsWith(suffix) || w.length <= suffix.length + 2) continue;
+    const base = w.slice(0, -suffix.length);
+    add(base);
+    add(base + 'e');
+    if (base.length >= 3 && base[base.length - 1] === base[base.length - 2]) add(base.slice(0, -1));
+  }
+  if (w.endsWith('ly') && w.length > 4) add(w.slice(0, -2));
+  if (w.endsWith('es') && w.length > 4) add(w.slice(0, -2));
+
+  return [...out];
 };
 
 /** Singular, lowercase form — the identity a concept is deduped on. */
