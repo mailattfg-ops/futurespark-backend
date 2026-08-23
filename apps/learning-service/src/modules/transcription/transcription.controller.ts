@@ -152,6 +152,30 @@ async function findClassForRecording(input: {
       where: { meetingLink: { contains: cleanMeetUrl }, ...slotWindow },
     });
   }
+  /* Exact identity, with the clock ignored.
+   *
+   * (studentId, sessionId) is already unique in the ordinary case: one child
+   * sits a given curriculum session once. The slot window above exists only to
+   * break a tie when a session was taught twice after a reschedule — so when
+   * the time-boxed attempts find NOTHING, insisting on the window throws away
+   * a perfectly unambiguous answer.
+   *
+   * That is what stranded this: a recording whose Zoom start time sat more
+   * than two hours from the booked slot matched none of the three strategies,
+   * and a complete, correct summary was discarded with "nowhere to live".
+   *
+   * The safety property is untouched: this still refuses when more than one
+   * class matches, so a summary can never land on the wrong child's lesson.
+   * It runs AFTER the time-boxed attempts, so a genuine double-teach is still
+   * resolved by the slot rather than by this.
+   */
+  if (input.studentId && input.sessionId) {
+    strategies.push({
+      label: 'studentId+sessionId (any time)',
+      where: { studentId: input.studentId, sessionId: input.sessionId },
+    });
+  }
+
   if (cleanMeetUrl && !validStart) {
     // No time to narrow with. Kept only so a caller that sends nothing but a
     // link still works, and it refuses when the link is ambiguous.
@@ -176,6 +200,30 @@ async function findClassForRecording(input: {
 
     logger.info(`[Transcription Controller] Attributed recording to class ${matches[0].id} via ${strategy.label}.`);
     return matches[0];
+  }
+
+  /* Nothing matched. Name the near-misses, because the usual cause is a time
+   * mismatch and "no matching class" alone does not show that — an operator
+   * then has no way to tell a wrong id from a clock that drifted. */
+  if (input.studentId && input.sessionId) {
+    try {
+      const candidates = await db.scheduledClass.findMany({
+        where: { studentId: input.studentId, sessionId: input.sessionId },
+        select: { id: true, startTime: true, status: true },
+        take: 5,
+      });
+      if (candidates.length > 0) {
+        logger.warn(
+          '[Transcription Controller] Classes DO exist for this student and session: ' +
+            candidates
+              .map((c) => `${c.id} @ ${c.startTime.toISOString()} (${c.status})`)
+              .join('; ') +
+            `. The recording reported ${validStart ? validStart.toISOString() : 'no start time'}.`
+        );
+      }
+    } catch (err: any) {
+      logger.warn(`[Transcription Controller] Could not list candidate classes: ${err.message}`);
+    }
   }
 
   return null;
