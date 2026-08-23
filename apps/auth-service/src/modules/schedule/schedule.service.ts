@@ -550,7 +550,7 @@ export const scheduleService = {
         },
       });
 
-      if (mentorConflicts) {
+      if (mentorConflicts && !input.allowConflict) {
         throw new AppError(
           `Mentor has a scheduling conflict with another class on ${classStartTime.toLocaleDateString()} at ${classStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
           HTTP_STATUS.CONFLICT
@@ -567,10 +567,18 @@ export const scheduleService = {
         },
       });
 
-      if (leadConflicts) {
+      if (leadConflicts && !input.allowConflict) {
         throw new AppError(
           `Lead already has a scheduled class on ${classStartTime.toLocaleDateString()} at ${classStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
           HTTP_STATUS.CONFLICT
+        );
+      }
+
+      if (input.allowConflict && (mentorConflicts || leadConflicts)) {
+        logger.warn(
+          `[Schedule] Demo class booked over a known clash by ${scheduledById ?? 'unknown'}: ` +
+            `mentor=${input.mentorId} lead=${input.leadId} at ${classStartTime.toISOString()} ` +
+            `(mentor busy: ${Boolean(mentorConflicts)}, lead busy: ${Boolean(leadConflicts)}).`
         );
       }
 
@@ -609,7 +617,7 @@ export const scheduleService = {
         },
       });
 
-      if (mentorConflicts) {
+      if (mentorConflicts && !input.allowConflict) {
         throw new AppError(
           `Mentor has a scheduling conflict with another class on ${classStartTime.toLocaleDateString()} at ${classStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
           HTTP_STATUS.CONFLICT
@@ -626,10 +634,21 @@ export const scheduleService = {
         },
       });
 
-      if (studentConflicts) {
+      if (studentConflicts && !input.allowConflict) {
         throw new AppError(
           `Student has a scheduling conflict with another class on ${classStartTime.toLocaleDateString()} at ${classStartTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
           HTTP_STATUS.CONFLICT
+        );
+      }
+
+      if (input.allowConflict && (mentorConflicts || studentConflicts)) {
+        // Every overridden week is logged separately — a scheduler who ticks
+        // the box once may be stacking twelve classes, and "which ones" is the
+        // question anyone reviewing this later will ask.
+        logger.warn(
+          `[Schedule] Class booked over a known clash by ${scheduledById ?? 'unknown'}: ` +
+            `student=${input.studentId} mentor=${input.mentorId} at ${classStartTime.toISOString()} ` +
+            `(mentor busy: ${Boolean(mentorConflicts)}, student busy: ${Boolean(studentConflicts)}).`
         );
       }
 

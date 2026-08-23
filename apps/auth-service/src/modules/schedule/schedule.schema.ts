@@ -12,6 +12,14 @@ export interface CreateScheduleInput {
   meetingLink?: string;
   autoRecording?: boolean;
   recordingUrl?: string;
+  /**
+   * Book the class even though the mentor, student or lead is already busy.
+   *
+   * Set only by a scheduler who has been shown the clash and chosen to go
+   * ahead — catch-up lessons, two programmes deliberately stacked, a slot the
+   * timetable does not know has freed up.
+   */
+  allowConflict?: boolean;
 }
 
 export const validateCreateSchedule = (data: any): CreateScheduleInput => {
@@ -64,6 +72,9 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
     programId: data.programId.trim(),
     startTime: data.startTime.trim(),
     classType,
+    // Only a literal true is consent — a stray "false" string from a form post
+    // must never read as permission to double-book a child.
+    allowConflict: data.allowConflict === true || data.allowConflict === 'true',
     leadId: data.leadId ? data.leadId.trim() : undefined,
     meetingLink: typeof data.meetingLink === 'string' && data.meetingLink.trim() !== '' ? data.meetingLink.trim() : undefined,
     sessions: data.sessions
