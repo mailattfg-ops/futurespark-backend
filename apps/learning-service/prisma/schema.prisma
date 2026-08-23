@@ -498,6 +498,38 @@ model Lead {
   @@schema("learning")
 }
 
+enum PilotLeadStatus {
+  NEW
+  CONTACTED
+  INTERESTED
+  DEMO_SCHEDULED
+  ENROLLED
+  LOST
+
+  @@schema("learning")
+}
+
+model PilotLead {
+  id                String          @id @default(uuid())
+  parentName        String
+  studentName       String
+  studentGrade      String
+  parentEmail       String
+  parentPhone       String
+  presentCountry    String
+  preferredLanguage String
+  hearAbout         String?
+  status            PilotLeadStatus @default(NEW)
+  preferredSlotDate String?
+  preferredSlotTime String?
+  preferredTimezone String?         @default("Asia/Kolkata")
+  telecallerNotes   String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@schema("learning")
+}
+
 /// Key/value store for operator-facing settings that survive restarts and are
 /// shared by every admin. First use: `last_models` — the AI models most
 /// recently chosen in the admin picker, which take precedence over the .env

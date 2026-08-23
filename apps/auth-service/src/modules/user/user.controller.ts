@@ -200,16 +200,27 @@ export const userController = {
 
   async addMentorSchedule(req: Request, res: Response) {
     const { id } = req.params;
-    const { weekday, startTime, scheduleType } = req.body;
+    const { weekday, startTime, endTime, scheduleType, allowConflict } = req.body;
     if (weekday === undefined || weekday === null || !startTime) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'weekday and startTime are required' });
     }
     const slot = await userService.addMentorSchedule(
       id,
-      { weekday: Number(weekday), startTime, scheduleType },
+      {
+        weekday: Number(weekday),
+        startTime,
+        endTime,
+        scheduleType,
+        // Only an explicit true overrides the conflict check — a stray "false"
+        // string from a form post must not read as consent.
+        allowConflict: allowConflict === true || allowConflict === 'true',
+      },
       { id: req.headers['x-user-id'] as string | undefined, role: req.headers['x-user-role'] as string | undefined }
     );
-    logger.info(`[Mentor Schedule] Added slot for mentorId: ${id} weekday=${weekday} start=${startTime} type=${scheduleType || 'REGULAR'}`);
+    logger.info(
+      `[Mentor Schedule] Added slot for mentorId: ${id} weekday=${weekday} ${slot.startTime}–${slot.endTime} ` +
+        `type=${scheduleType || 'REGULAR'}${allowConflict ? ' (overlap accepted by the user)' : ''}`
+    );
     return res.status(HTTP_STATUS.CREATED).json(successResponse(slot, 'Schedule slot added'));
   },
 
