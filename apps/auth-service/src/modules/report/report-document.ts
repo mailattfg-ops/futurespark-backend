@@ -35,7 +35,7 @@ export interface ReportCurriculum {
   inSession?: ActivityItem[];
   takeHome?: ActivityItem[];
   /** The student's talk share across recent sessions, oldest first. */
-  shareHistory?: number[];
+  shareHistory?: Array<{ percent: number; basis: string }>;
   nextSessionNumber?: number | null;
   nextSessionTitle?: string | null;
   nextSessionWhen?: string | null;
@@ -122,7 +122,19 @@ export const buildReportDocument = (
   const talk = report?.talkTime;
   const measured = Boolean(talk && talk.basis !== 'unmeasurable' && talk.studentPercent !== null);
 
-  const gathered = (curriculum.shareHistory ?? []).filter((n) => Number.isFinite(n));
+  /* Only readings measured the same way as this one.
+   *
+   * A fallback to a different transcription model can change the basis from
+   * timestamps to word-share mid-programme. Mixing them on one sparkline, or
+   * differencing across the change, produces a large invented swing in the
+   * child's share — the kind of thing a parent reads as a real change in their
+   * child. Points on another basis are dropped rather than converted: there is
+   * no honest conversion between minutes and words. */
+  const currentBasis = measured ? String(talk!.basis) : null;
+  const gathered = (curriculum.shareHistory ?? [])
+    .filter((h) => h && Number.isFinite(h.percent))
+    .filter((h) => currentBasis === null || h.basis === currentBasis)
+    .map((h) => h.percent);
   /* This session's own reading is the last point on the chart.
    *
    * It normally arrives with the history, since that query includes the class

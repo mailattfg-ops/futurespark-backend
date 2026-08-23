@@ -39,7 +39,22 @@ const topicLabels = (topics: SessionTopic[]): { hub: string | null; labels: stri
   return { hub: null, labels: topics.map((t) => t.title) };
 };
 
-const studentShareOf = (metrics: unknown): number | null => {
+/**
+ * One past reading, WITH the basis it was measured on.
+ *
+ * The basis travels because the two are not comparable. Timestamps measure
+ * minutes; word-share counts words, and an adult speaks about twice as fast as
+ * a child — so a genuine 60/40 split of minutes reads as roughly 75/25 in
+ * words. Plotting both on one line, or differencing across a change of basis,
+ * tells a parent their child spoke far less this week when all that changed
+ * was which model produced the transcript.
+ */
+export interface ShareReading {
+  percent: number;
+  basis: string;
+}
+
+const studentShareOf = (metrics: unknown): ShareReading | null => {
   if (!metrics || typeof metrics !== 'object') return null;
   const raw = (metrics as any).report;
   if (!raw || typeof raw !== 'object') return null;
@@ -47,7 +62,8 @@ const studentShareOf = (metrics: unknown): number | null => {
     const report = parseSessionReport(raw);
     const talk = report.talkTime;
     if (!talk || talk.basis === 'unmeasurable') return null;
-    return typeof talk.studentPercent === 'number' ? talk.studentPercent : null;
+    if (typeof talk.studentPercent !== 'number') return null;
+    return { percent: talk.studentPercent, basis: String(talk.basis) };
   } catch {
     return null;
   }
@@ -159,7 +175,7 @@ export const gatherCurriculum = async (input: CurriculumLookup): Promise<ReportC
       const history = previous
         .reverse()
         .map((c) => studentShareOf(c.interactionMetrics))
-        .filter((v): v is number => v !== null);
+        .filter((v): v is ShareReading => v !== null);
 
       // A single reading is kept, not discarded. On a first session it is the
       // only thing there is, and the report plots it as the baseline the next
