@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { logger } from '@futurespark/logger';
 import { successResponse, errorResponse } from '@futurespark/response';
-import { HTTP_STATUS } from '@futurespark/constants';
+import { HTTP_STATUS, buildInfo } from '@futurespark/constants';
 import { errorHandler } from '@futurespark/middleware';
 import { courseRoutes } from './modules/course';
 import { resourceRoutes } from './modules/resource/resource.routes';
@@ -45,11 +45,27 @@ app.use('/ai', aiAdminRoutes);
 // System Health aggregates for the gateway dashboard (admin surface)
 app.use('/metrics', metricsRoutes);
 
+/**
+ * Behaviours compiled into THIS build. A name cannot appear unless the code
+ * implementing it is the code running, so a missing name proves the deployment
+ * predates that fix. Add a name with the behaviour; never rename one.
+ */
+const CAPABILITIES = [
+  'transcription-model-fallback-ladder',
+  'transcription-empty-walks-ladder',
+  'transcription-chat-base64-headroom',
+];
+
 app.get('/health', (req, res) => {
   // uptime is what the System Health page shows next to the green dot — a
   // service that silently restarts every few minutes looks identical to a
   // healthy one without it.
-  res.status(HTTP_STATUS.OK).json(successResponse({ status: 'UP', uptime: process.uptime() }, 'learning-service is healthy'));
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(
+      { status: 'UP', uptime: process.uptime(), build: buildInfo('learning-service', CAPABILITIES) },
+      'learning-service is healthy'
+    )
+  );
 });
 
 app.use((req, res) => {

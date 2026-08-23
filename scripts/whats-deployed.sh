@@ -44,6 +44,9 @@ echo "LEARNING-SERVICE"
 L=apps/learning-service/dist/modules/transcription
 check "verified compression cache"    "$L/groq-transcription.service.js" "matchesSource"
 check "unique transcription chunks"   "$L/groq-transcription.service.js" "runTag"
+check "model fallback ladder"         "$L/groq-transcription.service.js" "buildAttemptLadder"
+check "empty transcript walks ladder" "$L/groq-transcription.service.js" "EmptyTranscriptError"
+check "chat base64 headroom"          "$L/groq-transcription.service.js" "maxBytesFor"
 
 echo
 echo "COMMUNICATION-SERVICE"
