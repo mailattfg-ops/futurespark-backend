@@ -15,6 +15,15 @@ export interface CreateMeetingInput {
   sessionId: string;
   /** Escape hatch: mint a brand-new room even when the pair already has one. */
   forceNewRoom?: boolean;
+  /**
+   * Create the room even though this mentor or student is already booked at
+   * this instant.
+   *
+   * Set only when a scheduler has been shown the clash and chosen to go ahead.
+   * Without it this check refuses before the class row is ever written, so the
+   * scheduler's own override would appear to do nothing.
+   */
+  allowConflict?: boolean;
 }
 
 /**
@@ -175,8 +184,16 @@ export class GoogleMeetingsService {
             dateStyle: 'medium',
             timeStyle: 'short',
           }).format(start);
-          throw new Error(
-            `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+
+          if (!input.allowConflict) {
+            throw new Error(
+              `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+            );
+          }
+
+          logger.warn(
+            `[GoogleMeetings] Room created over a known clash on purpose: ${who} busy at ${localTime} ` +
+              `for "${conflict.title}" (teacher=${input.teacherId} student=${input.studentId}).`
           );
         }
 

@@ -110,6 +110,7 @@ const CAPABILITIES = [
   'audio-temp-then-rename',
   'audio-always-reextract',
   'audio-processing-status',
+  'meeting-conflict-override',
 ];
 
 app.get('/health', (_req, res) => {

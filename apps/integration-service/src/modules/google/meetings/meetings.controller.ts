@@ -45,6 +45,8 @@ export class GoogleMeetingsController {
         studentId,
         programId,
         sessionId,
+        // Only a literal true is consent to book over a known clash.
+        allowConflict: req.body?.allowConflict === true || req.body?.allowConflict === 'true',
       });
 
       return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Meeting created successfully.'));

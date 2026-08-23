@@ -30,6 +30,17 @@ export interface CreateZoomMeetingInput {
    * database and this service holds no user table to resolve it against.
    */
   mentorEmail?: string;
+  /**
+   * Create the meeting even though this mentor or student is already booked at
+   * this instant.
+   *
+   * Set only when a scheduler has been shown the clash and chosen to go ahead.
+   * Without it this check refuses before the class row is ever written, so the
+   * scheduler's own override would appear to do nothing. It does NOT relax the
+   * host-seat check below — a seat can genuinely only host one meeting at a
+   * time, which is a Zoom limit rather than a policy of ours.
+   */
+  allowConflict?: boolean;
 }
 
 export interface UpdateZoomMeetingInput {
@@ -362,9 +373,17 @@ export class ZoomMeetingsService {
             dateStyle: 'medium',
             timeStyle: 'short',
           }).format(start);
-          throw new ZoomServiceError(
-            'ZOOM_DOUBLE_BOOKING',
-            `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+
+          if (!input.allowConflict) {
+            throw new ZoomServiceError(
+              'ZOOM_DOUBLE_BOOKING',
+              `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+            );
+          }
+
+          logger.warn(
+            `[ZoomMeetings] Meeting created over a known clash on purpose: ${who} busy at ${localTime} ` +
+              `for "${conflict.title}" (teacher=${input.teacherId} student=${input.studentId}).`
           );
         }
 
