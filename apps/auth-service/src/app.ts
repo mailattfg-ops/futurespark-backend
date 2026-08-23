@@ -50,6 +50,9 @@ const CAPABILITIES = [
   'report-approved-design',
   'report-curriculum-content',
   'report-first-session-baseline',
+  'slot-70min-editable-end',
+  'slot-conflict-override',
+  'class-conflict-override',
 ];
 
 app.get('/health', (_req, res) => {

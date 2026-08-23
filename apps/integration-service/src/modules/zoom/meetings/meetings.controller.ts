@@ -88,6 +88,8 @@ export class ZoomMeetingsController {
         // Only consulted when ZOOM_PREFER_MENTOR_HOST is on. `teacherEmail` is
         // accepted as an alias because that is what the class record calls it.
         mentorEmail: asOptionalString(mentorEmail) ?? asOptionalString(teacherEmail),
+        // Only a literal true is consent to book over a known clash.
+        allowConflict: req.body?.allowConflict === true || req.body?.allowConflict === 'true',
       };
 
       const result = await ZoomMeetingsService.create(asOptionalString(workspaceEmail) ?? zoomConfig.organizerEmail, input);

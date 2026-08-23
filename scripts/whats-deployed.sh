@@ -68,6 +68,14 @@ A=apps/auth-service/dist/modules/report
 check "approved report design"        "$A/report-design.js"    "drawSessionReport"
 check "curriculum content in report"  "$A/report-curriculum.js" "gatherCurriculum"
 check "14 template variables"         "$A/report.service.js"   "sessionNumberPadded"
+check "slot 70min + editable end"     "$A/../user/user.service.js" "SLOT_DURATION_MINUTES"
+check "slot conflict override"        "$A/../user/user.service.js" "allowConflict"
+check "class conflict override"       "$A/../schedule/schedule.service.js" "allowConflict"
+
+echo
+echo "INTEGRATION-SERVICE (meetings)"
+check "zoom conflict override"        "$I/zoom/meetings/meetings.service.js" "allowConflict"
+check "meet conflict override"        "$I/google/meetings/meetings.service.js" "allowConflict"
 
 echo
 echo "RUNNING PROCESSES"
