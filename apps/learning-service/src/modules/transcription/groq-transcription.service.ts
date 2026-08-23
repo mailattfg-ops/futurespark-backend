@@ -357,6 +357,48 @@ let compressionCounter = 0;
 // Distinguishes concurrent splits inside one process; the pid covers processes.
 let splitRunCounter = 0;
 
+/** The two ways audio can reach a provider. */
+type WirePath = 'stt' | 'chat';
+
+/** One rung of the transcription fallback ladder. */
+interface TranscriptionAttempt {
+  model: string;
+  wire: WirePath;
+  /** Shown in the log so an operator can see why this rung was tried. */
+  why: string;
+}
+
+/**
+ * The provider answered normally and returned no words.
+ *
+ * Distinct from a transport or quota failure because the response was a
+ * success: it means "this model, on this wire, produced nothing" — which is
+ * exactly the case another model or wire may well handle.
+ */
+class EmptyTranscriptError extends Error {
+  constructor(public readonly model: string, public readonly wire: WirePath) {
+    super(`"${model}" returned an empty transcript from the audio.`);
+    this.name = 'EmptyTranscriptError';
+  }
+}
+
+/**
+ * Failure kinds where trying a different model or wire is worth the money.
+ *
+ * Deliberately excludes AUTH_FAILED, NO_API_KEY, RATE_LIMITED,
+ * SERVICE_UNAVAILABLE, NETWORK_ERROR and TIMEOUT: none of those are about the
+ * model's ability to do the job, so walking the ladder would fail identically
+ * three times over and spend three times the quota to learn nothing. The
+ * retry daemon already handles those with a backoff sized to the cause.
+ */
+const LADDER_WALKABLE_KINDS = new Set([
+  'BAD_RESPONSE',
+  'MODEL_RETIRED',
+  'REQUEST_TOO_LARGE',
+  'AUDIO_TOO_LARGE',
+  'UNKNOWN',
+]);
+
 export class GroqTranscriptionService {
   // Key presence is judged per RESOLVED provider, not against GROQ_API_KEY.
   // The old check tested GROQ_API_KEY specifically, so a deployment that moved
@@ -851,11 +893,131 @@ export class GroqTranscriptionService {
 [00:04:50] Instructor: Excellent progress today! For your assignment before our next session, review the key formulas and practice the remaining exercises. See you next class!`;
     }
 
+    return this.transcribeWithLadder(filePath);
+  }
+
+  /**
+   * Build the list of (model, wire) combinations to try, in order.
+   *
+   * The admin model picker accepts any model id, and nothing there knows
+   * whether the model can hear audio or which endpoint it wants. Rather than
+   * validate a list that would go stale with every provider release, the
+   * pipeline simply tries the sensible alternatives:
+   *
+   *   1. the chosen model on the wire its name suggests
+   *   2. the SAME model on the other wire — the name is only a guess, and a
+   *      model without "whisper" in it may still be a real STT endpoint
+   *   3. the fallback model, which is known to transcribe
+   *
+   * Rung 3 is what guarantees a class is never lost to a model choice.
+   */
+  private buildAttemptLadder(): TranscriptionAttempt[] {
+    const chosen = this.transcriptionModel;
+    const primaryWire = this.wirePathFor(chosen);
+    const otherWire: WirePath = primaryWire === 'stt' ? 'chat' : 'stt';
+
+    const fallbackModel =
+      readEnv('AI_TRANSCRIPTION_FALLBACK_MODEL') ?? DEFAULT_TRANSCRIPTION_MODEL;
+
+    const ladder: TranscriptionAttempt[] = [
+      { model: chosen, wire: primaryWire, why: 'the selected model' },
+      { model: chosen, wire: otherWire, why: 'the selected model on the other endpoint' },
+    ];
+
+    // Only worth a rung if it is genuinely a different model.
+    if (fallbackModel && fallbackModel !== chosen) {
+      ladder.push({
+        model: fallbackModel,
+        wire: this.wirePathFor(fallbackModel),
+        why: 'the fallback transcription model',
+      });
+    }
+
+    // Same (model, wire) twice buys nothing — dedupe while keeping order.
+    const seen = new Set<string>();
+    return ladder.filter((a) => {
+      const key = `${a.model}::${a.wire}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /**
+   * Try each rung until one produces words.
+   *
+   * A rung is abandoned only for reasons that another rung could plausibly fix
+   * (see LADDER_WALKABLE_KINDS, plus an empty transcript). A bad key or a
+   * quota rejection is re-thrown immediately — it would fail identically on
+   * every rung, and the retry daemon backs those off properly.
+   */
+  private async transcribeWithLadder(filePath: string): Promise<string> {
+    const ladder = this.buildAttemptLadder();
+    let lastError: any = null;
+
+    for (let i = 0; i < ladder.length; i++) {
+      const attempt = ladder[i];
+      const wireLabel = attempt.wire === 'stt' ? '/audio/transcriptions' : '/chat/completions';
+      logger.info(
+        `[GroqTranscriptionService] Transcription attempt ${i + 1}/${ladder.length} — ` +
+          `"${attempt.model}" via ${wireLabel} (${attempt.why}).`
+      );
+
+      try {
+        const transcript = await this.transcribeOnce(filePath, attempt);
+        if (i > 0) {
+          logger.warn(
+            `[GroqTranscriptionService] Transcribed with "${attempt.model}" via ${wireLabel} after ` +
+              `${i} earlier attempt(s) produced nothing. The selected model may not suit this audio — ` +
+              'check the model setting if this repeats.'
+          );
+        }
+        return transcript;
+      } catch (err: any) {
+        lastError = err;
+
+        const isEmpty = err instanceof EmptyTranscriptError;
+        const kind = err instanceof GroqError ? err.failure.kind : undefined;
+        const walkable = isEmpty || (kind !== undefined && LADDER_WALKABLE_KINDS.has(kind));
+        const isLastRung = i === ladder.length - 1;
+
+        if (!walkable) {
+          // Not about this model's ability — stop and report the real cause.
+          throw err;
+        }
+        if (isLastRung) break;
+
+        logger.warn(
+          `[GroqTranscriptionService] "${attempt.model}" via ${wireLabel} produced no transcript ` +
+            `(${isEmpty ? 'empty response' : kind}). Falling back to the next option.`
+        );
+      }
+    }
+
+    // Every rung walked and none produced words.
+    if (lastError instanceof GroqError) throw lastError;
+    throw new GroqError(
+      describeGroqFailure(
+        new Error(
+          `No transcription model produced a transcript for this audio. Tried: ` +
+            `${ladder.map((a) => `"${a.model}" (${a.wire})`).join(', ')}. ` +
+            `Last error: ${lastError?.message ?? 'unknown'}. ` +
+            'If the audio is silent this is correct; otherwise change the transcription model.'
+        ),
+        'transcription',
+        { model: this.transcriptionModel, provider: this.transcriptionProvider.label }
+      )
+    );
+  }
+
+  /** One model on one wire: whole file if it fits, chunked if it does not. */
+  private async transcribeOnce(filePath: string, attempt: TranscriptionAttempt): Promise<string> {
     const sizeBytes = fs.statSync(filePath).size;
+    const ceiling = this.maxBytesFor(attempt.wire);
 
     // Small enough to send whole — the common case for a 60-90 minute class.
-    if (sizeBytes <= this.maxUploadBytes) {
-      return this.uploadForTranscription(filePath);
+    if (sizeBytes <= ceiling) {
+      return this.uploadForTranscription(filePath, undefined, attempt);
     }
 
     /* ── Too big for one request ──────────────────────────────────────────
@@ -870,14 +1032,14 @@ export class GroqTranscriptionService {
      * ─────────────────────────────────────────────────────────────────── */
     const sizeMb = (sizeBytes / (1024 * 1024)).toFixed(1);
     logger.info(
-      `[GroqTranscriptionService] Audio is ${sizeMb}MB, over the ${(this.maxUploadBytes / (1024 * 1024)).toFixed(0)}MB ` +
+      `[GroqTranscriptionService] Audio is ${sizeMb}MB, over the ${(ceiling / (1024 * 1024)).toFixed(0)}MB ` +
         `per-request limit. Splitting into ${this.chunkSeconds / 60}-minute chunks and transcribing in sequence.`
     );
 
     const chunks = this.splitAudio(filePath);
     if (chunks.length === 0) {
       throw new Error(
-        `Audio is ${sizeMb}MB, above Groq's ${(this.maxUploadBytes / (1024 * 1024)).toFixed(0)}MB request limit, ` +
+        `Audio is ${sizeMb}MB, above the ${(ceiling / (1024 * 1024)).toFixed(0)}MB request limit for this endpoint, ` +
           'and it could not be split (ffmpeg failed). Raise GROQ_MAX_UPLOAD_MB if you are on the paid ' +
           'dev tier (100MB), or check that ffmpeg is available.'
       );
@@ -905,23 +1067,26 @@ export class GroqTranscriptionService {
         const carryOver = parts.length > 0 ? parts[parts.length - 1].slice(-200) : undefined;
         let transcribed: string | null = null;
 
-        for (let attempt = 1; attempt <= perChunkAttempts; attempt++) {
+        // Named tryNo, not attempt: `attempt` is the ladder rung this whole
+        // pass belongs to, and shadowing it here silently passed the retry
+        // counter to uploadForTranscription in place of the model to use.
+        for (let tryNo = 1; tryNo <= perChunkAttempts; tryNo++) {
           try {
             logger.info(
               `[GroqTranscriptionService] Transcribing chunk ${i + 1}/${chunks.length}` +
-                `${attempt > 1 ? ` (attempt ${attempt}/${perChunkAttempts})` : ''}...`
+                `${tryNo > 1 ? ` (attempt ${tryNo}/${perChunkAttempts})` : ''}...`
             );
-            transcribed = await this.uploadForTranscription(chunks[i], carryOver);
+            transcribed = await this.uploadForTranscription(chunks[i], carryOver, attempt);
             break;
           } catch (err: any) {
-            const last = attempt === perChunkAttempts;
+            const last = tryNo === perChunkAttempts;
             logger.warn(
-              `[GroqTranscriptionService] Chunk ${i + 1} attempt ${attempt} failed: ${err.message}` +
+              `[GroqTranscriptionService] Chunk ${i + 1} attempt ${tryNo} failed: ${err.message}` +
                 `${last ? ' — giving up on this chunk.' : ' — retrying.'}`
             );
             if (last) break;
             // Linear backoff. A quota rejection needs time, not immediacy.
-            await new Promise((resolve) => setTimeout(resolve, attempt * 20_000));
+            await new Promise((resolve) => setTimeout(resolve, tryNo * 20_000));
           }
         }
 
@@ -943,7 +1108,7 @@ export class GroqTranscriptionService {
         describeGroqFailure(
           new Error('Every audio chunk failed to transcribe.'),
           'transcription',
-          { model: this.transcriptionModel, provider: this.transcriptionProvider.label }
+          { model: attempt.model, provider: this.transcriptionProvider.label }
         )
       );
     }
@@ -974,6 +1139,37 @@ export class GroqTranscriptionService {
   }
 
   /**
+   * Which wire a model is tried on FIRST.
+   *
+   * A guess from the model's name, and only a guess — which is why an empty or
+   * rejected result falls through to the other wire rather than failing the
+   * class. See `buildAttemptLadder`.
+   */
+  private wirePathFor(model: string): WirePath {
+    return this.isDedicatedSttModel(model) ? 'stt' : 'chat';
+  }
+
+  /**
+   * The size ceiling for one request, which is NOT the same on both wires.
+   *
+   * `/audio/transcriptions` uploads the file as multipart — the bytes go up
+   * as-is. The chat wire base64-encodes the audio into a JSON body, which
+   * inflates it by 4/3 before the envelope is even counted. Applying the
+   * multipart ceiling to the chat wire let a file pass the check and still be
+   * far too large for the provider, which answers 200 with an empty message
+   * rather than an error — indistinguishable from "there was nothing to hear".
+   *
+   * Override with AI_CHAT_AUDIO_MAX_MB when a provider's real inline limit is
+   * known; otherwise 70% of the multipart ceiling leaves room for base64.
+   */
+  private maxBytesFor(wire: WirePath): number {
+    if (wire === 'stt') return this.maxUploadBytes;
+    const configuredMb = readNumberEnv('AI_CHAT_AUDIO_MAX_MB', 0);
+    if (configuredMb > 0) return configuredMb * 1024 * 1024;
+    return Math.floor(this.maxUploadBytes * 0.7);
+  }
+
+  /**
    * One file, one speech-to-text request.
    *
    * Two wire paths, chosen by the model:
@@ -985,15 +1181,23 @@ export class GroqTranscriptionService {
    *   turns itself and handles Malayalam-English code-switching natively —
    *   which is exactly what fixes a mis-counted "student questions: 0".
    */
-  private async uploadForTranscription(filePath: string, carryOver?: string): Promise<string> {
+  private async uploadForTranscription(
+    filePath: string,
+    carryOver?: string,
+    attempt?: TranscriptionAttempt
+  ): Promise<string> {
     const provider = this.transcriptionProvider;
+    // The ladder decides the model and wire; without one, fall back to the
+    // configured model on the wire its name suggests.
+    const model = attempt?.model ?? provider.model;
+    const wire = attempt?.wire ?? this.wirePathFor(model);
 
-    if (!this.isDedicatedSttModel(provider.model)) {
-      return this.transcribeViaChat(filePath, carryOver);
+    if (wire === 'chat') {
+      return this.transcribeViaChat(filePath, carryOver, model);
     }
 
     const formData = new FormData();
-    formData.append('model', provider.model);
+    formData.append('model', model);
     formData.append('file', fs.createReadStream(filePath));
     // Whisper's `prompt` biases recognition toward these spellings: the
     // session's own terms first (so "insurance" is never heard as
@@ -1030,28 +1234,39 @@ export class GroqTranscriptionService {
       void recordAiUsage({
         stage: 'transcription',
         provider: provider.label,
-        model: provider.model,
+        model,
         audioSeconds: Number(usage.seconds) || 0,
         costUsd: Number(usage.cost) || 0,
         processingMs: Date.now() - startedAt,
         ...this.jobTag,
       });
 
-      return response.data.text;
+      const text = response.data?.text;
+      if (typeof text !== 'string' || text.trim().length === 0) {
+        throw new EmptyTranscriptError(model, 'stt');
+      }
+      return text;
     } catch (err: any) {
+      // Already typed for the ladder — do not re-wrap it as a transport error.
+      if (err instanceof EmptyTranscriptError) throw err;
       // Every failure gets diagnosed once, here, so the message that reaches
       // an operator names the limit that was hit and how to raise it — rather
       // than "Request failed with status code 413".
       const audioMb = fs.existsSync(filePath) ? fs.statSync(filePath).size / (1024 * 1024) : undefined;
       throw new GroqError(
-        describeGroqFailure(err, 'transcription', { model: this.transcriptionModel, audioMb, provider: this.transcriptionProvider.label })
+        describeGroqFailure(err, 'transcription', { model, audioMb, provider: provider.label })
       );
     }
   }
 
   /** Transcription through a multimodal chat model — audio in, labelled text out. */
-  private async transcribeViaChat(filePath: string, carryOver?: string): Promise<string> {
+  private async transcribeViaChat(
+    filePath: string,
+    carryOver?: string,
+    modelOverride?: string
+  ): Promise<string> {
     const provider = this.transcriptionProvider;
+    const model = modelOverride ?? provider.model;
 
     const ext = path.extname(filePath).replace('.', '').toLowerCase();
     const format = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'webm'].includes(ext) ? ext : 'mp3';
@@ -1076,7 +1291,7 @@ export class GroqTranscriptionService {
       const response = await axios.post(
         `${provider.baseUrl}/chat/completions`,
         {
-          model: provider.model,
+          model,
           messages: [
             {
               role: 'user',
@@ -1100,14 +1315,16 @@ export class GroqTranscriptionService {
 
       const content = response.data?.choices?.[0]?.message?.content;
       if (typeof content !== 'string' || content.trim().length === 0) {
-        throw new Error(`"${provider.model}" returned an empty transcript from the audio.`);
+        // A typed error so the fallback ladder can tell 'this model heard
+        // nothing' apart from 'the request failed'.
+        throw new EmptyTranscriptError(model, 'chat');
       }
 
       const usage = response.data?.usage ?? {};
       void recordAiUsage({
         stage: 'transcription',
         provider: provider.label,
-        model: provider.model,
+        model,
         inputTokens: Number(usage.prompt_tokens) || 0,
         outputTokens: Number(usage.completion_tokens) || 0,
         costUsd: Number(usage.cost) || 0,
@@ -1118,9 +1335,10 @@ export class GroqTranscriptionService {
       return content.trim();
     } catch (err: any) {
       if (err instanceof GroqError) throw err;
+      if (err instanceof EmptyTranscriptError) throw err;
       const audioMb = fs.existsSync(filePath) ? fs.statSync(filePath).size / (1024 * 1024) : undefined;
       throw new GroqError(
-        describeGroqFailure(err, 'transcription', { model: provider.model, audioMb, provider: provider.label })
+        describeGroqFailure(err, 'transcription', { model, audioMb, provider: provider.label })
       );
     }
   }
