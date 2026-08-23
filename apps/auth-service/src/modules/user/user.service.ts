@@ -29,6 +29,32 @@ const assertOwnSlotIfTeacher = (mentorId: string, caller?: { id?: string; role?:
   }
 };
 
+/**
+ * Default length of one weekly availability slot, in minutes.
+ *
+ * 70 = one hour ten: the class itself plus the few minutes either side that a
+ * mentor actually spends settling a child in and wrapping up. It is only the
+ * value the end time is PREFILLED with — every caller may send its own
+ * `endTime` instead, so a mentor who is free for a three-hour block says so in
+ * one slot rather than three.
+ */
+export const SLOT_DURATION_MINUTES = 70;
+
+/** "HH:MM" (24-hr) → minutes past midnight, or null when unparseable. */
+const parseHHMM = (value: string): number | null => {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value ?? '').trim());
+  if (!match) return null;
+  const hh = Number(match[1]);
+  const mm = Number(match[2]);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) return null;
+  if (hh < 0 || hh > 24 || mm < 0 || mm > 59) return null;
+  return hh * 60 + mm;
+};
+
+/** Minutes past midnight → "HH:MM", zero-padded. */
+const formatHHMM = (minutes: number): string =>
+  `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
 const sanitize = (user: any): UserWithoutPassword => {
   const { passwordHash, ...rest } = user;
   return rest;
@@ -799,9 +825,31 @@ export const userService = {
     });
   },
 
+  /**
+   * Add one weekly availability slot.
+   *
+   * `endTime` is a SUGGESTION, not a rule. The caller may send its own — the
+   * UI prefills start + SLOT_DURATION_MINUTES and lets the mentor change it,
+   * because a slot is a declaration of when someone is free, and real
+   * availability does not come in one fixed length.
+   *
+   * A conflict is likewise a warning rather than a wall: `allowConflict` lets
+   * the caller commit an overlapping slot on purpose. Overlaps are legitimate
+   * — the same hour can be offered as both a REGULAR and a DEMO slot, and only
+   * one of them will ever be booked. Refusing outright meant the mentor had no
+   * way to say so.
+   */
   async addMentorSchedule(
     mentorId: string,
-    input: { weekday: number; startTime: string; scheduleType?: string },
+    input: {
+      weekday: number;
+      startTime: string;
+      /** Optional override. Omitted → start + SLOT_DURATION_MINUTES. */
+      endTime?: string;
+      scheduleType?: string;
+      /** Commit the slot even though it overlaps an existing one. */
+      allowConflict?: boolean;
+    },
     caller?: { id?: string; role?: string }
   ) {
     assertOwnSlotIfTeacher(mentorId, caller);
@@ -809,41 +857,60 @@ export const userService = {
     const mentor = await db.user.findUnique({ where: { id: mentorId } });
     if (!mentor) throw new AppError('Mentor not found', HTTP_STATUS.NOT_FOUND);
 
-    const { weekday, startTime, scheduleType = 'REGULAR' } = input;
+    const { weekday, startTime, scheduleType = 'REGULAR', allowConflict = false } = input;
     if (!['REGULAR', 'DEMO'].includes(scheduleType)) {
       throw new AppError('Invalid scheduleType. Must be REGULAR or DEMO', HTTP_STATUS.BAD_REQUEST);
     }
 
-    // Parse startTime "HH:MM" and compute endTime (+90 min)
-    const [startHH, startMM] = startTime.split(':').map(Number);
-    if (isNaN(startHH) || isNaN(startMM)) {
+    const startMinutes = parseHHMM(startTime);
+    if (startMinutes === null) {
       throw new AppError('Invalid startTime format. Use HH:MM (24-hr)', HTTP_STATUS.BAD_REQUEST);
     }
-    const startMinutes = startHH * 60 + startMM;
-    const endMinutes = startMinutes + 90;
+
+    // The default length; the caller overrides it by sending endTime.
+    let endMinutes = startMinutes + SLOT_DURATION_MINUTES;
+
+    if (input.endTime !== undefined && String(input.endTime).trim() !== '') {
+      const parsed = parseHHMM(String(input.endTime));
+      if (parsed === null) {
+        throw new AppError('Invalid endTime format. Use HH:MM (24-hr)', HTTP_STATUS.BAD_REQUEST);
+      }
+      if (parsed <= startMinutes) {
+        throw new AppError('End time must be later than the start time', HTTP_STATUS.BAD_REQUEST);
+      }
+      endMinutes = parsed;
+    }
+
     if (endMinutes > 24 * 60) {
       throw new AppError('Time slot exceeds midnight — choose an earlier start time', HTTP_STATUS.BAD_REQUEST);
     }
-    const endHH = Math.floor(endMinutes / 60);
-    const endMM = endMinutes % 60;
-    const endTime = `${String(endHH).padStart(2, '0')}:${String(endMM).padStart(2, '0')}`;
+
+    const endTime = formatHHMM(endMinutes);
 
     // Conflict check: any existing slot on same weekday that overlaps [startMinutes, endMinutes)
     const existingSlots = await db.mentorSchedule.findMany({ where: { mentorId, weekday } });
 
     for (const slot of existingSlots) {
-      const [eHH, eMM] = slot.startTime.split(':').map(Number);
-      const [xHH, xMM] = slot.endTime.split(':').map(Number);
-      const existStart = eHH * 60 + eMM;
-      const existEnd = xHH * 60 + xMM;
+      const existStart = parseHHMM(slot.startTime);
+      const existEnd = parseHHMM(slot.endTime);
+      if (existStart === null || existEnd === null) continue;
 
       // Overlap if new start < existEnd AND new end > existStart
       if (startMinutes < existEnd && endMinutes > existStart) {
         const typeStr = slot.scheduleType.toLowerCase();
-        throw new AppError(
-          `Conflict: overlaps existing ${typeStr} slot ${slot.startTime}–${slot.endTime} on this day`,
-          HTTP_STATUS.CONFLICT,
+        const detail = `overlaps existing ${typeStr} slot ${slot.startTime}–${slot.endTime} on this day`;
+
+        if (!allowConflict) {
+          // 409 is the frontend's cue to show the warning plus its
+          // "add anyway" button, which retries with allowConflict.
+          throw new AppError(`Conflict: ${detail}`, HTTP_STATUS.CONFLICT);
+        }
+
+        logger.warn(
+          `[Mentor Schedule] Overlapping slot accepted on purpose for mentor ${mentorId}: ` +
+            `${startTime}–${endTime} ${detail}.`
         );
+        break;
       }
     }
 
