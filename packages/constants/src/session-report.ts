@@ -136,6 +136,15 @@ export interface LearningAssessment {
 export interface WordCloudEntry {
   word: string;
   weight: number;
+  /**
+   * True when the term is the lesson's own vocabulary (the deck, or the
+   * curated financial list) rather than a word that merely recurred.
+   *
+   * Carried so the pruning pass can be told what it is not allowed to remove,
+   * and so a failed prune can fall back to lesson vocabulary alone instead of
+   * to an unfiltered list.
+   */
+  inLexicon?: boolean;
 }
 
 export interface SessionReport {
