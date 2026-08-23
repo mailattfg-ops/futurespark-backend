@@ -597,15 +597,39 @@ export const scheduleService = {
       });
     }
 
-    // 3. Construct all the week-by-week slots and check overlaps/conflicts for all classes
+    // 3. Construct the slots and check overlaps/conflicts for all classes
     const classesToCreate = [];
     const baseStartTime = new Date(input.startTime);
 
+    /*
+     * How far apart consecutive sessions are placed.
+     *
+     * WEEKLY is the default and the shape of a normal programme: same weekday,
+     * same time, one lesson a week. The other two exist because real timetables
+     * are not always that — an intensive run over consecutive days, or a
+     * catch-up block where a child sits several sessions in one afternoon.
+     *
+     * SAME_DAY stacks them back to back from the chosen start, so three
+     * sessions from 13:00 land at 13:00, 14:30 and 16:00.
+     */
+    const CLASS_DURATION_MS = 90 * 60 * 1000;
+    const cadence = input.cadence || 'WEEKLY';
+    const stepMsFor = (index: number): number => {
+      switch (cadence) {
+        case 'SAME_DAY':
+          return index * CLASS_DURATION_MS;
+        case 'DAILY':
+          return index * 24 * 60 * 60 * 1000;
+        case 'WEEKLY':
+        default:
+          return index * 7 * 24 * 60 * 60 * 1000;
+      }
+    };
+
     for (let i = 0; i < input.sessions!.length; i++) {
       const session = input.sessions![i];
-      // Increment date by i weeks (7 days * i)
-      const classStartTime = new Date(baseStartTime.getTime() + i * 7 * 24 * 60 * 60 * 1000);
-      const classEndTime = new Date(classStartTime.getTime() + 90 * 60 * 1000); // 90 min duration
+      const classStartTime = new Date(baseStartTime.getTime() + stepMsFor(i));
+      const classEndTime = new Date(classStartTime.getTime() + CLASS_DURATION_MS);
 
       // Check mentor conflicts (ignore cancelled classes)
       const mentorConflicts = await db.scheduledClass.findFirst({
@@ -752,72 +776,86 @@ export const scheduleService = {
 
     if (input.startTime) {
       startTime = new Date(input.startTime);
-      endTime = new Date(startTime.getTime() + 90 * 60 * 1000); // 90 min duration
+      endTime = new Date(startTime.getTime() + 90 * 60 * 1000);
+
+      // Check if mentor has a specific slot on this weekday and time to use accurate slot duration
+      if (effectiveMentorId) {
+        const weekday = startTime.getDay();
+        const sh = String(startTime.getHours()).padStart(2, '0');
+        const sm = String(startTime.getMinutes()).padStart(2, '0');
+        const timeStr = `${sh}:${sm}`;
+        const slot = await db.mentorSchedule.findFirst({
+          where: { mentorId: effectiveMentorId, weekday, startTime: timeStr },
+        });
+        if (slot) {
+          const [eh, em] = slot.endTime.split(':').map(Number);
+          const computedEnd = new Date(startTime.getFullYear(), startTime.getMonth(), startTime.getDate(), eh, em);
+          if (computedEnd > startTime) {
+            endTime = computedEnd;
+          }
+        }
+      }
 
       if (status === 'RESCHEDULE_REQUESTED') {
         status = 'SCHEDULED';
       }
 
-      // Verify Weekly availability of the mentor (Bypassed: allow manual scheduling regardless of weekly slots)
-      /*
-      const classWeekday = startTime.getDay();
-      const classStartMins = startTime.getHours() * 60 + startTime.getMinutes();
-      const classEndMins = classStartMins + 90;
-
-      const daySchedules = await db.mentorSchedule.findMany({
-        where: { mentorId: classSession.mentorId, weekday: classWeekday },
-      });
-
-      if (daySchedules.length === 0) {
-        throw new AppError('Mentor has no weekly availability scheduled for this weekday', HTTP_STATUS.BAD_REQUEST);
-      }
-
-      let isAvailable = false;
-      for (const slot of daySchedules) {
-        const [sh, sm] = slot.startTime.split(':').map(Number);
-        const [eh, em] = slot.endTime.split(':').map(Number);
-        const slotStartMins = sh * 60 + sm;
-        const slotEndMins = eh * 60 + em;
-
-        if (classStartMins >= slotStartMins && classEndMins <= slotEndMins) {
-          isAvailable = true;
-          break;
-        }
-      }
-
-      if (!isAvailable) {
-        throw new AppError("The selected time slot is outside the mentor's scheduled availability on this day", HTTP_STATUS.BAD_REQUEST);
-      }
-      */
-
       // Check conflicts for mentor (excluding this class)
-      const mentorConflicts = await db.scheduledClass.findFirst({
+      const potentialMentorConflicts = await db.scheduledClass.findMany({
         where: {
           id: { not: id },
           mentorId: effectiveMentorId,
           status: { not: 'CANCELLED' },
           startTime: { lt: endTime },
-          endTime: { gt: startTime },
         },
       });
 
-      if (mentorConflicts) {
+      const mentorConflicts = potentialMentorConflicts.find((c) => {
+        const cStart = c.startTime;
+        const cEnd = c.endTime;
+        return cStart < endTime && cEnd > startTime;
+      });
+
+      /*
+       * The override is staff-only, deliberately narrower than the flag itself.
+       *
+       * A parent, student or mentor may move a class — that is what the
+       * reschedule flow is — but none of them may force one on top of another.
+       * `ownsTimetable` is the same gate that guards startTime and mentorId, so
+       * a participant who posts allowConflict simply has it ignored.
+       */
+      const overrideConflicts = ownsTimetable && input.allowConflict === true;
+
+      if (mentorConflicts && !overrideConflicts) {
         throw new AppError('Mentor has a scheduling conflict with another class at this time', HTTP_STATUS.CONFLICT);
       }
 
       // Check conflicts for student (excluding this class)
-      const studentConflicts = await db.scheduledClass.findFirst({
+      const potentialStudentConflicts = await db.scheduledClass.findMany({
         where: {
           id: { not: id },
           studentId: classSession.studentId,
           status: { not: 'CANCELLED' },
           startTime: { lt: endTime },
-          endTime: { gt: startTime },
         },
       });
 
-      if (studentConflicts) {
+      const studentConflicts = potentialStudentConflicts.find((c) => {
+        const cStart = c.startTime;
+        const cEnd = c.endTime;
+        return cStart < endTime && cEnd > startTime;
+      });
+
+      if (studentConflicts && !overrideConflicts) {
         throw new AppError('Student has a scheduling conflict with another class at this time', HTTP_STATUS.CONFLICT);
+      }
+
+      if (overrideConflicts && (mentorConflicts || studentConflicts)) {
+        logger.warn(
+          `[Schedule] Class ${id} moved onto a known clash by ${callerId ?? 'unknown'} (${callerRole ?? 'unknown role'}): ` +
+            `new window ${startTime.toISOString()}–${endTime.toISOString()} ` +
+            `(mentor busy: ${Boolean(mentorConflicts)}, student busy: ${Boolean(studentConflicts)}).`
+        );
       }
     }
 

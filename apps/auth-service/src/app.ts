@@ -53,6 +53,7 @@ const CAPABILITIES = [
   'slot-70min-editable-end',
   'slot-conflict-override',
   'class-conflict-override',
+  'reschedule-conflict-override',
 ];
 
 app.get('/health', (_req, res) => {

@@ -20,7 +20,17 @@ export interface CreateScheduleInput {
    * timetable does not know has freed up.
    */
   allowConflict?: boolean;
+  /**
+   * How consecutive sessions are spaced.
+   *
+   * WEEKLY (the default, and what every existing caller gets by omitting it)
+   * puts one lesson a week on the same weekday. DAILY runs them on consecutive
+   * days. SAME_DAY stacks them back to back from the chosen start time.
+   */
+  cadence?: 'WEEKLY' | 'DAILY' | 'SAME_DAY';
 }
+
+export const SCHEDULE_CADENCES = ['WEEKLY', 'DAILY', 'SAME_DAY'] as const;
 
 export const validateCreateSchedule = (data: any): CreateScheduleInput => {
   const errors: string[] = [];
@@ -75,6 +85,9 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
     // Only a literal true is consent — a stray "false" string from a form post
     // must never read as permission to double-book a child.
     allowConflict: data.allowConflict === true || data.allowConflict === 'true',
+    // Anything unrecognised falls back to WEEKLY, which is the shape every
+    // existing caller already gets.
+    cadence: SCHEDULE_CADENCES.includes(data.cadence) ? data.cadence : 'WEEKLY',
     leadId: data.leadId ? data.leadId.trim() : undefined,
     meetingLink: typeof data.meetingLink === 'string' && data.meetingLink.trim() !== '' ? data.meetingLink.trim() : undefined,
     sessions: data.sessions
@@ -98,6 +111,14 @@ export interface UpdateScheduleInput {
   qaStatus?: string;
   qaFeedback?: string | null;
   creditsAwarded?: number;
+  /**
+   * Move the class onto a slot where the mentor or student is already busy.
+   *
+   * A control flag, not an editable field, so it is absent from
+   * TIMETABLE_UPDATE_FIELDS. The service honours it only for staff who own the
+   * timetable — a participant who sends it has it ignored rather than refused.
+   */
+  allowConflict?: boolean;
 }
 
 export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
@@ -146,5 +167,7 @@ export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
     qaStatus: typeof data.qaStatus === 'string' ? data.qaStatus.trim() : undefined,
     qaFeedback: data.qaFeedback === null ? null : (typeof data.qaFeedback === 'string' ? data.qaFeedback.trim() : undefined),
     creditsAwarded: typeof data.creditsAwarded === 'number' ? data.creditsAwarded : undefined,
+    // Only a literal true is consent to move a class on top of another.
+    allowConflict: data.allowConflict === true || data.allowConflict === 'true',
   };
 };
