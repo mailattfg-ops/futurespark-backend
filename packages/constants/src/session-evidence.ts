@@ -418,7 +418,18 @@ const CLOUD_STOPWORDS = new Set([
  * frequent words in any lesson and tells a parent nothing they do not know.
  */
 /** How many terms the panel is given to lay out. */
-const CLOUD_MAX_TERMS = 30;
+/** How many terms the cloud panel shows. */
+export const CLOUD_MAX_TERMS = 30;
+
+/**
+ * How many candidates are offered to the pruning pass.
+ *
+ * More than the cloud will ever show, because pruning only ever removes: if
+ * exactly thirty are offered and a third are filler, the parent gets twenty.
+ * Offering half again as many leaves the model room to cut and still fill the
+ * panel. The final list is trimmed back to CLOUD_MAX_TERMS afterwards.
+ */
+export const CLOUD_CANDIDATE_MAX = 48;
 
 const CURATED_LOWER = new Set(CORE_FINANCIAL_VOCABULARY.map((t) => t.toLowerCase()));
 
@@ -643,13 +654,17 @@ export const buildWordCloud = (
     for (const v of keys) if (!variantOwner.has(v)) variantOwner.set(v, owner);
   }
 
-  // Said once is not "most used" — it is a word that happened to occur.
+  /* Said once is not "most used" — unless the lesson is about it.
+   *
+   * A deck term spoken once was still taught, and dropping it loses real
+   * vocabulary while filler said twice survives. Lesson vocabulary therefore
+   * needs one mention; everything else still needs two. */
   const ranked = [...groups.values()]
-    .filter((e) => e.n >= 2)
+    .filter((e) => e.n >= 2 || e.inLexicon)
     // Capitalised at every occurrence including mid-sentence = a proper noun.
     .filter((e) => !(e.cap === e.n && e.midCap > 0 && !ACRONYMS.has(e.display.toUpperCase())))
     .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
-    .slice(0, CLOUD_MAX_TERMS);
+    .slice(0, CLOUD_CANDIDATE_MAX);
   if (ranked.length === 0) return [];
 
   const max = ranked[0].n;

@@ -6,6 +6,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 import {
+  CLOUD_MAX_TERMS,
   type WordCloudEntry,
   NOT_AVAILABLE,
   parseSessionReport,
@@ -1659,7 +1660,7 @@ export class GroqTranscriptionService {
     if (candidates.length === 0) return candidates;
 
     const protectedTerms = candidates.filter((c) => c.inLexicon);
-    const fallback = protectedTerms.length > 0 ? protectedTerms : candidates;
+    const fallback = (protectedTerms.length > 0 ? protectedTerms : candidates).slice(0, CLOUD_MAX_TERMS);
 
     if (!this.hasAnalysisKey) {
       logger.warn('[GroqTranscriptionService] No analysis key — keeping lesson vocabulary only in the word cloud.');
@@ -1674,19 +1675,24 @@ export class GroqTranscriptionService {
       context.sessionTitle ? `The lesson was: "${context.sessionTitle}".` : '',
       context.plannedTopics.length > 0 ? `Planned topics: ${context.plannedTopics.join(', ')}.` : '',
       '',
-      'Below is a list of words counted from the lesson transcript. Return ONLY the ones that name',
-      'something the lesson was ABOUT — a subject concept, a term being taught, a thing being discussed.',
+      'Below is a list of words counted from the lesson transcript. Your job is to remove the CLEAR',
+      'filler and keep everything else. This is a word cloud for a parent: it should read like the',
+      'vocabulary of the lesson, so it needs to be full — not a short list of headline terms.',
       '',
-      'REMOVE: filler and conversation words ("basically", "actually", "getting", "goes", "follow"),',
-      'contractions and fragments (you-re, do-nt, we-ll), generic verbs and adjectives that any',
-      'lesson would contain, and any word a parent would read as noise rather than as a thing',
-      'their child learned.',
+      'REMOVE only words that are obviously not about the subject:',
+      '  - conversation filler: basically, actually, getting, goes, follow, easier, less',
+      '  - generic verbs and adjectives any lesson would contain: designed, discussing, building, fair',
+      '  - any word containing an apostrophe, and fragments of contractions',
       '',
-      'A word with an apostrophe in it is never a concept.',
-      'lesson would contain ("designed", "discussing", "building", "fair"), and anything a parent would',
-      'read as noise rather than as a thing their child learned.',
+      'KEEP everything that could plausibly be part of what was taught, including:',
+      '  - ordinary words this lesson is about (money, needs, wants, cost, plan, habit, rule)',
+      '  - examples, categories, and things being compared, chosen between or budgeted for',
+      '  - words naming amounts, choices or decisions within the subject',
       '',
-      'KEEP: subject vocabulary even when ordinary-looking, if this lesson is about it.',
+      'When unsure about a word, KEEP it. Dropping a real concept costs a parent more than leaving',
+      'one ordinary word in.',
+      `Aim to keep about ${Math.min(offered.length, CLOUD_MAX_TERMS)} of these ${offered.length} words,`,
+      'unless the list is genuinely full of filler.',
       '',
       'Return JSON only: {"keep": ["word", "word", ...]}. Copy words EXACTLY as given, character for',
       'character. Do not add words that are not in the list. Do not reorder by importance.',
@@ -1746,11 +1752,18 @@ export class GroqTranscriptionService {
         return fallback;
       }
 
+      /* Trimmed to the panel's capacity only NOW.
+       *
+       * Trimming before the prune wasted slots on filler: thirty candidates in,
+       * a third of them noise, and the parent saw twenty words. Pruning first
+       * means every one of the thirty shown earned its place. */
+      const finalCloud = kept.slice(0, CLOUD_MAX_TERMS);
       logger.info(
         `[GroqTranscriptionService] Word cloud pruned: ${candidates.length} candidate(s) -> ${kept.length} concept(s)` +
-          `${removed > 0 ? ` (${removed} common word(s) removed)` : ''}.`
+          `${removed > 0 ? ` (${removed} common word(s) removed)` : ''}` +
+          `${kept.length > finalCloud.length ? `, showing the top ${finalCloud.length}` : ''}.`
       );
-      return kept;
+      return finalCloud;
     } catch (err: any) {
       logger.warn(
         `[GroqTranscriptionService] Word-cloud prune failed (${err.message}) — keeping lesson vocabulary only.`
