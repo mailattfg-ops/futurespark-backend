@@ -106,6 +106,23 @@ app.use('/api/leads', createProxyMiddleware({
   },
 }));
 
+// Dedicated Pilot Program Leads (Reserve Your Seat form)
+app.use('/api/pilot-leads', createProxyMiddleware({
+  target: LEARN_SERVICE_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/': '/courses/pilot-leads/' },
+  on: {
+    error: (err, _req, res: any) => {
+      logger.error(`[Gateway] Learning service unreachable for pilot lead registration: ${err.message}`);
+      res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+        success: false,
+        message: 'Learning service is temporarily unavailable. Please try again shortly.',
+        timestamp: new Date().toISOString(),
+      });
+    },
+  },
+}));
+
 
 // ── Protected Routes (JWT + HMAC Required) ────────────────────
 // User management
