@@ -592,22 +592,60 @@ export const buildWordCloud = (
     }
   }
 
-  /* ── The gate ─────────────────────────────────────────────────────────────
+  /* ── Candidates, not the final cloud ──────────────────────────────────────
    *
-   * Lesson vocabulary is in. Anything else needs to have been said often
-   * enough that leaving it out would misrepresent the class — the escape
-   * hatch for a genuinely central word the deck never happened to name.
+   * A strict lexicon-only gate was tried and was too narrow in practice: a real
+   * class produced two words, because a deck names concepts in its own phrasing
+   * and a spoken lesson ranges wider. So this returns the frequency-ranked
+   * candidates, mechanically cleaned — contractions stripped, word forms folded
+   * onto the lesson's own spelling, stopwords and proper nouns removed — and
+   * each entry says whether it is lesson vocabulary.
    *
-   * The bar is deliberately high. Filler is frequent by nature, so a low
-   * threshold would reinstate exactly the words this replaced; a word said
-   * this many times that is also absent from a rich deck is rare.
+   * Judgement about what is a CONCEPT rather than a common word is made after
+   * this, by the pruning pass in the transcription service. That is the one
+   * question here that is genuinely a judgement, and it is the reason a word
+   * like "discussing" cannot be caught by any rule short of knowing what a
+   * lesson is about.
    * ──────────────────────────────────────────────────────────────────────── */
-  const ESCAPE_MIN_MENTIONS = 6;
+
+  /* Merge the forms of a word that is NOT lesson vocabulary.
+   *
+   * Deck terms already fold onto the deck's own spelling. Everything else was
+   * keyed on the plural rule alone, so "buy" and "buying" — or "save" and
+   * "saving" — sat in the cloud as two entries at two sizes for one idea.
+   *
+   * Grouped by overlapping variant sets rather than by a stem, because
+   * stemming without a dictionary invents words: the -es rule alone turns
+   * "business" into "busin". Two forms meet in the same group only if one's
+   * variants contain the other's key, and the most-spoken form supplies the
+   * spelling. */
+  const groups = new Map<string, { display: string; n: number; cap: number; midCap: number; inLexicon: boolean }>();
+  const variantOwner = new Map<string, string>();
+
+  for (const [key, entry] of [...counts.entries()].sort((a, b) => b[1].n - a[1].n)) {
+    const keys = key.includes(' ') ? [key] : wordVariants(key);
+    let owner: string | undefined;
+    for (const v of keys) {
+      const found = variantOwner.get(v);
+      if (found) { owner = found; break; }
+    }
+
+    if (owner) {
+      const target = groups.get(owner)!;
+      target.n += entry.n;
+      target.cap += entry.cap;
+      target.midCap += entry.midCap;
+      if (entry.inLexicon) target.inLexicon = true;
+    } else {
+      groups.set(key, { ...entry });
+      owner = key;
+    }
+    for (const v of keys) if (!variantOwner.has(v)) variantOwner.set(v, owner);
+  }
 
   // Said once is not "most used" — it is a word that happened to occur.
-  const ranked = [...counts.values()]
+  const ranked = [...groups.values()]
     .filter((e) => e.n >= 2)
-    .filter((e) => e.inLexicon || e.n >= ESCAPE_MIN_MENTIONS)
     // Capitalised at every occurrence including mid-sentence = a proper noun.
     .filter((e) => !(e.cap === e.n && e.midCap > 0 && !ACRONYMS.has(e.display.toUpperCase())))
     .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
@@ -618,6 +656,7 @@ export const buildWordCloud = (
   return ranked.map((e) => ({
     word: e.display,
     weight: Math.max(1, Math.min(10, Math.round((e.n / max) * 9) + 1)),
+    inLexicon: e.inLexicon,
   }));
 };
 

@@ -6,6 +6,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import { logger } from '@futurespark/logger';
 import {
+  type WordCloudEntry,
   NOT_AVAILABLE,
   parseSessionReport,
   sessionReportToText,
@@ -100,6 +101,9 @@ export interface ClassAnalysisResult {
 
 /** Speech-to-text. $0.04/hr of audio, 216x realtime, multilingual. */
 const DEFAULT_TRANSCRIPTION_MODEL = 'whisper-large-v3-turbo';
+
+/** Line break, named so prompt strings can be assembled without escapes. */
+const NEWLINE = String.fromCharCode(10);
 /** Groq's own recommended successor to llama-3.3-70b-versatile. */
 const DEFAULT_SUMMARY_MODEL = 'openai/gpt-oss-120b';
 
@@ -1621,6 +1625,140 @@ export class GroqTranscriptionService {
    * Failure is never fatal: the original transcript is returned and the report
    * simply reports talk time as "Not available".
    */
+  /**
+   * Decide which candidate words are actually what the lesson was about.
+   *
+   * The cloud used to be governed by a hand-maintained blocklist, which is
+   * unwinnable: every class produces filler nobody enumerated ("you're",
+   * "basically", "discussing", "goes"), those exact words get added, and the
+   * next class produces different ones. Inverting it to a strict deck-only
+   * allowlist was worse in practice — a real class came back with two words,
+   * because a deck names concepts in its own phrasing while a spoken lesson
+   * ranges wider.
+   *
+   * "Is this a concept or a common word?" is a judgement, and a judgement is
+   * what a language model is for. So the model prunes — and ONLY prunes:
+   *
+   *   - It receives the candidate list and returns a subset. Anything it
+   *     returns that was not offered is discarded, so it cannot invent
+   *     vocabulary the class never used.
+   *   - Lesson vocabulary (deck terms, curated financial words) is protected
+   *     and re-added even if the model drops it.
+   *   - Order and weights are the code's, computed from how often each word
+   *     was actually spoken. The model has no say in sizing.
+   *   - Any failure keeps the lesson vocabulary rather than the raw list: a
+   *     sparse clean cloud beats a rich dirty one in a parent's document.
+   *
+   * The result is stored with the analysis, so a given class renders the same
+   * cloud every time it is opened.
+   */
+  private async pruneWordCloud(
+    candidates: WordCloudEntry[],
+    context: { sessionTitle: string | null; plannedTopics: string[] }
+  ): Promise<WordCloudEntry[]> {
+    if (candidates.length === 0) return candidates;
+
+    const protectedTerms = candidates.filter((c) => c.inLexicon);
+    const fallback = protectedTerms.length > 0 ? protectedTerms : candidates;
+
+    if (!this.hasAnalysisKey) {
+      logger.warn('[GroqTranscriptionService] No analysis key — keeping lesson vocabulary only in the word cloud.');
+      return fallback;
+    }
+
+    const provider = this.analysisProvider;
+    const offered = candidates.map((c) => c.word);
+
+    const instructions = [
+      'You are cleaning the word cloud for a parent-facing report about a school lesson.',
+      context.sessionTitle ? `The lesson was: "${context.sessionTitle}".` : '',
+      context.plannedTopics.length > 0 ? `Planned topics: ${context.plannedTopics.join(', ')}.` : '',
+      '',
+      'Below is a list of words counted from the lesson transcript. Return ONLY the ones that name',
+      'something the lesson was ABOUT — a subject concept, a term being taught, a thing being discussed.',
+      '',
+      'REMOVE: filler and conversation words ("basically", "actually", "getting", "goes", "follow"),',
+      'contractions and fragments (you-re, do-nt, we-ll), generic verbs and adjectives that any',
+      'lesson would contain, and any word a parent would read as noise rather than as a thing',
+      'their child learned.',
+      '',
+      'A word with an apostrophe in it is never a concept.',
+      'lesson would contain ("designed", "discussing", "building", "fair"), and anything a parent would',
+      'read as noise rather than as a thing their child learned.',
+      '',
+      'KEEP: subject vocabulary even when ordinary-looking, if this lesson is about it.',
+      '',
+      'Return JSON only: {"keep": ["word", "word", ...]}. Copy words EXACTLY as given, character for',
+      'character. Do not add words that are not in the list. Do not reorder by importance.',
+      '',
+      'WORDS:',
+      offered.map((w) => `- ${w}`).join(NEWLINE),
+    ]
+      .filter(Boolean)
+      .join(NEWLINE);
+
+    const startedAt = Date.now();
+    try {
+      const response = await axios.post(
+        `${provider.baseUrl}/chat/completions`,
+        {
+          model: provider.model,
+          messages: [{ role: 'user', content: instructions }],
+          response_format: { type: 'json_object' },
+          ...MODEL_CALL_DEFAULTS,
+          max_tokens: 1500,
+          usage: { include: true },
+          ...providerBodyExtras(provider),
+        },
+        {
+          headers: providerHeaders(provider),
+          timeout: readNumberEnv('AI_CLOUD_PRUNE_TIMEOUT_MS', 60_000),
+        },
+      );
+
+      const usage = response.data?.usage ?? {};
+      void recordAiUsage({
+        stage: 'analysis',
+        provider: provider.label,
+        model: provider.model,
+        inputTokens: Number(usage.prompt_tokens) || 0,
+        outputTokens: Number(usage.completion_tokens) || 0,
+        costUsd: Number(usage.cost) || 0,
+        processingMs: Date.now() - startedAt,
+        ...this.jobTag,
+      });
+
+      const parsed = this.parseJson(response.data?.choices?.[0]?.message?.content ?? '');
+      const keepRaw = Array.isArray(parsed?.keep) ? parsed.keep : null;
+      if (!keepRaw) {
+        logger.warn('[GroqTranscriptionService] Word-cloud prune returned no usable list — keeping lesson vocabulary.');
+        return fallback;
+      }
+
+      // Matched case-insensitively but only against what was OFFERED, so the
+      // model can subtract and never add.
+      const keep = new Set(keepRaw.map((w: unknown) => String(w ?? '').trim().toLowerCase()));
+      const kept = candidates.filter((c) => keep.has(c.word.toLowerCase()) || c.inLexicon);
+
+      const removed = candidates.length - kept.length;
+      if (kept.length === 0) {
+        logger.warn('[GroqTranscriptionService] Word-cloud prune removed everything — keeping lesson vocabulary instead.');
+        return fallback;
+      }
+
+      logger.info(
+        `[GroqTranscriptionService] Word cloud pruned: ${candidates.length} candidate(s) -> ${kept.length} concept(s)` +
+          `${removed > 0 ? ` (${removed} common word(s) removed)` : ''}.`
+      );
+      return kept;
+    } catch (err: any) {
+      logger.warn(
+        `[GroqTranscriptionService] Word-cloud prune failed (${err.message}) — keeping lesson vocabulary only.`
+      );
+      return fallback;
+    }
+  }
+
   private async ensureSpeakerLabels(
     transcript: string,
     studentName: string,
@@ -1971,6 +2109,13 @@ Return the JSON object now.`;
     /* ── Every number on the report is computed here ──────────────────────── */
     const derived = deriveMetrics(envelope, turns, lexicon, [studentName, mentorName]);
     const talk = deriveTalkShare(turns, context.audioSeconds ?? null);
+
+    /* The cloud arrives as frequency-ranked candidates; a model decides which
+     * of them are actually what the lesson was about. See `pruneWordCloud`. */
+    derived.wordCloud = await this.pruneWordCloud(derived.wordCloud, {
+      sessionTitle: context.sessionTitle ?? null,
+      plannedTopics: context.plannedTopics ?? [],
+    });
 
     if (derived.discarded > 0) {
       // The most useful health signal this pipeline emits. A model padding its
