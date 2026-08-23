@@ -423,6 +423,13 @@ export class GroqTranscriptionService {
    * getters stay synchronous by reading this snapshot.
    */
   private storedModels: { transcription?: string; analysis?: string } = {};
+  /**
+   * Chunks that could not be transcribed on the winning rung.
+   *
+   * Coverage is then marked from what happened rather than from the analysis
+   * model noticing gap markers in the text — a judgement, not a guarantee.
+   */
+  private transcriptionGaps = 0;
 
   /**
    * Which class/recording the CURRENT run belongs to, for the usage ledger.
@@ -511,6 +518,10 @@ export class GroqTranscriptionService {
     context: ClassAnalysisContext = {}
   ) {
     logger.info(`[GroqTranscriptionService] [+] Processing file: ${audioFilePath} for ${studentName} & ${mentorName}`);
+
+    // Per-job state. The gap counter is instance state on a long-lived
+    // service, so a previous class's gaps must not leak into this one.
+    this.transcriptionGaps = 0;
 
     // Admin-picked models override the .env defaults from here on.
     await this.refreshStoredModels();
@@ -921,8 +932,16 @@ export class GroqTranscriptionService {
 
     const ladder: TranscriptionAttempt[] = [
       { model: chosen, wire: primaryWire, why: 'the selected model' },
-      { model: chosen, wire: otherWire, why: 'the selected model on the other endpoint' },
     ];
+
+    /* The other-wire rung is a hedge against the NAME being a bad guess, so it
+     * is only worth trying when the name told us little. A whisper-family
+     * model genuinely only exists at /audio/transcriptions, so posting it to
+     * /chat/completions base64-encodes the whole class, waits out the full
+     * timeout and fails — guaranteed, every time. */
+    if (!this.isDedicatedSttModel(chosen)) {
+      ladder.push({ model: chosen, wire: otherWire, why: 'the selected model on the other endpoint' });
+    }
 
     // Only worth a rung if it is genuinely a different model.
     if (fallbackModel && fallbackModel !== chosen) {
@@ -994,8 +1013,12 @@ export class GroqTranscriptionService {
       }
     }
 
-    // Every rung walked and none produced words.
-    if (lastError instanceof GroqError) throw lastError;
+    /* Every rung walked and none produced words.
+     *
+     * The last rung's own error must NOT be re-thrown as the cause: it names
+     * whichever model the ladder ended on — often the fallback the operator
+     * never chose — and its remedy points at AI_TRANSCRIPTION_MODEL, which is
+     * not the setting that produced it. Compose the attempt list instead. */
     throw new GroqError(
       describeGroqFailure(
         new Error(
@@ -1038,11 +1061,19 @@ export class GroqTranscriptionService {
 
     const chunks = this.splitAudio(filePath);
     if (chunks.length === 0) {
-      throw new Error(
+      /* Wrapped, not bare: a plain Error is non-walkable, so an ffmpeg that
+       * cannot split aborted the whole ladder on rung 1 — including the
+       * whisper rung whose larger multipart ceiling would have sent the file
+       * whole and transcribed the class. */
+      throw new GroqError(describeGroqFailure(
+        new Error(
         `Audio is ${sizeMb}MB, above the ${(ceiling / (1024 * 1024)).toFixed(0)}MB request limit for this endpoint, ` +
           'and it could not be split (ffmpeg failed). Raise GROQ_MAX_UPLOAD_MB if you are on the paid ' +
           'dev tier (100MB), or check that ffmpeg is available.'
-      );
+        ),
+        'transcription',
+        { model: attempt.model, provider: this.transcriptionProvider.label }
+      ));
     }
 
     /* ── One chunk failing must not cost the whole class ─────────────────
@@ -1058,9 +1089,20 @@ export class GroqTranscriptionService {
     const parts: string[] = [];
     const perChunkAttempts = readNumberEnv('GROQ_CHUNK_MAX_ATTEMPTS', 3);
     let failedChunks = 0;
+    /* A failure this rung cannot fix by trying again — a dead key, a quota
+     * rejection. Kept aside and re-thrown VERBATIM once the loop unwinds.
+     *
+     * Without this the chunked path swallowed every cause and synthesised
+     * "Every audio chunk failed to transcribe", which describeGroqFailure can
+     * only classify as UNKNOWN — a walkable kind. So on any file large enough
+     * to split, a revoked key walked the whole ladder, three retries per chunk
+     * per rung, and reached the operator as "check the log" instead of
+     * "generate a new key". It also lost the wording the retry daemon reads to
+     * size its backoff, turning a 6-hour daily-quota wait into 15 minutes. */
+    let fatalError: GroqError | null = null;
 
     try {
-      for (let i = 0; i < chunks.length; i++) {
+      for (let i = 0; i < chunks.length && fatalError === null; i++) {
         // The tail of the previous chunk is passed as `prompt` so Whisper keeps
         // spelling and terminology consistent across a cut — otherwise a name
         // established in chunk 1 can come back spelled differently in chunk 2.
@@ -1079,6 +1121,16 @@ export class GroqTranscriptionService {
             transcribed = await this.uploadForTranscription(chunks[i], carryOver, attempt);
             break;
           } catch (err: any) {
+            /* Retrying a bad key or an exhausted quota just spends the same
+             * money to be told the same thing. Stop the whole rung at once. */
+            if (err instanceof GroqError && !LADDER_WALKABLE_KINDS.has(err.failure.kind)) {
+              logger.error(
+                `[GroqTranscriptionService] Chunk ${i + 1} failed with ${err.failure.kind}, which retrying ` +
+                  'cannot fix — abandoning this recording without trying the remaining chunks or models.'
+              );
+              fatalError = err;
+              break;
+            }
             const last = tryNo === perChunkAttempts;
             logger.warn(
               `[GroqTranscriptionService] Chunk ${i + 1} attempt ${tryNo} failed: ${err.message}` +
@@ -1103,16 +1155,37 @@ export class GroqTranscriptionService {
       }
     }
 
-    if (failedChunks === chunks.length) {
+    // The real cause, with its own wording, kind and remedy intact.
+    if (fatalError) throw fatalError;
+
+    /* How much of a class may be missing and still be worth reporting on.
+     *
+     * Returning a string used to count as success at any gap short of total,
+     * so five of six chunks could fail and the ladder would stop — never
+     * trying the model that would have transcribed all six — while the report
+     * was built from the first fifteen minutes and still stamped complete.
+     * Above this fraction the rung counts as failed so the ladder moves on;
+     * below it the gaps are tolerated and marked. */
+    const gapFraction = failedChunks / chunks.length;
+    const tolerance = readNumberEnv('TRANSCRIPTION_GAP_TOLERANCE', 0.25);
+
+    if (failedChunks > 0 && gapFraction > tolerance) {
       throw new GroqError(
         describeGroqFailure(
-          new Error('Every audio chunk failed to transcribe.'),
+          new Error(
+            `${failedChunks} of ${chunks.length} audio chunks failed to transcribe with ` +
+              `"${attempt.model}" — too much of the class is missing to report on.`
+          ),
           'transcription',
           { model: attempt.model, provider: this.transcriptionProvider.label }
         )
       );
     }
+
     if (failedChunks > 0) {
+      // Remembered so coverage is marked from what actually happened, rather
+      // than left to the analysis model noticing the gap markers in the text.
+      this.transcriptionGaps += failedChunks;
       logger.error(
         `[GroqTranscriptionService] ${failedChunks}/${chunks.length} chunk(s) could not be transcribed. ` +
           'The transcript has gaps and the report will be built from what was captured.'
@@ -1313,13 +1386,10 @@ export class GroqTranscriptionService {
         },
       );
 
-      const content = response.data?.choices?.[0]?.message?.content;
-      if (typeof content !== 'string' || content.trim().length === 0) {
-        // A typed error so the fallback ladder can tell 'this model heard
-        // nothing' apart from 'the request failed'.
-        throw new EmptyTranscriptError(model, 'chat');
-      }
-
+      /* Recorded BEFORE the emptiness check, because an empty 200 is a fully
+       * billed call — the provider consumed the base64 audio as prompt tokens
+       * either way. Throwing first made every losing rung invisible to
+       * /costs, so a class could make twenty requests and report one. */
       const usage = response.data?.usage ?? {};
       void recordAiUsage({
         stage: 'transcription',
@@ -1331,6 +1401,13 @@ export class GroqTranscriptionService {
         processingMs: Date.now() - startedAt,
         ...this.jobTag,
       });
+
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        // A typed error so the fallback ladder can tell 'this model heard
+        // nothing' apart from 'the request failed'.
+        throw new EmptyTranscriptError(model, 'chat');
+      }
 
       return content.trim();
     } catch (err: any) {
@@ -1830,6 +1907,19 @@ Return the JSON object now.`;
     }
 
     if (!complete && envelope.coverageNote === 'full') envelope.coverageNote = 'partial';
+
+    /* Chunks that never transcribed are missing minutes of the lesson, and the
+     * report must say so. Previously this rested on the analysis model reading
+     * the gap markers in the transcript and choosing to set coverageNote
+     * itself — a judgement, not a guarantee, so a class could be assessed on a
+     * fraction of itself and still be stamped complete. */
+    if (this.transcriptionGaps > 0 && envelope.coverageNote === 'full') {
+      envelope.coverageNote = 'gaps';
+      logger.warn(
+        `[GroqTranscriptionService] Coverage marked "gaps": ${this.transcriptionGaps} audio chunk(s) ` +
+          'never transcribed, so part of this class was never analysed.'
+      );
+    }
 
     /* ── Every number on the report is computed here ──────────────────────── */
     const derived = deriveMetrics(envelope, turns, lexicon, [studentName, mentorName]);
