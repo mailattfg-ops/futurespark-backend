@@ -28,6 +28,15 @@ export interface CreateScheduleInput {
    * days. SAME_DAY stacks them back to back from the chosen start time.
    */
   cadence?: 'WEEKLY' | 'DAILY' | 'SAME_DAY';
+  /**
+   * How long each class runs, in minutes.
+   *
+   * Defaults to 90 — the length every class had while it was hard-coded. Sent
+   * by the scheduler when a booking is made from a mentor's availability slot,
+   * so a 70-minute slot produces a 70-minute class instead of a 90-minute one
+   * that overruns the slot it was booked into.
+   */
+  durationMinutes?: number;
 }
 
 export const SCHEDULE_CADENCES = ['WEEKLY', 'DAILY', 'SAME_DAY'] as const;
@@ -88,6 +97,12 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
     // Anything unrecognised falls back to WEEKLY, which is the shape every
     // existing caller already gets.
     cadence: SCHEDULE_CADENCES.includes(data.cadence) ? data.cadence : 'WEEKLY',
+    // Clamped, not rejected: a wild value is a bug upstream, and 30..240 keeps
+    // it from becoming a class that lasts thirty seconds or three days.
+    durationMinutes:
+      typeof data.durationMinutes === 'number' && Number.isFinite(data.durationMinutes)
+        ? Math.min(240, Math.max(30, Math.round(data.durationMinutes)))
+        : 90,
     leadId: data.leadId ? data.leadId.trim() : undefined,
     meetingLink: typeof data.meetingLink === 'string' && data.meetingLink.trim() !== '' ? data.meetingLink.trim() : undefined,
     sessions: data.sessions
