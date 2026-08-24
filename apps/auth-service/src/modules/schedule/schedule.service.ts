@@ -447,6 +447,12 @@ export const scheduleService = {
               id: true,
               firstName: true,
               lastName: true,
+              /* The CHILD's name, when the lead records one. Without these the
+               * portals fall back to the parent's name — so converting a class
+               * to a demo changed whose name the mentor saw on the card, for a
+               * child who had not changed at all. */
+              studentFirstName: true,
+              studentLastName: true,
             },
           })
         : [];

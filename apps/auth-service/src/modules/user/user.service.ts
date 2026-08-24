@@ -66,8 +66,22 @@ const sanitizePublic = (user: any): PublicUser => {
   let warnings: string[] | undefined;
   let feedbacks: any[] | undefined;
 
+  let completedRegular: number | undefined;
+  let completedDemo: number | undefined;
+
   if (user.role?.name === 'TEACHER' && user.scheduledClasses) {
     const completedClasses = user.scheduledClasses.filter((c: any) => c.status === 'COMPLETED');
+
+    /* Kept as two figures because they are paid as two figures. Demo and
+     * regular classes sit on different payroll rates, and the person running
+     * payroll should read the split off the mentor row — not tally class cards
+     * by hand. A class converted to a demo counts as a demo here, because
+     * classType is what the conversion rewrites. */
+    const demoCount = completedClasses.filter(
+      (c: any) => c.classType === 'DEMO' || (!c.studentId && !!c.leadId)
+    ).length;
+    completedDemo = demoCount;
+    completedRegular = completedClasses.length - demoCount;
     const ratedClasses = completedClasses.filter((c: any) => c.studentRating !== null && c.studentRating !== undefined);
     
     // Base rating defaults to 5.0 if no student rating exists yet
@@ -119,6 +133,8 @@ const sanitizePublic = (user: any): PublicUser => {
     lastName: user.lastName,
     role: user.role?.name || null,
     isActive: user.isActive,
+    completedRegular,
+    completedDemo,
     qualifiedPrograms: user.qualifiedPrograms || [],
     mentorTypes: user.mentorTypes || [],
     qualifications: user.qualifications || null,

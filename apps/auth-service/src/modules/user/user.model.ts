@@ -18,6 +18,10 @@ export interface PublicUser {
   country: string | null;
   timezone: string;
   createdAt: Date;
+  /* Completed classes split by type — demo and regular are paid differently,
+   * so payroll reads the two figures straight off the mentor row. */
+  completedRegular?: number;
+  completedDemo?: number;
   rating?: number;
   ratingCount?: number;
   warnings?: string[];
