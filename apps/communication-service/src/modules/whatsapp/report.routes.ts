@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
-import { maskPhone, whatsappService } from './whatsapp.service';
+import { maskPhone, whatsappConfig, whatsappService } from './whatsapp.service';
 import { sessionReportService } from './report.service';
 
 const router = Router();
@@ -79,6 +79,20 @@ router.post('/session-report', async (req: Request, res: Response) => {
  * or free-text fallback when someone registers on the demo booking form.
  */
 router.post('/session-reminder', async (req: Request, res: Response) => {
+  if (whatsappConfig.outboundMode !== 'all') {
+    // Fired automatically by the lead/demo booking flow, which makes it the
+    // easiest send to forget exists. Refused loudly rather than skipped
+    // quietly, so the caller's log says why no message arrived.
+    logger.info('[Session Reminder] Skipped — outbound WhatsApp is limited to the manual session report.');
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse(
+        { success: false, skipped: true },
+        'Session reminders are disabled: outbound WhatsApp is limited to the manual session report ' +
+          '(set WHATSAPP_OUTBOUND_MODE=all to re-enable).'
+      )
+    );
+  }
+
   try {
     const {
       to,

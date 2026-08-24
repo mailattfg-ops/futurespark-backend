@@ -1,5 +1,6 @@
 import db from '../../database/datasource';
 import { logger } from '@futurespark/logger';
+import { whatsappConfig } from '../whatsapp/whatsapp.service';
 import {
   maskPhone,
   whatsappService,
@@ -25,7 +26,7 @@ export interface WhatsAppDeliveryResult {
   /** 'text' inside the 24h window, 'template' outside it. */
   channel?: WhatsAppSendResult['channel'];
   messageId?: string;
-  failureKind?: WhatsAppFailureKind | 'NO_PHONE_NUMBER' | 'TIMEOUT' | 'INTERNAL_ERROR';
+  failureKind?: WhatsAppFailureKind | 'NO_PHONE_NUMBER' | 'TIMEOUT' | 'INTERNAL_ERROR' | 'WHATSAPP_DISABLED';
   error?: string;
   /** True when a retry with backoff could plausibly succeed. */
   retryable?: boolean;
@@ -66,6 +67,17 @@ const deliverWhatsApp = async (data: {
   message: string;
 }): Promise<WhatsAppDeliveryResult> => {
   try {
+    if (whatsappConfig.outboundMode !== 'all') {
+      // The in-app notification row is already written by the caller — only
+      // the WhatsApp copy is being withheld, and it is policy, not a failure.
+      return {
+        attempted: false,
+        delivered: false,
+        failureKind: 'WHATSAPP_DISABLED',
+        error: 'Outbound WhatsApp is limited to the manual session report (WHATSAPP_OUTBOUND_MODE).',
+      };
+    }
+
     const phone = await whatsappService.resolveUserPhoneNumber(data.recipientId);
 
     if (!phone) {

@@ -194,7 +194,27 @@ export const whatsappConfig = {
   },
 
   // ── Auto-reply content (no placeholders may ever reach a real family) ──
+  /**
+   * Which outbound WhatsApp traffic is permitted at all.
+   *
+   * 'report-only' (the default): the manually-dispatched session report is the
+   * ONLY message that may leave. Notification copies, session reminders and
+   * auto-replies are all skipped — in-app notifications still work, only their
+   * WhatsApp delivery stops. Set WHATSAPP_OUTBOUND_MODE=all to restore the
+   * previous behaviour.
+   *
+   * A single switch rather than one per feature, because "we only send the
+   * report" is a property someone should be able to verify by reading one
+   * line of configuration, not by auditing four.
+   */
+  get outboundMode(): 'report-only' | 'all' {
+    return readEnv('WHATSAPP_OUTBOUND_MODE') === 'all' ? 'all' : 'report-only';
+  },
+
   get autoReplyEnabled(): boolean {
+    // Auto-replies are non-report outbound traffic, so report-only mode turns
+    // them off regardless of their own flag.
+    if (whatsappConfig.outboundMode !== 'all') return false;
     return readEnv('WHATSAPP_AUTOREPLY_ENABLED') !== 'false';
   },
   get brandName(): string {

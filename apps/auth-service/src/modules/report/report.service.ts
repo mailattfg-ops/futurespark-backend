@@ -205,6 +205,30 @@ export const reportService = {
    * no summary was ever produced.
    */
   async sendClassReport(classId: string, options: { force?: boolean; customPhone?: string } = {}): Promise<SendReportOutcome> {
+    /* ── Demo classes never message the family ────────────────────────────
+     *
+     * A demo family has not enrolled: nobody consented to WhatsApp messages,
+     * and the pilot flow contacts them through the advisor, not through an
+     * automated template. The guard sits HERE, on the one method every send
+     * path shares — the cron and the dashboard button both land in it, and
+     * `force` deliberately does not bypass it. Preview is unaffected:
+     * renderClassReport sends nothing, and reading a demo's report before a
+     * follow-up call is exactly what an advisor wants. */
+    const classType = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: { classType: true, studentId: true, leadId: true },
+    });
+    if (classType && (classType.classType === 'DEMO' || (!classType.studentId && !!classType.leadId))) {
+      logger.info(`[Report] Class ${classId} is a demo — WhatsApp to the family is disabled for demos.`);
+      return {
+        classId,
+        sent: false,
+        skippedReason:
+          'This is a demo class — WhatsApp messages are never sent to demo families. ' +
+          'Use Preview to view the report and share it through the advisor instead.',
+      };
+    }
+
     const prepared = await prepareReport(classId, { ignoreSentLatch: options.force === true, customPhone: options.customPhone });
     if (!prepared.ok) {
       return { classId, sent: false, skippedReason: prepared.reason };

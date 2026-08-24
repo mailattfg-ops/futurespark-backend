@@ -81,6 +81,7 @@ const CAPABILITIES = [
   'report-template-14-vars',
   'report-body-1024-budget',
   'report-template-vars-warning',
+  'whatsapp-report-only-outbound',
 ];
 
 app.get('/health', (req, res) => {
