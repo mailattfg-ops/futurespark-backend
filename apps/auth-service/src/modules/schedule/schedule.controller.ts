@@ -65,14 +65,27 @@ export const scheduleController = {
   },
 
   async delete(req: Request, res: Response) {
-    const { deleteAll } = req.query;
-    await scheduleService.deleteSchedule(
+    const { deleteAll, includeCompleted } = req.query;
+    const result = await scheduleService.deleteSchedule(
       req.params.id,
       deleteAll === 'true',
       req.headers['x-user-id'] as string | undefined,
-      req.headers['x-user-role'] as string | undefined
+      req.headers['x-user-role'] as string | undefined,
+      includeCompleted === 'true'
     );
-    return res.status(HTTP_STATUS.OK).json(successResponse(null, 'Schedule deleted successfully'));
+
+    /* The message states the real outcome. "Deleted successfully" was returned
+     * even when nothing had been deleted, which is how a programme could be
+     * reported gone and still be sitting on the page. */
+    const message =
+      result.keptCompleted > 0
+        ? `Deleted ${result.count} class(es). ${result.keptCompleted} completed class(es) were kept — ` +
+          'delete those individually, or repeat with "include completed".'
+        : result.count === 0
+          ? 'Nothing was deleted — there were no matching classes.'
+          : `Deleted ${result.count} class(es).`;
+
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, message));
   },
 
   async createReport(req: Request, res: Response) {
