@@ -57,6 +57,7 @@ echo "COMMUNICATION-SERVICE"
 C=apps/communication-service/dist/modules/whatsapp
 check "1024-char body budget"        "$C/report.service.js"  "fitBodyBudget"
 check "template-vars missing warning" "$C/whatsapp.service.js" "warnedAboutDefaultTemplateVars"
+check "outbound report-only switch"    "$C/whatsapp.service.js" "outboundMode"
 
 echo
 echo "INTEGRATION-SERVICE"
