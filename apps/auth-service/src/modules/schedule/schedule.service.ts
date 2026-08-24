@@ -544,7 +544,7 @@ export const scheduleService = {
 
     if (classType === 'DEMO') {
       const classStartTime = new Date(input.startTime);
-      const classEndTime = new Date(classStartTime.getTime() + 90 * 60 * 1000); // 90 min duration
+      const classEndTime = new Date(classStartTime.getTime() + (input.durationMinutes ?? 90) * 60 * 1000);
 
       // Check mentor conflicts
       const mentorConflicts = await db.scheduledClass.findFirst({
@@ -618,7 +618,7 @@ export const scheduleService = {
      * SAME_DAY stacks them back to back from the chosen start, so three
      * sessions from 13:00 land at 13:00, 14:30 and 16:00.
      */
-    const CLASS_DURATION_MS = 90 * 60 * 1000;
+    const CLASS_DURATION_MS = (input.durationMinutes ?? 90) * 60 * 1000;
     const cadence = input.cadence || 'WEEKLY';
     const stepMsFor = (index: number): number => {
       switch (cadence) {
@@ -782,7 +782,14 @@ export const scheduleService = {
 
     if (input.startTime) {
       startTime = new Date(input.startTime);
-      endTime = new Date(startTime.getTime() + 90 * 60 * 1000);
+      /* The class keeps ITS length across a reschedule. Forcing 90 here made
+       * every move silently stretch a 70-minute class back to an hour and a
+       * half — undoing the duration it was deliberately booked with. */
+      const durationMs =
+        classSession.endTime && classSession.startTime
+          ? Math.max(30 * 60 * 1000, new Date(classSession.endTime).getTime() - new Date(classSession.startTime).getTime())
+          : 90 * 60 * 1000;
+      endTime = new Date(startTime.getTime() + durationMs);
 
       // Check if mentor has a specific slot on this weekday and time to use accurate slot duration
       if (effectiveMentorId) {
