@@ -553,3 +553,139 @@ export const migratePromptSuite = async (): Promise<void> => {
     );
   }
 };
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * PROVIDER CREDIT BALANCE
+ *
+ * The usage ledger answers "what has this cost". It cannot answer "when do we
+ * top up", because it only knows what we spent — not what is left. A provider
+ * running dry stops every transcription and every analysis at once, and the
+ * first sign of it today is classes failing.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+export interface ProviderBalance {
+  /** Which provider this describes, for the card's heading. */
+  provider: string;
+  /** Credits still available, in USD. Null when the provider will not say. */
+  remainingUsd: number | null;
+  /** Lifetime credits purchased, in USD. Null when unknown. */
+  grantedUsd: number | null;
+  /** Lifetime spend as the PROVIDER counts it — not our own ledger. */
+  usedUsd: number | null;
+  /** True for a key with no ceiling (pay-as-you-go on an account balance). */
+  unlimited: boolean;
+  /** Populated when the balance could not be read; the card says why. */
+  error: string | null;
+  checkedAt: string;
+}
+
+const BALANCE_TTL_MS = 5 * 60 * 1000;
+let balanceCache: { value: ProviderBalance; at: number } | null = null;
+
+const num = (v: unknown): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * What is left to spend at the AI provider.
+ *
+ * Only OpenRouter is supported, because it is the only provider in use here
+ * that exposes a balance to an ordinary API key. Groq has no such endpoint, so
+ * the card says so rather than showing a confident zero.
+ *
+ * Two endpoints are tried because OpenRouter has changed shape before and this
+ * must not become the reason the costs page fails to load: `/credits` is the
+ * current one, `/auth/key` the older one that reports the same thing as a
+ * limit-minus-usage. Any failure is returned as text for the card, never
+ * thrown.
+ */
+export const getProviderBalance = async (): Promise<ProviderBalance> => {
+  if (balanceCache && Date.now() - balanceCache.at < BALANCE_TTL_MS) {
+    return balanceCache.value;
+  }
+
+  const baseUrl = (
+    process.env.AI_ANALYSIS_BASE_URL ||
+    process.env.AI_BASE_URL ||
+    process.env.AI_TRANSCRIPTION_BASE_URL ||
+    ''
+  ).replace(/\/+$/, '');
+
+  const apiKey =
+    process.env.AI_ANALYSIS_API_KEY ||
+    process.env.AI_API_KEY ||
+    process.env.AI_TRANSCRIPTION_API_KEY ||
+    '';
+
+  const base: ProviderBalance = {
+    provider: baseUrl.includes('openrouter.ai') ? 'OpenRouter' : baseUrl.includes('groq.com') ? 'Groq' : baseUrl || 'unknown',
+    remainingUsd: null,
+    grantedUsd: null,
+    usedUsd: null,
+    unlimited: false,
+    error: null,
+    checkedAt: new Date().toISOString(),
+  };
+
+  if (!baseUrl.includes('openrouter.ai')) {
+    const value = { ...base, error: `${base.provider} does not publish a credit balance to its API.` };
+    balanceCache = { value, at: Date.now() };
+    return value;
+  }
+  if (!apiKey) {
+    return { ...base, error: 'No AI API key is configured, so the balance cannot be read.' };
+  }
+
+  const headers = { Authorization: `Bearer ${apiKey}` };
+
+  try {
+    // Current endpoint: total purchased and total spent, both lifetime.
+    const res = await axios.get(`${baseUrl}/credits`, { headers, timeout: 10_000 });
+    const d = res.data?.data ?? {};
+    const granted = num(d.total_credits);
+    const used = num(d.total_usage);
+    if (granted !== null || used !== null) {
+      const value: ProviderBalance = {
+        ...base,
+        grantedUsd: granted,
+        usedUsd: used,
+        remainingUsd: granted !== null && used !== null ? granted - used : null,
+        unlimited: false,
+      };
+      balanceCache = { value, at: Date.now() };
+      return value;
+    }
+  } catch (err: any) {
+    logger.warn(`[AiAdmin] OpenRouter /credits did not answer (${err.message}); trying /auth/key.`);
+  }
+
+  try {
+    // Older endpoint. `limit: null` means the key draws on the account balance
+    // with no per-key ceiling, which is not the same as "no credit left".
+    const res = await axios.get(`${baseUrl}/auth/key`, { headers, timeout: 10_000 });
+    const d = res.data?.data ?? {};
+    const limit = num(d.limit);
+    const used = num(d.usage);
+    const value: ProviderBalance = {
+      ...base,
+      grantedUsd: limit,
+      usedUsd: used,
+      remainingUsd: limit !== null && used !== null ? limit - used : null,
+      unlimited: d.limit === null || d.limit === undefined,
+      error:
+        limit === null && used === null
+          ? 'OpenRouter answered but reported no credit figures for this key.'
+          : null,
+    };
+    balanceCache = { value, at: Date.now() };
+    return value;
+  } catch (err: any) {
+    // Not cached: a transient network failure should not fix a stale error in
+    // place for five minutes.
+    return {
+      ...base,
+      error: `Could not read the OpenRouter balance: ${err.response?.status ?? ''} ${err.message}`.trim(),
+    };
+  }
+};
