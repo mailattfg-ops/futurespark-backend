@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
-import { createHost, deleteHost, listHosts, updateHost, verifyHost, ZoomHostError } from './hosts.service';
+import { createHost, deleteHost, listHosts, updateHost, verifyHost, ZoomHostError,
+} from './hosts.service';
 
 /**
  * /zoom/hosts — the licensed Zoom seat register, managed from the admin UI.
