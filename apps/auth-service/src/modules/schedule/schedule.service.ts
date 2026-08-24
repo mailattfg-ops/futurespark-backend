@@ -1002,7 +1002,28 @@ export const scheduleService = {
    * paid for. Nothing a family legitimately does needs either; asking to move a
    * class is `updateSchedule`, and cancelling one is a status a scheduler sets.
    */
-  async deleteSchedule(id: string, deleteAll = false, callerId?: string, callerRole?: string) {
+  /**
+   * Delete one class, or a whole programme's worth.
+   *
+   * `deleteAll` used to match `status: 'SCHEDULED'` only, so a programme whose
+   * sessions had already run was reported as "deleted successfully" while every
+   * completed class stayed exactly where it was — `deleteMany` returning a
+   * count of zero is not an error, and nothing looked at the count. The only
+   * way to actually clear one was to delete each session by hand.
+   *
+   * Now: everything that has NOT run goes, and completed classes go only when
+   * the caller explicitly asks — deleting one destroys its recording link,
+   * transcript, analysis and the report a parent may already have received.
+   * Either way the real numbers come back so the caller can say what happened
+   * instead of assuming.
+   */
+  async deleteSchedule(
+    id: string,
+    deleteAll = false,
+    callerId?: string,
+    callerRole?: string,
+    includeCompleted = false
+  ) {
     if (!isUnscopedStaffRole(callerRole)) {
       throw new AppError(
         'Only an administrator or scheduler can delete a scheduled class',
@@ -1013,26 +1034,39 @@ export const scheduleService = {
     const classSession = await loadClassRecord(id);
 
     if (deleteAll) {
-      if (classSession.classType === 'REGULAR' && classSession.studentId) {
-        return db.scheduledClass.deleteMany({
-          where: {
-            studentId: classSession.studentId,
-            programId: classSession.programId,
-            status: 'SCHEDULED',
-          },
+      const who =
+        classSession.classType === 'REGULAR' && classSession.studentId
+          ? { studentId: classSession.studentId }
+          : classSession.classType === 'DEMO' && classSession.leadId
+            ? { leadId: classSession.leadId }
+            : null;
+
+      if (who) {
+        const scope = { ...who, programId: classSession.programId };
+
+        // Counted before the delete so the caller can report what was left
+        // behind, rather than a bare success on a no-op.
+        const completed = await db.scheduledClass.count({
+          where: { ...scope, status: 'COMPLETED' },
         });
-      } else if (classSession.classType === 'DEMO' && classSession.leadId) {
-        return db.scheduledClass.deleteMany({
-          where: {
-            leadId: classSession.leadId,
-            programId: classSession.programId,
-            status: 'SCHEDULED',
-          },
+
+        const { count } = await db.scheduledClass.deleteMany({
+          where: includeCompleted ? scope : { ...scope, status: { not: 'COMPLETED' } },
         });
+
+        const keptCompleted = includeCompleted ? 0 : completed;
+        logger.info(
+          `[Schedule] Bulk delete by ${callerId ?? 'unknown'}: removed ${count} class(es) for ` +
+            `${JSON.stringify(who)} on programme ${classSession.programId}` +
+            `${keptCompleted > 0 ? `, kept ${keptCompleted} completed class(es)` : ''}.`
+        );
+
+        return { count, keptCompleted };
       }
     }
 
-    return db.scheduledClass.delete({ where: { id: classSession.id } });
+    await db.scheduledClass.delete({ where: { id: classSession.id } });
+    return { count: 1, keptCompleted: 0 };
   },
 
   /**
