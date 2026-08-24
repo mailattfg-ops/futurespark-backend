@@ -176,7 +176,7 @@ export const zoomConfig = {
    * credential is used and what lands in `Meeting.organizerEmail`.
    */
   get organizerEmail(): string {
-    return readEnv('ZOOM_ORGANIZER_EMAIL') || 'zoom@meet.futurespark.com';
+    return readEnv('ZOOM_ORGANIZER_EMAIL') || 'zoom@meet.finquo.ai';
   },
 
   // ── Server-to-Server / OAuth credentials ──

@@ -37,7 +37,7 @@ services:
     ports:
       - "8080:80"
     environment:
-      - PGADMIN_DEFAULT_EMAIL=admin@futurespark.com
+      - PGADMIN_DEFAULT_EMAIL=admin@finquo.ai
       - PGADMIN_DEFAULT_PASSWORD=admin_password
     depends_on:
       - postgres
