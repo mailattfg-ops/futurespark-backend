@@ -6,6 +6,7 @@ import { db, withDbRetry } from '../../../database/datasource';
 import { ZoomAuthService } from '../auth/auth.service';
 import { logger } from '@futurespark/logger';
 import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
+import { postJsonPatient } from '../../shared/patient-post';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
 import { Semaphore, createInFlightMap, audioExtractionsInFlight } from '../../../utils/concurrency';
 
@@ -354,10 +355,13 @@ export class ZoomRecordingService {
         audioPathToSend = await S3Storage.getPresignedUrl(recording.audioPath, 3600); // 1 hour expiration
       }
 
-      const transcribeRes = await fetch(`${learnServiceUrl}/transcription/transcribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      /* Through the patient client, not global fetch: undici gives up when
+       * response headers have not arrived within five minutes, and this one
+       * request stays open for the WHOLE transcribe-and-analyse pipeline. A
+       * ninety-nine-minute class is still mid-pipeline at that mark, so every
+       * attempt died as a bare "fetch failed" until the retry budget was gone
+       * — for a recording that was never broken, only long. */
+      const transcribeRes = await postJsonPatient(`${learnServiceUrl}/transcription/transcribe`, {
           audioFilePath: audioPathToSend,
           meetUrl: recording.meeting.meetUrl,
           studentId: recording.meeting.studentId,
@@ -371,15 +375,13 @@ export class ZoomRecordingService {
           // Real recording length, so the report can print a true duration and
           // split talk time over it.
           audioSeconds: recording.duration ?? undefined,
-        }),
       });
 
       if (!transcribeRes.ok) {
-        const errText = await transcribeRes.text();
-        throw new Error(`learning-service transcription returned status ${transcribeRes.status}: ${errText}`);
+        throw new Error(`learning-service transcription returned status ${transcribeRes.status}: ${transcribeRes.text}`);
       }
 
-      const body = await transcribeRes.json() as any;
+      const body = JSON.parse(transcribeRes.text || 'null') as any;
       const result = body?.data;
 
       if (result && result.transcript) {
