@@ -431,6 +431,19 @@ export const CLOUD_MAX_TERMS = 30;
  */
 export const CLOUD_CANDIDATE_MAX = 48;
 
+/**
+ * Below this many surviving candidates, words said only ONCE are let back in.
+ *
+ * The said-twice floor was tuned for a dense, all-English ninety-minute class,
+ * where anything mentioned once is usually noise. A demo, a short class, or a
+ * lesson taught partly in Malayalam produces a fraction of the English tokens
+ * — the tokenizer reads Latin script only — and under the same floor a real
+ * session rendered "No vocabulary was captured" while the child had spent an
+ * hour talking about money, plans and school. In a thin transcript, said once
+ * IS the vocabulary.
+ */
+export const CLOUD_SINGLETON_RELAX_BELOW = 20;
+
 const CURATED_LOWER = new Set(CORE_FINANCIAL_VOCABULARY.map((t) => t.toLowerCase()));
 
 /** Whether a lexicon entry deserves to stay one term in the cloud. */
@@ -659,12 +672,19 @@ export const buildWordCloud = (
    * A deck term spoken once was still taught, and dropping it loses real
    * vocabulary while filler said twice survives. Lesson vocabulary therefore
    * needs one mention; everything else still needs two. */
-  const ranked = [...groups.values()]
-    .filter((e) => e.n >= 2 || e.inLexicon)
+  const cleaned = [...groups.values()]
     // Capitalised at every occurrence including mid-sentence = a proper noun.
     .filter((e) => !(e.cap === e.n && e.midCap > 0 && !ACRONYMS.has(e.display.toUpperCase())))
-    .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display))
-    .slice(0, CLOUD_CANDIDATE_MAX);
+    .sort((a, b) => b.n - a.n || a.display.localeCompare(b.display));
+
+  let ranked = cleaned.filter((e) => e.n >= 2 || e.inLexicon);
+  if (ranked.length < CLOUD_SINGLETON_RELAX_BELOW) {
+    // A thin pool: the floor is doing more deleting than the filler is. Every
+    // other rail (stopwords, contractions, proper nouns, length, vowel) still
+    // applies — this only forgives being said once.
+    ranked = cleaned;
+  }
+  ranked = ranked.slice(0, CLOUD_CANDIDATE_MAX);
   if (ranked.length === 0) return [];
 
   const max = ranked[0].n;
