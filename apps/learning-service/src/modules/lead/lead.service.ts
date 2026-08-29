@@ -18,6 +18,88 @@ export const leadService = {
     });
   },
 
+  /**
+   * A PilotLead presented in the Lead shape the demo-class portal expects.
+   *
+   * The two tables ask for the same facts under different column names — one
+   * `parentName` where the other has `firstName`/`lastName`. Splitting on the
+   * first space is imperfect for compound surnames, but the alternative is
+   * showing the family a blank where their name belongs.
+   */
+  async getPilotLeadAsLead(id: string) {
+    const pilot = await (db as any).pilotLead.findUnique({ where: { id } });
+    if (!pilot) throw new AppError('Lead not found', HTTP_STATUS.NOT_FOUND);
+
+    const splitName = (full: string | null | undefined): [string, string] => {
+      const parts = String(full ?? '').trim().split(/\s+/).filter(Boolean);
+      if (parts.length === 0) return ['', ''];
+      return [parts[0], parts.slice(1).join(' ')];
+    };
+
+    const [parentFirst, parentLast] = splitName(pilot.parentName);
+    const [studentFirst, studentLast] = splitName(pilot.studentName);
+
+    // Pilot demos booked through the scheduler stamp the class with this same
+    // id, so the join link appears here the moment one is scheduled — exactly
+    // as it does for a regular demo lead.
+    const latestClass = await db.scheduledClass.findFirst({
+      where: { leadId: id },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        meetingLink: true,
+        startTime: true,
+        endTime: true,
+        status: true,
+        classType: true,
+      },
+    });
+
+    return {
+      id: pilot.id,
+      firstName: parentFirst,
+      lastName: parentLast,
+      email: pilot.parentEmail,
+      phone: pilot.parentPhone,
+      studentFirstName: studentFirst,
+      studentLastName: studentLast,
+      source: 'Pilot Program',
+      status: pilot.status,
+      programId: null,
+      program: null,
+      notes: pilot.telecallerNotes ?? null,
+      demoClass: true,
+      preferredDays: pilot.preferredSlotDate ? [pilot.preferredSlotDate] : [],
+      preferredTime: pilot.preferredSlotTime ?? null,
+      preferredTimezone: pilot.preferredTimezone ?? 'Asia/Kolkata',
+      telecallerNotes: pilot.telecallerNotes ?? null,
+      createdAt: pilot.createdAt,
+      updatedAt: pilot.updatedAt,
+      // Pilot-only detail the regular Lead has no column for. Additive, so a
+      // reader expecting a Lead is unaffected.
+      isPilotLead: true,
+      studentGrade: pilot.studentGrade ?? null,
+      presentCountry: pilot.presentCountry ?? null,
+      preferredLanguage: pilot.preferredLanguage ?? null,
+      scheduledClass: latestClass || null,
+      meetingUrl: latestClass?.meetingLink || null,
+      meetingLink: latestClass?.meetingLink || null,
+    };
+  },
+
+  /**
+   * Confirm a row exists in the Lead table, and only there.
+   *
+   * `getLeadById` now answers for pilot applicants too, which is right for the
+   * public portal read but wrong for the writers below: they all call
+   * `db.lead.update`/`delete`, so accepting a pilot id would turn a clean 404
+   * into a raw Prisma "record not found" from one line further down.
+   */
+  async assertLeadExists(id: string) {
+    const found = await db.lead.findUnique({ where: { id }, select: { id: true } });
+    if (!found) throw new AppError('Lead not found', HTTP_STATUS.NOT_FOUND);
+  },
+
   async getLeadById(id: string) {
     const lead = await db.lead.findUnique({
       where: { id },
@@ -31,7 +113,12 @@ export const leadService = {
       },
     });
 
-    if (!lead) throw new AppError('Lead not found', HTTP_STATUS.NOT_FOUND);
+    // A pilot applicant is a lead to the family holding the link, but lives in
+    // its own table — so /demo-class?leadId=<pilotId> used to 404 here and the
+    // parent got a dead page. Rather than teach the landing page a second
+    // endpoint and a second response shape, the one public lookup answers for
+    // both and returns the shape the page already reads.
+    if (!lead) return this.getPilotLeadAsLead(id);
 
     // Fetch the latest scheduled class for this lead (if any)
     const latestClass = await db.scheduledClass.findFirst({
@@ -153,7 +240,7 @@ export const leadService = {
   },
 
   async updateLead(id: string, input: UpdateLeadInput) {
-    await this.getLeadById(id);
+    await this.assertLeadExists(id);
     return db.lead.update({
       where: { id },
       data: {
@@ -206,7 +293,7 @@ export const leadService = {
     paymentMethod: string;
     telecallerNotes?: string;
   }) {
-    await this.getLeadById(id);
+    await this.assertLeadExists(id);
     return db.lead.update({
       where: { id },
       data: {
@@ -232,7 +319,7 @@ export const leadService = {
   },
 
   async verifyPayment(id: string, adminUserId: string) {
-    await this.getLeadById(id);
+    await this.assertLeadExists(id);
     return db.lead.update({
       where: { id },
       data: {
@@ -253,7 +340,7 @@ export const leadService = {
   },
 
   async deleteLead(id: string) {
-    await this.getLeadById(id);
+    await this.assertLeadExists(id);
     return db.lead.delete({
       where: { id },
     });
