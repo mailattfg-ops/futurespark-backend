@@ -78,7 +78,12 @@ export const pilotLeadService = {
           sessionDate: input.preferredSlotDate || 'to be confirmed',
           sessionTime: input.preferredSlotTime || 'to be confirmed',
           timezone: input.preferredTimezone || 'Asia/Kolkata',
-          joinUrl: baseUrl.replace(/\/$/, ''),
+          // The same portal link the regular demo form sends. It has to carry
+          // the lead's own id: the page looks the enquiry up by it to show the
+          // family their slot and, once a mentor is assigned, their join
+          // button. A bare landing-page URL would have opened a page that
+          // knows nothing about them.
+          joinUrl: `${baseUrl.replace(/\/$/, '')}/demo-class?leadId=${lead.id}`,
         }),
       }).catch((err) => {
         console.error('[Pilot Lead WhatsApp Dispatch Error]', err?.message);
