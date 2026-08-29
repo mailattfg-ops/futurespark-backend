@@ -1647,23 +1647,64 @@ export class GroqTranscriptionService {
    *     and re-added even if the model drops it.
    *   - Order and weights are the code's, computed from how often each word
    *     was actually spoken. The model has no say in sizing.
-   *   - Any failure keeps the lesson vocabulary rather than the raw list: a
-   *     sparse clean cloud beats a rich dirty one in a parent's document.
+   *   - Any failure keeps the mechanically cleaned candidates minus a short
+   *     static filler list. A failure used to keep lesson vocabulary ALONE,
+   *     which quietly reproduced the two-word cloud the allowlist experiment
+   *     was rejected for: a parent saw "needs - wants - savings" and nothing
+   *     else whenever the prune call so much as timed out.
+   *   - The model's verdict has a floor (AI_CLOUD_MIN_TERMS, default 12): keep
+   *     fewer than that and the strongest cleaned candidates come back in. A
+   *     full cloud carrying one ordinary word reads better than three words
+   *     on an empty panel.
    *
    * The result is stored with the analysis, so a given class renders the same
    * cloud every time it is opened.
    */
+  /**
+   * Conversational filler no parent-facing cloud should carry, caught by rule
+   * so the FALLBACK cloud is clean too. Deliberately short and unambiguous:
+   * lexicon terms bypass it entirely, and a finance lesson's own ordinary
+   * words (money, spend, plan, cost) are exactly what must NOT be here —
+   * "needs" and "wants" are curriculum in this catalogue, not filler.
+   */
+  private static readonly CLOUD_FILLER = new Set([
+    'basically', 'actually', 'literally', 'really', 'okay', 'ok', 'yeah', 'alright',
+    'gonna', 'wanna', 'getting', 'gets', 'goes', 'going', 'come', 'comes', 'coming',
+    'follow', 'follows', 'following', 'easier', 'harder', 'less', 'more', 'most',
+    'many', 'much', 'very', 'thing', 'things', 'stuff', 'lot', 'lots', 'kind', 'sort',
+    'bit', 'said', 'saying', 'says', 'tell', 'telling', 'told', 'talk', 'talking',
+    'talked', 'look', 'looking', 'looked', 'see', 'seeing', 'seen', 'saw',
+    'designed', 'discussing', 'discussed', 'building', 'built', 'fair', 'nice',
+    'good', 'great', 'better', 'best', 'little', 'big', 'small', 'different',
+    'example', 'examples',
+  ]);
+
+  /**
+   * The cloud when the model's judgement is unavailable or unusable.
+   *
+   * Not lexicon-only: session-evidence records that a strict deck gate
+   * produced a two-word cloud for a real class, and the lexicon-only fallback
+   * was the same gate wearing a different name. The candidates arriving here
+   * have already been mechanically cleaned — stopwords, contractions, proper
+   * nouns, the said-twice floor — so they are presentable; this subtracts only
+   * the known filler the AI pass exists to catch.
+   */
+  private cloudFallback(candidates: WordCloudEntry[]): WordCloudEntry[] {
+    return candidates
+      .filter((c) => c.inLexicon || !GroqTranscriptionService.CLOUD_FILLER.has(c.word.toLowerCase()))
+      .slice(0, CLOUD_MAX_TERMS);
+  }
+
   private async pruneWordCloud(
     candidates: WordCloudEntry[],
     context: { sessionTitle: string | null; plannedTopics: string[] }
   ): Promise<WordCloudEntry[]> {
     if (candidates.length === 0) return candidates;
 
-    const protectedTerms = candidates.filter((c) => c.inLexicon);
-    const fallback = (protectedTerms.length > 0 ? protectedTerms : candidates).slice(0, CLOUD_MAX_TERMS);
+    const fallback = this.cloudFallback(candidates);
 
     if (!this.hasAnalysisKey) {
-      logger.warn('[GroqTranscriptionService] No analysis key — keeping lesson vocabulary only in the word cloud.');
+      logger.warn('[GroqTranscriptionService] No analysis key — keeping the rule-cleaned candidates in the word cloud.');
       return fallback;
     }
 
@@ -1737,7 +1778,7 @@ export class GroqTranscriptionService {
       const parsed = this.parseJson(response.data?.choices?.[0]?.message?.content ?? '');
       const keepRaw = Array.isArray(parsed?.keep) ? parsed.keep : null;
       if (!keepRaw) {
-        logger.warn('[GroqTranscriptionService] Word-cloud prune returned no usable list — keeping lesson vocabulary.');
+        logger.warn('[GroqTranscriptionService] Word-cloud prune returned no usable list — keeping the rule-cleaned candidates.');
         return fallback;
       }
 
@@ -1748,8 +1789,32 @@ export class GroqTranscriptionService {
 
       const removed = candidates.length - kept.length;
       if (kept.length === 0) {
-        logger.warn('[GroqTranscriptionService] Word-cloud prune removed everything — keeping lesson vocabulary instead.');
+        logger.warn('[GroqTranscriptionService] Word-cloud prune removed everything — keeping the rule-cleaned candidates instead.');
         return fallback;
+      }
+
+      /* The floor. A prune that keeps three words is not judgement, it is a
+       * broken cloud — and "keep about thirty" in the prompt does not bind a
+       * model having a bad day. Below the floor, the strongest cleaned
+       * candidates come back in (filler still excluded), then the whole set is
+       * re-ranked to the candidates' original frequency order so sizing stays
+       * honest. */
+      const minTerms = Math.min(readNumberEnv('AI_CLOUD_MIN_TERMS', 12), candidates.length);
+      let survivors = [...kept];
+      if (survivors.length < minTerms) {
+        const have = new Set(survivors.map((c) => c.word.toLowerCase()));
+        for (const c of this.cloudFallback(candidates)) {
+          if (survivors.length >= minTerms) break;
+          const key = c.word.toLowerCase();
+          if (!have.has(key)) {
+            have.add(key);
+            survivors.push(c);
+          }
+        }
+        survivors = candidates.filter((c) => have.has(c.word.toLowerCase()));
+        logger.info(
+          `[GroqTranscriptionService] Word-cloud prune kept only ${kept.length} — topped up to ${survivors.length} from the cleaned candidates.`
+        );
       }
 
       /* Trimmed to the panel's capacity only NOW.
@@ -1757,16 +1822,16 @@ export class GroqTranscriptionService {
        * Trimming before the prune wasted slots on filler: thirty candidates in,
        * a third of them noise, and the parent saw twenty words. Pruning first
        * means every one of the thirty shown earned its place. */
-      const finalCloud = kept.slice(0, CLOUD_MAX_TERMS);
+      const finalCloud = survivors.slice(0, CLOUD_MAX_TERMS);
       logger.info(
-        `[GroqTranscriptionService] Word cloud pruned: ${candidates.length} candidate(s) -> ${kept.length} concept(s)` +
+        `[GroqTranscriptionService] Word cloud pruned: ${candidates.length} candidate(s) -> ${survivors.length} concept(s)` +
           `${removed > 0 ? ` (${removed} common word(s) removed)` : ''}` +
-          `${kept.length > finalCloud.length ? `, showing the top ${finalCloud.length}` : ''}.`
+          `${survivors.length > finalCloud.length ? `, showing the top ${finalCloud.length}` : ''}.`
       );
       return finalCloud;
     } catch (err: any) {
       logger.warn(
-        `[GroqTranscriptionService] Word-cloud prune failed (${err.message}) — keeping lesson vocabulary only.`
+        `[GroqTranscriptionService] Word-cloud prune failed (${err.message}) — keeping the rule-cleaned candidates.`
       );
       return fallback;
     }

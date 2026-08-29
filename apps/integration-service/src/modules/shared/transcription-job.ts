@@ -69,7 +69,12 @@ export const startTranscriptionJob = (
         summary: 'The system finished transcribing a class recording',
       });
     } catch (err: any) {
-      const message = err?.message ?? String(err);
+      // undici reports every network-level failure as a bare "fetch failed"
+      // and puts the actual reason in `cause`. Keep both: the stored error is
+      // the only diagnosis an operator gets, and twelve attempts' worth of
+      // "fetch failed" diagnosed nothing.
+      const cause = err?.cause?.message || err?.cause?.code;
+      const message = [err?.message ?? String(err), cause].filter(Boolean).join(' — ');
       logger.error(`[TranscriptionJob] Transcription failed for ${recordingId}: ${message}`);
       await recordTranscriptionFailure(recordingId, message);
       recordSystemEvent({
