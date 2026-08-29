@@ -49,9 +49,46 @@ const backoffFor = (message: string): { ms: number; reason: string } => {
   return { ms: GENERIC_BACKOFF_MS, reason: 'transient failure' };
 };
 
+/**
+ * The provider account is out of money.
+ *
+ * Matched on the message because that is all a caller has by the time the
+ * failure crosses two services. Anchored forms only ("http 402", not bare
+ * "402") so a stray digit sequence in a uuid cannot classify a real failure
+ * as a billing one.
+ */
+const isBillingFailure = (message: string): boolean =>
+  /http 402|status 402|out of credits|requires at least \$|insufficient credit|payment required/i.test(
+    message || ''
+  );
+
 /** Record a failed attempt and schedule the next one. */
 export const recordTranscriptionFailure = async (recordingId: string, error: string): Promise<void> => {
   try {
+    /* ── A billing outage is not the recording's fault ────────────────────
+     * Out of credits fails EVERY recording the sweep touches, identically,
+     * until someone tops up. Charging attempts for that ran whole backlogs
+     * to permanent FAILED during one empty-balance afternoon — recordings
+     * that had never once been tried against a working account. No attempt
+     * is spent: the recording stays PENDING and retries hourly, so the
+     * error message's promise that "the retry daemon will finish the
+     * backlog once credit is restored" is actually kept. */
+    if (isBillingFailure(error)) {
+      await db.meetingRecording.update({
+        where: { id: recordingId },
+        data: {
+          transcriptionStatus: 'PENDING',
+          transcriptionError: error.slice(0, 1000),
+          transcriptionRetryAt: new Date(Date.now() + HOURLY_BACKOFF_MS),
+        },
+      });
+      logger.warn(
+        `[TranscriptionRetry] Recording ${recordingId} hit a provider billing failure (out of credits). ` +
+          'No attempt was charged — it retries hourly until the balance is topped up.'
+      );
+      return;
+    }
+
     const current = await db.meetingRecording.findUnique({
       where: { id: recordingId },
       select: { transcriptionAttempts: true },
