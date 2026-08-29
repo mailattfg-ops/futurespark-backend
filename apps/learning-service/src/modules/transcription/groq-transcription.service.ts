@@ -1652,7 +1652,7 @@ export class GroqTranscriptionService {
    *     which quietly reproduced the two-word cloud the allowlist experiment
    *     was rejected for: a parent saw "needs - wants - savings" and nothing
    *     else whenever the prune call so much as timed out.
-   *   - The model's verdict has a floor (AI_CLOUD_MIN_TERMS, default 12): keep
+   *   - The model's verdict has a floor (AI_CLOUD_MIN_TERMS, default 18): keep
    *     fewer than that and the strongest cleaned candidates come back in. A
    *     full cloud carrying one ordinary word reads better than three words
    *     on an empty panel.
@@ -1675,6 +1675,7 @@ export class GroqTranscriptionService {
     'bit', 'said', 'saying', 'says', 'tell', 'telling', 'told', 'talk', 'talking',
     'talked', 'look', 'looking', 'looked', 'see', 'seeing', 'seen', 'saw',
     'designed', 'discussing', 'discussed', 'building', 'built', 'fair', 'nice',
+    'fine', 'totally',
     'good', 'great', 'better', 'best', 'little', 'big', 'small', 'different',
     'example', 'examples',
   ]);
@@ -1702,6 +1703,12 @@ export class GroqTranscriptionService {
     if (candidates.length === 0) return candidates;
 
     const fallback = this.cloudFallback(candidates);
+
+    /* Nothing to prune. When the pool is already at or under the floor, the
+     * model can only shrink a cloud that is too small — so it is not asked. */
+    if (candidates.length <= readNumberEnv('AI_CLOUD_MIN_TERMS', 18)) {
+      return fallback;
+    }
 
     if (!this.hasAnalysisKey) {
       logger.warn('[GroqTranscriptionService] No analysis key — keeping the rule-cleaned candidates in the word cloud.');
@@ -1799,7 +1806,7 @@ export class GroqTranscriptionService {
        * candidates come back in (filler still excluded), then the whole set is
        * re-ranked to the candidates' original frequency order so sizing stays
        * honest. */
-      const minTerms = Math.min(readNumberEnv('AI_CLOUD_MIN_TERMS', 12), candidates.length);
+      const minTerms = Math.min(readNumberEnv('AI_CLOUD_MIN_TERMS', 18), candidates.length);
       let survivors = [...kept];
       if (survivors.length < minTerms) {
         const have = new Set(survivors.map((c) => c.word.toLowerCase()));
