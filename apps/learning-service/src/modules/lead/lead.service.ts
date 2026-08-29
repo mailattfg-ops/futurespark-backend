@@ -92,6 +92,24 @@ export const leadService = {
       },
     });
 
+    // Dispatch System In-App Notification for Lead Creation
+    const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
+    const parentName = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim() || 'Parent';
+    const studentName = [lead.studentFirstName, lead.studentLastName].filter(Boolean).join(' ').trim() || lead.studentFirstName || 'Student';
+
+    fetch(`${COMMUNICATION_SERVICE_URL}/notifications`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipientId: 'ADMIN',
+        title: 'New Demo Class Lead',
+        message: `New Demo Class lead request from ${parentName} for student ${studentName}. Phone: ${lead.phone || 'N/A'}, Email: ${lead.email}`,
+        priority: 'HIGH',
+      }),
+    }).catch((err) => {
+      console.error('[Lead Notification Dispatch Error]', err?.message);
+    });
+
     // Trigger WhatsApp session reminder asynchronously
     if (lead.phone) {
       const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';

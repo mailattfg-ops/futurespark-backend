@@ -208,7 +208,8 @@ export const whatsappConfig = {
    * line of configuration, not by auditing four.
    */
   get outboundMode(): 'report-only' | 'all' {
-    return readEnv('WHATSAPP_OUTBOUND_MODE') === 'all' ? 'all' : 'report-only';
+    const mode = readEnv('WHATSAPP_OUTBOUND_MODE');
+    return mode === 'report-only' ? 'report-only' : 'all';
   },
 
   get autoReplyEnabled(): boolean {
