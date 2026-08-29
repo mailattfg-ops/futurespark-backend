@@ -19,7 +19,7 @@ export const pilotLeadService = {
   },
 
   async createPilotLead(input: CreatePilotLeadInput) {
-    return (db as any).pilotLead.create({
+    const lead = await (db as any).pilotLead.create({
       data: {
         parentName: input.parentName,
         studentName: input.studentName,
@@ -36,6 +36,23 @@ export const pilotLeadService = {
         telecallerNotes: input.telecallerNotes || null,
       },
     });
+
+    // Dispatch System In-App & WhatsApp Notification for Pilot Lead Application
+    const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
+    fetch(`${COMMUNICATION_SERVICE_URL}/notifications`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipientId: 'ADMIN',
+        title: 'New Pilot Program Application',
+        message: `New 1-on-1 Mentorship Pilot lead: ${input.parentName} for student ${input.studentName} (Grade ${input.studentGrade}). Phone: ${input.parentPhone}, Email: ${input.parentEmail}`,
+        priority: 'HIGH',
+      }),
+    }).catch((err) => {
+      console.error('[Pilot Lead Notification Dispatch Error]', err.message);
+    });
+
+    return lead;
   },
 
   async updatePilotLead(id: string, input: UpdatePilotLeadInput) {

@@ -14,6 +14,8 @@
     "stop": "pkill -f 'node dist/server.js' || true",
     "restart": "npm run stop && sleep 2 && npm start",
     "dev": "concurrently -n \"analytics,auth,comm,gateway,integration,learning,payment\" -c \"blue,green,magenta,cyan,yellow,white,red\" \"npm run dev -w @futurespark/analytics-service\" \"npm run dev -w @futurespark/auth-service\" \"npm run dev -w @futurespark/communication-service\" \"npm run dev -w @futurespark/gateway\" \"npm run dev -w @futurespark/integration-service\" \"npm run dev -w @futurespark/learning-service\" \"npm run dev -w @futurespark/payment-service\"",
+    "db:clean": "ts-node -r dotenv/config ./scripts/clear-data-keep-admin.ts",
+    "db:seed:admin": "ts-node -r dotenv/config ./scripts/seed-admin-credentials.ts",
     "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
