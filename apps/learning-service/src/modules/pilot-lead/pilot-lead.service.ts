@@ -37,7 +37,7 @@ export const pilotLeadService = {
       },
     });
 
-    // Dispatch System In-App & WhatsApp Notification for Pilot Lead Application
+    // Tell the team, in-app.
     const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
     fetch(`${COMMUNICATION_SERVICE_URL}/notifications`, {
       method: 'POST',
@@ -51,6 +51,39 @@ export const pilotLeadService = {
     }).catch((err) => {
       console.error('[Pilot Lead Notification Dispatch Error]', err.message);
     });
+
+    // Tell the family, on WhatsApp.
+    //
+    // The block above is addressed to `recipientId: 'ADMIN'` — a literal
+    // string, not a user id — so it could only ever raise the admin's bell
+    // icon. Nothing here has ever messaged the parent: `parentPhone` was
+    // collected by the form, stored, and read by no one. The regular demo
+    // lead flow in lead.service.ts has always done this properly; the pilot
+    // form is a separate table and a separate function, and never got the
+    // same wiring. This is that wiring, deliberately identical to it so the
+    // two forms behave the same way and are fixed in the same place.
+    if (input.parentPhone) {
+      const baseUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
+      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/session-reminder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: input.parentPhone,
+          parentName: input.parentName || 'Parent',
+          studentName: input.studentName || 'Student',
+          courseName: '1-on-1 Financial Literacy Mentorship',
+          // The slot the parent picked on the form. Falling back to today
+          // would state a date they never chose, so an unfilled slot stays
+          // unfilled and the template renders what they actually asked for.
+          sessionDate: input.preferredSlotDate || 'to be confirmed',
+          sessionTime: input.preferredSlotTime || 'to be confirmed',
+          timezone: input.preferredTimezone || 'Asia/Kolkata',
+          joinUrl: baseUrl.replace(/\/$/, ''),
+        }),
+      }).catch((err) => {
+        console.error('[Pilot Lead WhatsApp Dispatch Error]', err?.message);
+      });
+    }
 
     return lead;
   },
