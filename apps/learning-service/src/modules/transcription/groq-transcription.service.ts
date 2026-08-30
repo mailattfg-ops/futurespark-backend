@@ -1,3 +1,4 @@
+import { parseRepairedJson } from './json-repair';
 import axios from 'axios';
 const FormData = require('form-data');
 import * as fs from 'fs';
@@ -2173,7 +2174,7 @@ Return the JSON object now.`;
       envelope = passResult.envelope;
       passes = passResult.passes;
     } else {
-      envelope = parseAnalysisEnvelope(this.parseJson(await send(systemPrompt, userPrompt)));
+      envelope = parseAnalysisEnvelope(await this.sendJson(send, systemPrompt, userPrompt));
     }
 
     if (!complete && envelope.coverageNote === 'full') envelope.coverageNote = 'partial';
@@ -2268,21 +2269,49 @@ Return the JSON object now.`;
 
   /** Parse a model reply that should be JSON, tolerating a fenced block. */
   private parseJson(content: string): any {
+    /* The second attempt here used to be a bare JSON.parse on the extracted
+     * object, so a model that dropped ONE comma between two array elements
+     * escaped as a raw SyntaxError — "Expected ',' or ']' after array element
+     * at position 6988" — and abandoned a recording whose transcript had
+     * already succeeded. Syntax slips are repaired; only genuinely
+     * unparseable output is refused, and as a GroqError the caller can act on. */
+    const repaired = parseRepairedJson(content);
+    if (!repaired) {
+      throw new GroqError(
+        describeGroqFailure(new Error('The analysis model did not return parseable JSON.'), 'analysis', {
+          model: this.summaryModel,
+          provider: this.analysisProvider.label,
+        })
+      );
+    }
+    if (repaired.repair !== 'none') {
+      logger.warn(
+        `[GroqTranscriptionService] Analysis JSON needed a ${repaired.repair} repair before it parsed ` +
+          `(${this.summaryModel}). The content is unchanged; only punctuation was fixed.`
+      );
+    }
+    return repaired.value;
+  }
+
+  /**
+   * Send one analysis request and parse its JSON — asking a second time if
+   * the first answer cannot be parsed even after repair. Models are not
+   * deterministic about punctuation; a re-ask is cheap, an abandoned class
+   * is not.
+   */
+  private async sendJson(
+    send: (system: string, user: string) => Promise<string>,
+    system: string,
+    user: string
+  ): Promise<any> {
     try {
-      return JSON.parse(content);
-    } catch {
-      // Belt and braces: some models still wrap JSON in a fence even under
-      // json_object mode.
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) {
-        throw new GroqError(
-          describeGroqFailure(new Error('The analysis model did not return parseable JSON.'), 'analysis', {
-            model: this.summaryModel,
-            provider: this.analysisProvider.label,
-          })
-        );
-      }
-      return JSON.parse(match[0]);
+      return this.parseJson(await send(system, user));
+    } catch (err: any) {
+      if (!/parseable JSON/.test(String(err?.message))) throw err;
+      logger.warn('[GroqTranscriptionService] Analysis JSON was unparseable — asking the model once more.');
+      return this.parseJson(
+        await send(system, `${user}\n\nReturn ONLY a single valid JSON object. No prose, no code fence, no trailing commas.`)
+      );
     }
   }
 
@@ -2438,7 +2467,7 @@ Return the JSON now.`;
       await pacer.waitFor(estimateTokens(passSystem + user) + 900);
 
       try {
-        parts.push(parseAnalysisEnvelope(this.parseJson(await send(passSystem, user))));
+        parts.push(parseAnalysisEnvelope(await this.sendJson(send, passSystem, user)));
         logger.info(`[GroqTranscriptionService] Pass ${i + 1}/${slices.length} complete.`);
       } catch (err: any) {
         // One bad slice must not cost the whole report — but it must not be
@@ -2500,7 +2529,7 @@ Return the JSON object now.`;
     );
 
     await pacer.waitFor(estimateTokens(reduceSystem + reduceUser) + 6000);
-    const narrative = parseAnalysisEnvelope(this.parseJson(await send(reduceSystem, reduceUser)));
+    const narrative = parseAnalysisEnvelope(await this.sendJson(send, reduceSystem, reduceUser));
     merged.narrative = narrative.narrative;
 
     logger.info(
