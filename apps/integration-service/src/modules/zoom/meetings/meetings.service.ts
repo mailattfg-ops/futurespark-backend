@@ -51,6 +51,8 @@ export interface UpdateZoomMeetingInput {
   timezone?: string;
   attendees?: string[];
   status?: string;
+  /** When a move must re-home the room, cancel the old one (default true). */
+  releaseOld?: boolean;
 }
 
 export type ZoomServiceErrorCode =
@@ -828,7 +830,8 @@ export class ZoomMeetingsService {
     // prevent. A Zoom meeting cannot change owner, so the seat has to still be
     // free in the NEW window. Checked under the pool lock so a concurrent
     // create cannot take the seat in between.
-    return db.$transaction(
+    const clashRef: { hit: { id: string; title: string } | null } = { hit: null };
+    const moved = await db.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', HOST_POOL_LOCK_KEY);
 
@@ -845,14 +848,10 @@ export class ZoomMeetingsService {
         });
 
         if (clash) {
-          const window = formatWindow(nextStart, nextEnd, input.timezone || meeting.timezone);
-          throw new ZoomServiceError(
-            'ZOOM_HOST_POOL_EXHAUSTED',
-            `Cannot move this class to ${window}: its Zoom host seat (${meeting.zoomHostEmail}) is already ` +
-              `hosting "${clash.title}" in that window, and a Zoom meeting cannot be handed to a different host. ` +
-              `Cancel and rebook the session to have a free seat allocated for the new time.`,
-            { host: meeting.zoomHostEmail, conflictingMeetingId: clash.id }
-          );
+          // Decided here, acted on OUTSIDE this transaction: re-homing books
+          // a new room through `create`, which takes this same pool lock.
+          clashRef.hit = clash;
+          return null;
         }
 
         const zoomSynced = await this.syncZoomPatch(meeting, zoomPatch, auth);
@@ -861,6 +860,64 @@ export class ZoomMeetingsService {
       },
       { timeout: zoomConfig.createTimeoutMs, maxWait: zoomConfig.createMaxWaitMs }
     );
+    if (moved) return moved;
+
+    /* The seat is taken in the new window, and Zoom cannot hand a meeting to
+     * another host. This used to refuse with "cancel and rebook" — advice the
+     * caller swallowed, so the class moved in the app while Zoom kept the old
+     * time and nobody was told. The move now IS the cancel-and-rebook: a new
+     * room on whichever seat is free. */
+    logger.warn(
+      `[ZoomMeetingsService] Seat ${meeting.zoomHostEmail} is hosting "${clashRef.hit?.title}" in the new window — ` +
+        `re-homing meeting ${meeting.id} onto a free seat.`
+    );
+    return this.rehome(meeting, nextStart, nextEnd, nextTimezone, input.releaseOld !== false);
+  }
+
+  /**
+   * A new room on a free seat, for a meeting whose own seat is taken in its
+   * new window. Created FIRST so a failed allocation loses nothing; the old
+   * room is cancelled only when no other class still points at its link.
+   */
+  private static async rehome(
+    meeting: Awaited<ReturnType<typeof ZoomMeetingsService.get>>,
+    start: Date,
+    end: Date,
+    timezone: string,
+    releaseOld: boolean
+  ) {
+    const fresh = await this.create(meeting.organizerEmail, {
+      title: meeting.title,
+      description: meeting.description ?? undefined,
+      startTime: start.toISOString(),
+      endTime: end.toISOString(),
+      timezone,
+      attendees: [],
+      teacherId: meeting.teacherId,
+      studentId: meeting.studentId,
+      programId: meeting.programId,
+      sessionId: meeting.sessionId,
+      // The people-level clash was already judged (and possibly overridden)
+      // by the scheduler upstream; this is the same class, moved.
+      allowConflict: true,
+    });
+
+    let oldReleased = false;
+    if (releaseOld) {
+      // ponytail: a refused delete leaves the old room standing — logged, not fatal; the class points at the new room either way
+      oldReleased = await this.delete(meeting.id)
+        .then((r) => r.zoomSynced)
+        .catch((err: any) => {
+          logger.error(
+            `[ZoomMeetingsService] Re-homed meeting ${meeting.id} but could not cancel its old room: ${err.message}`
+          );
+          return false;
+        });
+    } else {
+      logger.info(`[ZoomMeetingsService] Old room of meeting ${meeting.id} kept — other classes still use its link.`);
+    }
+
+    return { ...fresh, rehomed: true, oldReleased, previousMeetingId: meeting.id };
   }
 
   /**
@@ -939,7 +996,8 @@ export class ZoomMeetingsService {
     zoomUrl: string,
     newStartTime: string,
     newEndTime: string,
-    timezone?: string
+    timezone?: string,
+    releaseOld = true
   ) {
     const meeting = await withDbRetry(() =>
       db.meeting.findFirst({
@@ -959,6 +1017,7 @@ export class ZoomMeetingsService {
     return this.update(meeting.id, {
       startTime: newStartTime,
       endTime: newEndTime,
+      releaseOld,
       // The scheduler sends a timezone and it used to be dropped on the floor
       // here and in the controller, so a class moved across a DST boundary
       // kept the old zone.

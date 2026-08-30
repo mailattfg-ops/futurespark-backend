@@ -927,6 +927,27 @@ export const scheduleService = {
       Boolean(input.startTime) &&
       new Date(classSession.startTime).getTime() !== new Date(startTime).getTime();
 
+    /* Move the room BEFORE the class, and never quietly. A refusal now stops
+     * the reschedule; a busy Zoom seat re-homes the room onto a free host,
+     * which means this class gets a NEW join link. */
+    let rehomedLink: string | null = null;
+    let notice: string | null = null;
+    const linkToMove = input.meetingLink !== undefined ? input.meetingLink : classSession.meetingLink;
+    if (slotMoved && linkToMove) {
+      // One room is often booked for a whole programme. The old room is
+      // released only when this class was its sole remaining user.
+      const sharedBy = await db.scheduledClass.count({
+        where: { id: { not: id }, meetingLink: linkToMove, status: { not: 'CANCELLED' } },
+      });
+      const moved = await rescheduleCalendarEvent(linkToMove, startTime, endTime, undefined, sharedBy === 0);
+      if (moved.rehomed && moved.meetingLink) {
+        rehomedLink = moved.meetingLink;
+        notice =
+          'The Zoom host for this class was busy at the new time, so the class now has a NEW join link on a free host. ' +
+          `Share the new link with the family${sharedBy === 0 ? ' — the old one has been cancelled.' : '; the old room still serves the other sessions.'}`;
+      }
+    }
+
     const updatedClass = await db.scheduledClass.update({
       where: { id },
       data: {
@@ -935,7 +956,7 @@ export const scheduleService = {
         status,
         ...(slotMoved ? { rescheduledCount: { increment: 1 } } : {}),
         mentorId: effectiveMentorId,
-        meetingLink: input.meetingLink !== undefined ? input.meetingLink : undefined,
+        meetingLink: rehomedLink ?? (input.meetingLink !== undefined ? input.meetingLink : undefined),
         rescheduleReason: input.startTime ? null : (input.rescheduleReason !== undefined ? input.rescheduleReason : undefined),
         rescheduleMessage: input.startTime ? null : (input.rescheduleMessage !== undefined ? input.rescheduleMessage : undefined),
         qaStatus: input.qaStatus !== undefined ? input.qaStatus : undefined,
@@ -954,20 +975,6 @@ export const scheduleService = {
         },
       },
     });
-
-    // Keep Google Calendar in step with the new slot. Only when the time actually
-    // moved — a status or credits edit should not touch anyone's calendar.
-    if (input.startTime && updatedClass.meetingLink) {
-      const timeChanged =
-        new Date(classSession.startTime).getTime() !== new Date(updatedClass.startTime).getTime();
-      if (timeChanged) {
-        await rescheduleCalendarEvent(
-          updatedClass.meetingLink,
-          updatedClass.startTime,
-          updatedClass.endTime
-        );
-      }
-    }
 
     let session = null;
     if (updatedClass.sessionId) {
@@ -997,7 +1004,7 @@ export const scheduleService = {
     // PUT an empty body — every field undefined, nothing refused, no-op write —
     // and read back the full row, answer key and transcript included.
     if (isUnscopedStaffRole(callerRole) || isClassAuditorRole(callerRole)) {
-      return { ...updatedClass, session };
+      return { ...updatedClass, session, ...(notice ? { notice } : {}) };
     }
     return {
       ...participantClassView(updatedClass as unknown as ClassRecord),
