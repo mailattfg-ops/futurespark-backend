@@ -82,23 +82,32 @@ async function runSyncCheck() {
       where: {
         provider: 'GOOGLE_MEET',
         status: { not: 'CANCELLED' },
-        // The mentor has closed the class out, and the publish delay has elapsed.
-        classCompletedAt: {
-          lt: eligibleSince,
-          // Bounded so a class that was genuinely never recorded is not
-          // re-searched against Drive for the rest of the year.
-          gt: new Date(now - RETRY_WINDOW_MS),
-        },
         recordingSearches: { lt: MAX_SEARCHES },
-        OR: [
-          { recordingSearchedAt: null },
-          { recordingSearchedAt: { lt: new Date(now - SEARCH_INTERVAL_MS) } },
+        AND: [
+          {
+            // The class is over — signed off by the mentor OR simply past its
+            // scheduled end — and the publish delay has elapsed. Sign-off used
+            // to be the only trigger, so a class nobody marked Completed was
+            // never searched for and its recording sat on Drive untouched
+            // until someone synced by hand. Bounded so a class that was
+            // genuinely never recorded is not re-searched all year.
+            OR: [
+              { classCompletedAt: { lt: eligibleSince, gt: new Date(now - RETRY_WINDOW_MS) } },
+              { endTime: { lt: eligibleSince, gt: new Date(now - RETRY_WINDOW_MS) } },
+            ],
+          },
+          {
+            OR: [
+              { recordingSearchedAt: null },
+              { recordingSearchedAt: { lt: new Date(now - SEARCH_INTERVAL_MS) } },
+            ],
+          },
         ],
         recordings: {
           every: { driveFileId: { startsWith: 'pending_' } },
         },
       },
-      orderBy: { classCompletedAt: 'asc' },
+      orderBy: { endTime: 'asc' },
       take: 25,
     });
 

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { GoogleRecordingService } from './recording.service';
 import { buildAiFailureBanner, parseAiFailure, hasRealName } from '../../shared/ai-failure-banner';
 import { startTranscriptionJob, isTranscriptionRunning, getTranscriptionState, describeJobState } from '../../shared/transcription-job';
+import { describePipeline } from '../../shared/pipeline-stage';
 import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
@@ -36,7 +37,12 @@ export class GoogleRecordingController {
 
   private static async listInternal(req: Request, res: Response) {
     try {
-      const recordings = await GoogleRecordingService.listRecordings();
+      const recordings = (await GoogleRecordingService.listRecordings()).map((r: any) => ({
+        ...r,
+        // Where this recording is in the pipeline, right now — the manager
+        // shows it as a badge instead of a bare download status.
+        pipeline: describePipeline(r),
+      }));
       return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Recordings retrieved successfully.'));
     } catch (err: any) {
       logger.error(`Error listing recordings: ${err.message}`);

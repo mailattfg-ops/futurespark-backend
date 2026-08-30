@@ -4,6 +4,7 @@ import path from 'path';
 import { ZoomRecordingService } from './recording.service';
 import { buildAiFailureBanner, parseAiFailure, hasRealName } from '../../shared/ai-failure-banner';
 import { startTranscriptionJob, isTranscriptionRunning, getTranscriptionState, describeJobState } from '../../shared/transcription-job';
+import { describePipeline } from '../../shared/pipeline-stage';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
 import { logger } from '@futurespark/logger';
@@ -24,7 +25,12 @@ export class ZoomRecordingController {
         .json(errorResponse('You can only access recordings for your own classes.'));
     }
     try {
-      const recordings = await ZoomRecordingService.listRecordings();
+      const recordings = (await ZoomRecordingService.listRecordings()).map((r: any) => ({
+        ...r,
+        // Where this recording is in the pipeline, right now — the manager
+        // shows it as a badge instead of a bare download status.
+        pipeline: describePipeline(r),
+      }));
       return res.status(HTTP_STATUS.OK).json(successResponse(recordings, 'Zoom recordings fetched successfully.'));
     } catch (err: any) {
       logger.error(`[ZoomRecordingController] list error: ${err.message}`);

@@ -9,39 +9,73 @@ import { logger } from '@futurespark/logger';
  * platform N is the number of concurrent classes, so this scales with usage
  * and saturates network, CPU and disk together.
  */
+/** Every semaphore by name, so a status endpoint can ask where a job stands. */
+const registry = new Map<string, Semaphore>();
+export const semaphoreNamed = (name: string): Semaphore | undefined => registry.get(name);
+
+export type SemaphorePlace =
+  | { state: 'active' }
+  | { state: 'queued'; position: number; queued: number };
+
 export class Semaphore {
   private active = 0;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: Array<{ key?: string; wake: () => void }> = [];
+  private readonly activeKeys = new Set<string>();
 
-  constructor(private readonly limit: number, private readonly name: string) {}
+  constructor(private readonly limit: number, private readonly name: string) {
+    registry.set(name, this);
+  }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
+    return this.runAs(undefined, fn);
+  }
+
+  /**
+   * Same as `run`, but the job is known by `key` (a recording id) so the
+   * pipeline view can say "downloading" or "3rd in the queue" about THIS
+   * recording rather than reporting bare counts.
+   */
+  async runAs<T>(key: string | undefined, fn: () => Promise<T>): Promise<T> {
+    await this.acquire(key);
     try {
       return await fn();
     } finally {
-      this.release();
+      this.release(key);
     }
   }
 
-  private acquire(): Promise<void> {
+  private acquire(key?: string): Promise<void> {
     if (this.active < this.limit) {
       this.active++;
+      if (key) this.activeKeys.add(key);
       return Promise.resolve();
     }
     logger.info(`[Semaphore:${this.name}] at capacity (${this.limit}) — queueing (${this.waiters.length + 1} waiting)`);
     return new Promise<void>((resolve) => {
-      this.waiters.push(() => {
-        this.active++;
-        resolve();
+      this.waiters.push({
+        key,
+        wake: () => {
+          this.active++;
+          if (key) this.activeKeys.add(key);
+          resolve();
+        },
       });
     });
   }
 
-  private release(): void {
+  private release(key?: string): void {
     this.active--;
+    if (key) this.activeKeys.delete(key);
     const next = this.waiters.shift();
-    if (next) next();
+    if (next) next.wake();
+  }
+
+  /** Where a keyed job stands right now, or null if it is not here at all. */
+  whereIs(key: string): SemaphorePlace | null {
+    if (this.activeKeys.has(key)) return { state: 'active' };
+    const idx = this.waiters.findIndex((w) => w.key === key);
+    if (idx >= 0) return { state: 'queued', position: idx + 1, queued: this.waiters.length };
+    return null;
   }
 
   get stats() {
@@ -91,3 +125,13 @@ export function createInFlightMap<T>(name: string) {
  * share a key, and the second joins the first instead of racing it.
  */
 export const audioExtractionsInFlight = createInFlightMap<string>('extract-audio');
+
+/**
+ * How many recordings may be inside learning-service's transcribe call at
+ * once, across Zoom AND Meet. Without this every recording started the moment
+ * its audio existed; twenty at once meant twenty uncoordinated jobs each
+ * pacing itself as if alone — which is how the rate-limit storms the retry
+ * daemon then crawled through were caused in the first place.
+ */
+const MAX_CONCURRENT_TRANSCRIPTIONS = parseInt(process.env.MAX_CONCURRENT_TRANSCRIPTIONS || '5', 10);
+export const transcriptionSemaphore = new Semaphore(MAX_CONCURRENT_TRANSCRIPTIONS, 'transcribe');

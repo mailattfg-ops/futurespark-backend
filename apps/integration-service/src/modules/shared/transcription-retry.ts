@@ -141,11 +141,16 @@ export const recordTranscriptionSuccess = async (recordingId: string): Promise<v
 };
 
 /**
- * The retry daemon.
+ * The retry daemon — a batch worker over the MeetingRecording table.
  *
- * Deliberately serial and one-at-a-time. The failure being recovered from is
- * usually "too much audio too quickly" — sending a backlog of five recordings
- * at once would reproduce it exactly.
+ * It used to take ONE recording per ten-minute tick, on the theory that the
+ * failure being recovered from was "too much audio too quickly". That made a
+ * fifteen-class hiccup a 2.5-hour recovery. API pressure is now bounded where
+ * it belongs — the transcription semaphore every path shares — so the daemon
+ * can hand a whole batch over and let the semaphore meter it.
+ *
+ * ponytail: single-process claim (the `running` flag). If a second worker
+ * process ever runs, claim with FOR UPDATE SKIP LOCKED instead.
  */
 export const startTranscriptionRetryCron = (
   transcribe: (recordingId: string, provider: string) => Promise<unknown>
@@ -155,14 +160,15 @@ export const startTranscriptionRetryCron = (
     return;
   }
 
-  const intervalMs = Number(process.env.TRANSCRIPTION_RETRY_INTERVAL_MINUTES ?? 10) * 60 * 1000;
+  const intervalMs = Number(process.env.TRANSCRIPTION_RETRY_INTERVAL_MINUTES ?? 3) * 60 * 1000;
+  const batch = Math.max(1, Number(process.env.TRANSCRIPTION_RETRY_BATCH ?? 5));
   let running = false;
 
   const tick = async () => {
     if (running) return;
     running = true;
     try {
-      const due = await db.meetingRecording.findFirst({
+      const due = await db.meetingRecording.findMany({
         where: {
           transcriptionStatus: 'PENDING',
           transcriptionAttempts: { gt: 0, lt: MAX_ATTEMPTS },
@@ -172,29 +178,32 @@ export const startTranscriptionRetryCron = (
         },
         orderBy: { transcriptionRetryAt: 'asc' },
         include: { meeting: { select: { provider: true, title: true } } },
+        take: batch,
       });
 
-      if (!due) return;
+      if (due.length === 0) return;
+      logger.info(`[TranscriptionRetry] ${due.length} recording(s) due — handing the batch to the transcription semaphore.`);
 
-      logger.info(
-        `[TranscriptionRetry] Retrying "${due.meeting?.title ?? due.fileName}" ` +
-          `(attempt ${due.transcriptionAttempts + 1}/${MAX_ATTEMPTS}).`
+      await Promise.allSettled(
+        due.map(async (row) => {
+          const name = row.meeting?.title ?? row.fileName;
+          logger.info(`[TranscriptionRetry] Retrying "${name}" (attempt ${row.transcriptionAttempts + 1}/${MAX_ATTEMPTS}).`);
+          recordSystemEvent({
+            action: 'updated',
+            entityType: 'transcription',
+            entityId: row.id,
+            entityName: name,
+            summary: `The system is retrying the transcription of "${name}" (attempt ${row.transcriptionAttempts + 1}/${MAX_ATTEMPTS})`,
+          });
+          try {
+            await transcribe(row.id, row.meeting?.provider ?? 'GOOGLE_MEET');
+            await recordTranscriptionSuccess(row.id);
+            logger.info(`[TranscriptionRetry] Recording ${row.id} transcribed on retry.`);
+          } catch (err: any) {
+            await recordTranscriptionFailure(row.id, err?.message ?? String(err));
+          }
+        })
       );
-      recordSystemEvent({
-        action: 'updated',
-        entityType: 'transcription',
-        entityId: due.id,
-        entityName: due.meeting?.title ?? due.fileName,
-        summary: `The system is retrying the transcription of "${due.meeting?.title ?? due.fileName}" (attempt ${due.transcriptionAttempts + 1}/${MAX_ATTEMPTS})`,
-      });
-
-      try {
-        await transcribe(due.id, due.meeting?.provider ?? 'GOOGLE_MEET');
-        await recordTranscriptionSuccess(due.id);
-        logger.info(`[TranscriptionRetry] Recording ${due.id} transcribed on retry.`);
-      } catch (err: any) {
-        await recordTranscriptionFailure(due.id, err?.message ?? String(err));
-      }
     } catch (err: any) {
       logger.error(`[TranscriptionRetry] Pass failed: ${err.message}`);
     } finally {
@@ -204,7 +213,7 @@ export const startTranscriptionRetryCron = (
 
   logger.info(
     `[TranscriptionRetry] Starting the transcription retry daemon (every ` +
-      `${Math.round(intervalMs / 60_000)} min, up to ${MAX_ATTEMPTS} attempts per recording).`
+      `${Math.round(intervalMs / 60_000)} min, ${batch} per tick, up to ${MAX_ATTEMPTS} attempts per recording).`
   );
   setTimeout(() => void tick(), 60_000);
   setInterval(() => void tick(), intervalMs);
