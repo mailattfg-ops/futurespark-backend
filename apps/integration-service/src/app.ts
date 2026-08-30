@@ -46,6 +46,20 @@ app.use(auditMiddleware);
 
 // Start background cron workers
 startSyncCron();
+
+/* Zoom used to depend on the recording.completed webhook alone: miss it (a
+ * restart at that second) and the class was never transcribed until someone
+ * pressed Sync. Meet has had a sweep from the start; this is Zoom's. Bounded
+ * to the last 48 h so it never walks history. */
+{
+  const minutes = Number(process.env.ZOOM_SWEEP_INTERVAL_MINUTES ?? 15);
+  const windowMs = 48 * 60 * 60 * 1000;
+  setInterval(() => {
+    ZoomRecordingService.syncAllEndedRecordings(new Date(Date.now() - windowMs)).catch((err: any) =>
+      logger.warn(`[ZoomSweep] ${err.message}`)
+    );
+  }, minutes * 60 * 1000);
+}
 // Retries transcriptions that failed for a reason that passes — chiefly the
 // Groq free tier's audio quota, which rejects the sixth class of a day purely
 // for arriving too soon. Routed by provider so a Zoom recording is retried

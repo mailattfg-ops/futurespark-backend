@@ -11,7 +11,7 @@ import { logger } from '@futurespark/logger';
 import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
 import { postJsonPatient } from '../../shared/patient-post';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
-import { Semaphore, createInFlightMap, audioExtractionsInFlight } from '../../../utils/concurrency';
+import { Semaphore, createInFlightMap, audioExtractionsInFlight, transcriptionSemaphore } from '../../../utils/concurrency';
 
 // Ceilings for the fan-out that happens when many classes end in the same window.
 // Raise these in production (bigger instance / S3-backed storage) via env.
@@ -292,7 +292,7 @@ export class GoogleRecordingService {
    */
   static async downloadRecordingFile(recordingId: string): Promise<string | null> {
     return downloadsInFlight.run(recordingId, () =>
-      downloadSemaphore.run(() => GoogleRecordingService.runDownload(recordingId))
+      downloadSemaphore.runAs(recordingId, () => GoogleRecordingService.runDownload(recordingId))
     );
   }
 
@@ -381,7 +381,7 @@ export class GoogleRecordingService {
    */
   static async extractAudioFromRecording(recordingId: string, format: 'mp3' | 'wav' = 'mp3'): Promise<string> {
     return audioExtractionsInFlight.run(recordingId, () =>
-      ffmpegSemaphore.run(() => GoogleRecordingService.runAudioExtraction(recordingId, format))
+      ffmpegSemaphore.runAs(recordingId, () => GoogleRecordingService.runAudioExtraction(recordingId, format))
     );
   }
 
@@ -600,7 +600,9 @@ export class GoogleRecordingService {
    * complete one. A second caller now joins the first instead of racing it.
    */
   static async transcribeRecording(recordingId: string) {
-    return transcriptionsInFlight.run(recordingId, () => GoogleRecordingService.runTranscription(recordingId));
+    return transcriptionsInFlight.run(recordingId, () =>
+      transcriptionSemaphore.runAs(recordingId, () => GoogleRecordingService.runTranscription(recordingId))
+    );
   }
 
   private static async runTranscription(recordingId: string) {
