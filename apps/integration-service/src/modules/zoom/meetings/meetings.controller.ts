@@ -163,7 +163,7 @@ export class ZoomMeetingsController {
 
   static async rescheduleByLink(req: Request, res: Response) {
     try {
-      const { zoomUrl, startTime, endTime, timezone } = req.body ?? {};
+      const { zoomUrl, startTime, endTime, timezone, releaseOld } = req.body ?? {};
       if (!zoomUrl || !startTime || !endTime) {
         return res.status(HTTP_STATUS.BAD_REQUEST).json(
           errorResponse('zoomUrl, startTime, and endTime are required.', { code: 'ZOOM_VALIDATION' })
@@ -176,7 +176,8 @@ export class ZoomMeetingsController {
         String(zoomUrl),
         String(startTime),
         String(endTime),
-        asOptionalString(timezone)
+        asOptionalString(timezone),
+        releaseOld !== false
       );
       return res.status(HTTP_STATUS.OK).json(successResponse(updated, 'Zoom meeting rescheduled successfully.'));
     } catch (err: any) {

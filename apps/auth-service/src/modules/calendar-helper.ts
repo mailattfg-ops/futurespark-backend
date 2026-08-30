@@ -1,27 +1,42 @@
 import { logger } from '@futurespark/logger';
+import { AppError } from '@futurespark/middleware';
+import { HTTP_STATUS } from '@futurespark/constants';
 
 const INTEGRATION_SERVICE_URL = process.env.INTEGRATION_SERVICE_URL || 'http://localhost:3006';
 
+export interface MovedMeeting {
+  /** Set only when the room had to be re-created on another host: a NEW link. */
+  meetingLink: string | null;
+  rehomed: boolean;
+}
+
 /**
- * Move the Google Calendar or Zoom event behind a class after it is rescheduled.
+ * Move the Google Calendar or Zoom event behind a class BEFORE the class moves.
+ *
+ * Refuses loudly. This used to log a failed move and return, so a class whose
+ * Zoom seat was busy in the new window moved in the app while Zoom kept the
+ * old time — and the only person who found out was the family, at the wrong
+ * hour. A refusal now stops the reschedule with the reason attached.
  */
 export const rescheduleCalendarEvent = async (
   meetingLink: string | null | undefined,
   startTime: Date,
   endTime: Date,
-  timezone?: string
-): Promise<void> => {
-  if (!meetingLink) return;
+  timezone?: string,
+  releaseOld = true
+): Promise<MovedMeeting> => {
+  const unchanged: MovedMeeting = { meetingLink: null, rehomed: false };
+  if (!meetingLink) return unchanged;
 
   const isZoom = meetingLink.includes('zoom.us');
   const endpoint = isZoom
     ? `${INTEGRATION_SERVICE_URL}/zoom/meetings/by-link`
     : `${INTEGRATION_SERVICE_URL}/google/meetings/by-link`;
-
   const payloadKey = isZoom ? 'zoomUrl' : 'meetUrl';
 
+  let res: Awaited<ReturnType<typeof fetch>>;
   try {
-    const res = await fetch(endpoint, {
+    res = await fetch(endpoint, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -29,23 +44,38 @@ export const rescheduleCalendarEvent = async (
         startTime: startTime.toISOString(),
         endTime: endTime.toISOString(),
         timezone,
+        releaseOld,
       }),
     });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      logger.error(
-        `[Meeting Helper] Could not move meeting for ${meetingLink}: ${res.status} ${errText.slice(0, 200)}.`
-      );
-      return;
-    }
-
-    logger.info(`[Meeting Helper] Meeting moved to ${startTime.toISOString()} for ${meetingLink}`);
   } catch (err: any) {
-    logger.error(
-      `[Meeting Helper] integration-service unreachable while rescheduling ${meetingLink}: ${err.message}`
+    throw new AppError(
+      `The class was not moved: the meeting service is unreachable (${err.message}). Try again shortly.`,
+      HTTP_STATUS.BAD_GATEWAY
     );
   }
+
+  if (res.status === 404) {
+    // No tracked meeting behind this link — pasted by hand, or booked before
+    // rooms were recorded. Nothing to move; the class itself still can.
+    logger.warn(`[Meeting Helper] No tracked meeting for ${meetingLink}; the class moves without it.`);
+    return unchanged;
+  }
+
+  const body: any = await res.json().catch(() => null);
+  if (!res.ok) {
+    const reason = body?.message || body?.error?.message || `HTTP ${res.status}`;
+    logger.error(`[Meeting Helper] Could not move meeting for ${meetingLink}: ${reason}`);
+    throw new AppError(`The class was not moved, because its meeting room could not be: ${reason}`, HTTP_STATUS.BAD_GATEWAY);
+  }
+
+  const data = body?.data ?? {};
+  const rehomed = data.rehomed === true;
+  const newLink: string | null = rehomed ? data.joinUrl || data.meetLink || null : null;
+  logger.info(
+    `[Meeting Helper] Meeting moved to ${startTime.toISOString()} for ${meetingLink}` +
+      (rehomed ? ` — re-homed onto a free host, new link ${newLink}` : '')
+  );
+  return { meetingLink: newLink, rehomed };
 };
 
 /**
