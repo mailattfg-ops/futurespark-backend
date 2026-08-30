@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { randomBytes } from 'crypto';
 import { logger } from '@futurespark/logger';
 import db from '../../database/datasource';
@@ -75,17 +77,59 @@ export interface WhatsAppAudienceSettings {
   masterWhatsAppEnabled: boolean;
 }
 
-let audienceSettings: WhatsAppAudienceSettings = {
-  regularParents: false,
-  pilotProgramLeads: false,
-  leadsManagement: false,
-  masterWhatsAppEnabled: false,
+/* ── Audience toggles ────────────────────────────────────────────────────────
+ * These used to live only in this variable, all defaulting to false. Every
+ * pm2 restart therefore silently switched the session report OFF until an
+ * admin re-opened Notification Settings and flipped "Regular Parents" back —
+ * and the refusal reached the operator as "failureKind: UNKNOWN" with no
+ * reason attached. Two fixes: the values are written to a small JSON file on
+ * every change and read back at boot, and the starting values come from the
+ * environment, with the report — the one message this platform sends on
+ * purpose — ON unless told otherwise.
+ * ────────────────────────────────────────────────────────────────────────── */
+const AUDIENCE_FILE = path.resolve(__dirname, '../../../data/whatsapp-audience.json');
+
+const envFlag = (name: string, fallback: boolean): boolean => {
+  const raw = readEnv(name);
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  return raw !== 'false' && raw !== '0';
 };
+
+const audienceDefaults = (): WhatsAppAudienceSettings => ({
+  regularParents: envFlag('WHATSAPP_AUDIENCE_REGULAR_PARENTS', true),
+  pilotProgramLeads: envFlag('WHATSAPP_AUDIENCE_PILOT_LEADS', false),
+  leadsManagement: envFlag('WHATSAPP_AUDIENCE_LEADS', false),
+  masterWhatsAppEnabled: envFlag('WHATSAPP_AUDIENCE_MASTER', false),
+});
+
+const loadAudienceSettings = (): WhatsAppAudienceSettings => {
+  const defaults = audienceDefaults();
+  try {
+    if (fs.existsSync(AUDIENCE_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(AUDIENCE_FILE, 'utf-8'));
+      logger.info(`[WhatsApp Config] Audience toggles restored from ${AUDIENCE_FILE}.`);
+      return { ...defaults, ...saved };
+    }
+  } catch (err: any) {
+    logger.warn(`[WhatsApp Config] Could not read saved audience toggles (${err.message}); using defaults.`);
+  }
+  return defaults;
+};
+
+let audienceSettings: WhatsAppAudienceSettings = loadAudienceSettings();
 
 export const getAudienceSettings = (): WhatsAppAudienceSettings => audienceSettings;
 
 export const updateAudienceSettings = (settings: Partial<WhatsAppAudienceSettings>): WhatsAppAudienceSettings => {
   audienceSettings = { ...audienceSettings, ...settings };
+  try {
+    fs.mkdirSync(path.dirname(AUDIENCE_FILE), { recursive: true });
+    fs.writeFileSync(AUDIENCE_FILE, JSON.stringify(audienceSettings, null, 2));
+  } catch (err: any) {
+    // ponytail: a failed write only means the toggles reset on the next restart — logged, not fatal
+    logger.error(`[WhatsApp Config] Could not persist audience toggles: ${err.message}`);
+  }
+  logger.info(`[WhatsApp Config] Audience toggles now ${JSON.stringify(audienceSettings)}.`);
   return audienceSettings;
 };
 

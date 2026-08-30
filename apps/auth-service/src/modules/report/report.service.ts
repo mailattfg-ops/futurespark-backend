@@ -570,12 +570,16 @@ const deliverPreparedReport = async (
     const result = body?.data ?? {};
 
     if (!result.success) {
-      const kind = String(result.failureKind ?? 'UNKNOWN');
+      // A policy refusal (audience toggle off, outbound mode) arrives as
+      // `skipped: true` with the reason in the envelope's message, not in
+      // `error` — it used to surface as "UNKNOWN" with nothing to act on.
+      const kind = String(result.failureKind ?? (result.skipped ? 'SKIPPED' : 'UNKNOWN'));
+      const reason: string | undefined = result.error ?? body?.message ?? undefined;
       logger.error(
-        `[Report] Class ${classId} report was NOT delivered to parent ${parentId} (${kind}): ${result.error}`
+        `[Report] Class ${classId} report was NOT delivered to parent ${parentId} (${kind}): ${reason}`
       );
-      await recordFailure(classId, kind, result.error, TERMINAL_FAILURES.has(kind));
-      return { classId, sent: false, failureKind: kind, error: result.error };
+      await recordFailure(classId, kind, reason, TERMINAL_FAILURES.has(kind));
+      return { classId, sent: false, failureKind: kind, error: reason };
     }
 
     await db.scheduledClass.update({

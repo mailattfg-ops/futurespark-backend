@@ -20,16 +20,12 @@ const router = Router();
  */
 router.post('/session-report', async (req: Request, res: Response) => {
   try {
-    const audience = getAudienceSettings();
-    if (!audience.regularParents) {
-      logger.info('[Session Report] Skipped — Audience section control for Regular Parents is DISABLED.');
-      return res.status(HTTP_STATUS.OK).json(
-        successResponse(
-          { success: false, skipped: true },
-          'Session reports are disabled: Regular Parents audience toggle is OFF.'
-        )
-      );
-    }
+    /* Not gated by the audience toggles. Those switches exist for messages
+     * the system sends on its own; the session report reaches this route
+     * because an admin pressed Send for a specific class. A toggle silently
+     * refusing that click — which is what happened — is a trap, not a
+     * safeguard. The only thing that stops a report is a real delivery
+     * failure, and that is reported back with its reason. */
     const { to, recipientId, classId, variables, document, caption } = req.body ?? {};
 
     if (!to && !recipientId) {
