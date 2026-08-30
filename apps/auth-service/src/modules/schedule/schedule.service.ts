@@ -933,7 +933,12 @@ export const scheduleService = {
     let rehomedLink: string | null = null;
     let notice: string | null = null;
     const linkToMove = input.meetingLink !== undefined ? input.meetingLink : classSession.meetingLink;
-    if (slotMoved && linkToMove) {
+    // On EVERY save that carries a time, not only when the class's own time
+    // changed: the room is compared against the Meeting table on the other
+    // side, so a class that already diverged (moved in the app, refused by
+    // Zoom under the old code) heals on its next plain save. In sync = no-op.
+    // Past classes are left alone — nothing should re-book a room that ran.
+    if (input.startTime && linkToMove && startTime.getTime() > Date.now()) {
       // One room is often booked for a whole programme. The old room is
       // released only when this class was its sole remaining user.
       const sharedBy = await db.scheduledClass.count({
