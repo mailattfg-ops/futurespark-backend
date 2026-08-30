@@ -719,7 +719,12 @@ const topicsCovered = (doc: Doc, d: ReportDocument): void => {
 const sessionHighlights = (doc: Doc, d: ReportDocument): void => {
   const items = d.highlights.slice(0, 3);
   sectionHeader(doc, 'SESSION HIGHLIGHTS', 649.5, 'what went well');
-  card(doc, M, 665.6, W, 82.5, C.cream);
+  /* Two lines per highlight. The card was sized for one line each and the
+   * text box was 20pt tall — a line and a half at this size — so a sentence
+   * that wrapped lost its second line and the parent read "…saving more
+   * aggressively for high-" and nothing after. There is 60pt of free page
+   * beneath this card; it now uses some of it. */
+  card(doc, M, 665.6, W, 108, C.cream);
 
   if (items.length === 0) {
     line(doc, 'No highlights were recorded for this session.', 59.9, 700, {
@@ -731,10 +736,12 @@ const sessionHighlights = (doc: Doc, d: ReportDocument): void => {
   }
 
   items.forEach((text, i) => {
-    const y = 677.8 + i * 25.2;
+    const y = 676 + i * 31;
     doc.circle(51.4, y + 3.4, 1.9).fill(C.amber);
     doc.font(FONT.body).fontSize(7.5).fillColor(C.ink);
-    doc.text(text, 59.9, y, { width: 486, height: 20, ellipsis: true, lineGap: 1.5 });
+    // 24pt fits two lines at 7.5pt + 1.5 gap; anything longer ends in an
+    // ellipsis at a word boundary rather than being clipped mid-word.
+    doc.text(text, 59.9, y, { width: 486, height: 24, ellipsis: true, lineGap: 1.5 });
   });
 };
 

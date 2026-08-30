@@ -405,6 +405,33 @@ const LADDER_WALKABLE_KINDS = new Set([
   'UNKNOWN',
 ]);
 
+/**
+ * Shift a chunk's [mm:ss] stamps onto the class's clock.
+ *
+ * A long recording is transcribed in 15-minute pieces and an audio-chat model
+ * stamps each piece from 00:00. Concatenated, the timeline stepped backwards
+ * at every seam, `deriveTalkShare` correctly refused to read it as a clock,
+ * and every long class fell back to share-of-words — so the one model that
+ * CAN measure talk time never got to. Only the stamp is rewritten; the words
+ * are untouched. Matches the same shapes the turn parser accepts.
+ */
+const STAMP_AT_LINE_START = /^(\s*(?:[-*•–—]\s*)?)[[(]?(\d{1,2}):(\d{2})(?::(\d{2}))?[\])]?(?=\s*[A-Za-z])/gm;
+
+export const rebaseStamps = (text: string, offsetSeconds: number): string => {
+  if (!offsetSeconds) return text;
+  return text.replace(STAMP_AT_LINE_START, (_m, lead: string, a: string, b: string, c?: string) => {
+    const within = c !== undefined ? Number(a) * 3600 + Number(b) * 60 + Number(c) : Number(a) * 60 + Number(b);
+    const total = within + offsetSeconds;
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    const two = (n: number) => String(n).padStart(2, '0');
+    // Two groups read as mm:ss, three as h:mm:ss — so past the hour the hour
+    // must be spelled out or "75:12" would parse as 75 minutes.
+    return `${lead}[${h > 0 ? `${h}:${two(m)}:${two(sec)}` : `${two(m)}:${two(sec)}`}]`;
+  });
+};
+
 export class GroqTranscriptionService {
   // Key presence is judged per RESOLVED provider, not against GROQ_API_KEY.
   // The old check tested GROQ_API_KEY specifically, so a deployment that moved
@@ -1152,7 +1179,8 @@ export class GroqTranscriptionService {
           failedChunks++;
           parts.push(`[... ${Math.round(this.chunkSeconds / 60)} minutes of this class could not be transcribed ...]`);
         } else {
-          parts.push(transcribed);
+          // Chunk i began i × chunkSeconds into the class.
+          parts.push(rebaseStamps(transcribed, i * this.chunkSeconds));
         }
       }
     } finally {
