@@ -1,6 +1,6 @@
 import db from '../../database/datasource';
 import { logger } from '@futurespark/logger';
-import { whatsappConfig } from '../whatsapp/whatsapp.service';
+import { getAudienceSettings, whatsappConfig } from '../whatsapp/whatsapp.service';
 import {
   maskPhone,
   whatsappService,
@@ -67,9 +67,33 @@ const deliverWhatsApp = async (data: {
   message: string;
 }): Promise<WhatsAppDeliveryResult> => {
   try {
+    const audience = getAudienceSettings();
+    const titleLower = (data.title || '').toLowerCase();
+    const msgLower = (data.message || '').toLowerCase();
+
+    const isPilotLead = titleLower.includes('pilot') || msgLower.includes('pilot');
+    const isSalesLead = titleLower.includes('lead') || titleLower.includes('demo') || msgLower.includes('demo');
+    const isRegularParent = titleLower.includes('parent') || msgLower.includes('parent') || titleLower.includes('session');
+
+    const shouldSend =
+      (isPilotLead && audience.pilotProgramLeads) ||
+      (isSalesLead && audience.leadsManagement) ||
+      (isRegularParent && audience.regularParents) ||
+      (!isPilotLead && !isSalesLead && !isRegularParent && (audience.regularParents || audience.pilotProgramLeads || audience.leadsManagement));
+
+    if (!shouldSend) {
+      logger.info(
+        `[Notification Service] WhatsApp message withheld for recipient ${data.recipientId} because audience toggle is DISABLED.`
+      );
+      return {
+        attempted: false,
+        delivered: false,
+        failureKind: 'WHATSAPP_DISABLED',
+        error: 'WhatsApp delivery withheld by Audience Section Control toggle settings.',
+      };
+    }
+
     if (whatsappConfig.outboundMode !== 'all') {
-      // The in-app notification row is already written by the caller — only
-      // the WhatsApp copy is being withheld, and it is policy, not a failure.
       return {
         attempted: false,
         delivered: false,

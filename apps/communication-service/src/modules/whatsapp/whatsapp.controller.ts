@@ -3,7 +3,7 @@ import { NextFunction, Request, Response } from 'express';
 import { logger } from '@futurespark/logger';
 import { HTTP_STATUS } from '@futurespark/constants';
 import db from '../../database/datasource';
-import { inboundCreatedAt, maskPhone, whatsappConfig, whatsappService } from './whatsapp.service';
+import { formatWelcomeReply, getAudienceSettings, getAutoReplyTemplate, inboundCreatedAt, maskPhone, setAutoReplyTemplate, setRuntimeAutoReply, updateAudienceSettings, whatsappConfig, whatsappService } from './whatsapp.service';
 
 /**
  * Constant-time string comparison that does not leak length.
@@ -156,9 +156,7 @@ const helpReply = (): string => {
   return lines.join('\n');
 };
 
-const welcomeReply = (name: string): string =>
-  `Hi ${name}! Welcome to ${whatsappConfig.brandName}. ✨\n\n` +
-  `How can we help you today? Reply "options" to view our menu, or "help" for a list of commands.`;
+const welcomeReply = (name: string): string => formatWelcomeReply(name);
 
 /**
  * Send an auto-reply, or log and skip when the content is unconfigured.
@@ -216,6 +214,44 @@ export const whatsappWebhookController = {
 
     logger.error('[WhatsApp Webhook] Verification failed — mode or token mismatch.');
     return res.status(HTTP_STATUS.FORBIDDEN).json({ error: 'Verification token mismatch' });
+  },
+
+  getAutoReply(req: Request, res: Response) {
+    return res.json({
+      success: true,
+      autoReplyEnabled: whatsappConfig.autoReplyEnabled,
+      autoReplyTemplateText: getAutoReplyTemplate(),
+    });
+  },
+
+  setAutoReply(req: Request, res: Response) {
+    const { enabled, templateText } = req.body || {};
+    if (typeof enabled === 'boolean') {
+      setRuntimeAutoReply(enabled);
+    }
+    if (typeof templateText === 'string') {
+      setAutoReplyTemplate(templateText);
+    }
+    return res.json({
+      success: true,
+      autoReplyEnabled: whatsappConfig.autoReplyEnabled,
+      autoReplyTemplateText: getAutoReplyTemplate(),
+    });
+  },
+
+  getAudienceSettings(req: Request, res: Response) {
+    return res.json({
+      success: true,
+      data: getAudienceSettings(),
+    });
+  },
+
+  updateAudienceSettings(req: Request, res: Response) {
+    const updated = updateAudienceSettings(req.body || {});
+    return res.json({
+      success: true,
+      data: updated,
+    });
   },
 
   /**
@@ -350,8 +386,11 @@ const handleInboundMessage = async (message: any, value: any): Promise<void> => 
     },
   });
 
-  if (!whatsappConfig.autoReplyEnabled) {
-    logger.info('[WhatsApp Webhook] Auto-reply disabled (WHATSAPP_AUTOREPLY_ENABLED=false); not replying.');
+  const audience = getAudienceSettings();
+  const allowAutoReply = audience.regularParents || audience.pilotProgramLeads || audience.leadsManagement;
+
+  if (!whatsappConfig.autoReplyEnabled || !allowAutoReply) {
+    logger.info('[WhatsApp Webhook] Auto-reply disabled (WHATSAPP_AUTOREPLY_ENABLED=false or audience toggles disabled); not replying.');
     return;
   }
 

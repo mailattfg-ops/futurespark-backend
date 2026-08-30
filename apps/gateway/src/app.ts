@@ -557,6 +557,22 @@ app.use('/api/whatsapp/webhook',
   })
 );
 
+app.use('/api/whatsapp/auto-reply',
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/webhook/auto-reply' },
+  })
+);
+
+app.use('/api/whatsapp/audience-settings',
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/webhook/audience-settings' },
+  })
+);
+
 // ── 404 Handler ────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json({ success: false, message: 'Route not found' });
