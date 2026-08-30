@@ -8,7 +8,7 @@ import { logger } from '@futurespark/logger';
 import { recordTranscriptionFailure, recordTranscriptionSuccess } from '../../shared/transcription-retry';
 import { postJsonPatient } from '../../shared/patient-post';
 import { S3Storage, getS3KeyForRecording, getMimeType } from '@futurespark/storage';
-import { Semaphore, createInFlightMap, audioExtractionsInFlight } from '../../../utils/concurrency';
+import { Semaphore, createInFlightMap, audioExtractionsInFlight, transcriptionSemaphore } from '../../../utils/concurrency';
 
 const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.MAX_CONCURRENT_DOWNLOADS || '3', 10);
 const MAX_CONCURRENT_FFMPEG = parseInt(process.env.MAX_CONCURRENT_FFMPEG || '2', 10);
@@ -199,7 +199,7 @@ export class ZoomRecordingService {
         return null;
       }
 
-      return downloadSemaphore.run(async () => {
+      return downloadSemaphore.runAs(recordingId, async () => {
         const accessToken = await ZoomAuthService.getAccessToken(recording.meeting?.organizerEmail);
         const downloadUrlWithToken = `${recording.downloadUrl}?access_token=${accessToken}`;
 
@@ -276,7 +276,7 @@ export class ZoomRecordingService {
         return localAudioPath;
       }
 
-      return ffmpegSemaphore.run(async () => {
+      return ffmpegSemaphore.runAs(recordingId, async () => {
         logger.info(`[ZoomRecording] Extracting audio for ${recordingId}...`);
         /* Say so, in the database.
          *
@@ -331,7 +331,9 @@ export class ZoomRecordingService {
    * complete one. A second caller now joins the first instead of racing it.
    */
   static async transcribeRecording(recordingId: string) {
-    return transcriptionsInFlight.run(recordingId, () => ZoomRecordingService.runTranscription(recordingId));
+    return transcriptionsInFlight.run(recordingId, () =>
+      transcriptionSemaphore.runAs(recordingId, () => ZoomRecordingService.runTranscription(recordingId))
+    );
   }
 
   private static async runTranscription(recordingId: string) {
@@ -441,13 +443,15 @@ export class ZoomRecordingService {
   /**
    * Periodically audits all ended Zoom meetings to ensure recordings are auto-synced.
    */
-  static async syncAllEndedRecordings() {
+  static async syncAllEndedRecordings(since?: Date) {
     const pastMeetings = await withDbRetry(() =>
       db.meeting.findMany({
         where: {
           provider: 'ZOOM',
           status: { not: 'CANCELLED' },
-          endTime: { lte: new Date() },
+          // The periodic sweep passes `since` and re-checks only recent
+          // classes; the manual Sync button passes nothing and walks all.
+          endTime: { lte: new Date(), ...(since ? { gte: since } : {}) },
           recordings: { none: {} },
         },
       })
