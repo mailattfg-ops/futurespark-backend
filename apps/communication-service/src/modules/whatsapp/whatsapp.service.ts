@@ -68,10 +68,65 @@ const readIntEnv = (name: string, fallback: number, min: number, max: number): n
   return parsed;
 };
 
+export interface WhatsAppAudienceSettings {
+  regularParents: boolean;
+  pilotProgramLeads: boolean;
+  leadsManagement: boolean;
+  masterWhatsAppEnabled: boolean;
+}
+
+let audienceSettings: WhatsAppAudienceSettings = {
+  regularParents: false,
+  pilotProgramLeads: false,
+  leadsManagement: false,
+  masterWhatsAppEnabled: false,
+};
+
+export const getAudienceSettings = (): WhatsAppAudienceSettings => audienceSettings;
+
+export const updateAudienceSettings = (settings: Partial<WhatsAppAudienceSettings>): WhatsAppAudienceSettings => {
+  audienceSettings = { ...audienceSettings, ...settings };
+  return audienceSettings;
+};
+
 /** One warning per process, not one per send. */
 let warnedAboutDefaultTemplateVars = false;
 
+let runtimeAutoReplyOverride: boolean | null = false; // Default to false (Disabled)
+
+let dynamicAutoReplyTemplate: string =
+  `Hi {name}! Welcome to {brandName}. ✨\n\n` +
+  `How can we help you today? Reply "options" to view our menu, or "help" for a list of commands.`;
+
+export const getAutoReplyTemplate = (): string => dynamicAutoReplyTemplate;
+
+export const setAutoReplyTemplate = (template: string) => {
+  if (typeof template === 'string' && template.trim().length > 0) {
+    dynamicAutoReplyTemplate = template;
+  }
+};
+
+export const formatWelcomeReply = (name: string): string => {
+  const tpl = getAutoReplyTemplate();
+  return tpl
+    .replace(/\{name\}/gi, name)
+    .replace(/\{brandName\}/gi, whatsappConfig.brandName);
+};
+
+export const setRuntimeAutoReply = (enabled: boolean) => {
+  runtimeAutoReplyOverride = enabled;
+};
+
+export const getRuntimeAutoReply = (): boolean => {
+  if (runtimeAutoReplyOverride !== null) return runtimeAutoReplyOverride;
+  if (whatsappConfig.outboundMode !== 'all') return false;
+  return readEnv('WHATSAPP_AUTOREPLY_ENABLED') === 'true';
+};
+
 export const whatsappConfig = {
+  get autoReplyEnabled(): boolean {
+    return getRuntimeAutoReply();
+  },
   get accessToken(): string | undefined {
     return readEnv('WHATSAPP_ACCESS_TOKEN');
   },
@@ -212,12 +267,6 @@ export const whatsappConfig = {
     return mode === 'report-only' ? 'report-only' : 'all';
   },
 
-  get autoReplyEnabled(): boolean {
-    // Auto-replies are non-report outbound traffic, so report-only mode turns
-    // them off regardless of their own flag.
-    if (whatsappConfig.outboundMode !== 'all') return false;
-    return readEnv('WHATSAPP_AUTOREPLY_ENABLED') !== 'false';
-  },
   get brandName(): string {
     return readEnv('WHATSAPP_BRAND_NAME') || 'FutureSpark';
   },

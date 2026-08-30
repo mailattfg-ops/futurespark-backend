@@ -13,4 +13,12 @@ router.get('/', whatsappWebhookController.verify);
 // runs; the raw Buffer is supplied by the express.raw() mount in app.ts.
 router.post('/', verifyMetaWebhookSignature, whatsappWebhookController.handleEvent);
 
+// GET & POST: Manage Auto-Reply Toggle Status
+router.get('/auto-reply', whatsappWebhookController.getAutoReply);
+router.post('/auto-reply', whatsappWebhookController.setAutoReply);
+
+// GET & POST: Manage WhatsApp Audience Section Controls Toggle Settings
+router.get('/audience-settings', whatsappWebhookController.getAudienceSettings);
+router.post('/audience-settings', whatsappWebhookController.updateAudienceSettings);
+
 export { router as whatsappWebhookRoutes };
