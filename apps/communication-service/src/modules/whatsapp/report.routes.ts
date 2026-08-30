@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
-import { maskPhone, whatsappConfig, whatsappService } from './whatsapp.service';
+import { getAudienceSettings, maskPhone, whatsappConfig, whatsappService } from './whatsapp.service';
 import { sessionReportService } from './report.service';
 
 const router = Router();
@@ -20,6 +20,16 @@ const router = Router();
  */
 router.post('/session-report', async (req: Request, res: Response) => {
   try {
+    const audience = getAudienceSettings();
+    if (!audience.regularParents) {
+      logger.info('[Session Report] Skipped — Audience section control for Regular Parents is DISABLED.');
+      return res.status(HTTP_STATUS.OK).json(
+        successResponse(
+          { success: false, skipped: true },
+          'Session reports are disabled: Regular Parents audience toggle is OFF.'
+        )
+      );
+    }
     const { to, recipientId, classId, variables, document, caption } = req.body ?? {};
 
     if (!to && !recipientId) {
@@ -79,6 +89,25 @@ router.post('/session-report', async (req: Request, res: Response) => {
  * or free-text fallback when someone registers on the demo booking form.
  */
 router.post('/session-reminder', async (req: Request, res: Response) => {
+  const audience = getAudienceSettings();
+  const courseLower = (req.body?.courseName || '').toLowerCase();
+  const isPilot = courseLower.includes('pilot') || courseLower.includes('mentorship');
+  const isDemo = courseLower.includes('demo') || courseLower.includes('financial');
+
+  const isAllowed = (isPilot && audience.pilotProgramLeads) ||
+                    (isDemo && audience.leadsManagement) ||
+                    (!isPilot && !isDemo && (audience.pilotProgramLeads || audience.leadsManagement || audience.regularParents));
+
+  if (!isAllowed) {
+    logger.info('[Session Reminder] Skipped — Audience section controls for Pilot/Demo leads are DISABLED.');
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse(
+        { success: false, skipped: true },
+        'Session reminders are disabled: Audience section controls are toggled OFF.'
+      )
+    );
+  }
+
   if (whatsappConfig.outboundMode !== 'all') {
     // Fired automatically by the lead/demo booking flow, which makes it the
     // easiest send to forget exists. Refused loudly rather than skipped
