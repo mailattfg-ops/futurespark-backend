@@ -34,7 +34,7 @@ export const getCommFeed = async (since: Date | null, limit: number): Promise<Fe
       where: window ? { createdAt: window } : {},
       orderBy: { createdAt: 'desc' },
       take: limit,
-      select: { createdAt: true, to: true, from: true, direction: true, type: true, status: true, error: true },
+      select: { createdAt: true, to: true, from: true, direction: true, type: true, status: true, body: true, error: true },
     }),
     // The nearest thing this platform has to mail: there is no SMTP, SES or
     // nodemailer anywhere in the codebase, so an "email" row would be invented.
@@ -52,9 +52,9 @@ export const getCommFeed = async (since: Date | null, limit: number): Promise<Fe
       type: 'whatsapp',
       at: m.createdAt.toISOString(),
       title: inbound ? `Message from ${m.from}` : m.to,
-      subtitle: inbound ? 'inbound' : `${m.type} · ${m.status}`,
+      subtitle: m.body || (inbound ? 'inbound' : `${m.type} · ${m.status}`),
       status: inbound ? 'info' : statusOf(m.status),
-      detail: failureKind(m.error),
+      detail: m.body || failureKind(m.error),
     });
   }
 
