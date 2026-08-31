@@ -166,6 +166,12 @@ model Student {
   firstName        String
   lastName         String
   avatarUrl        String?
+  /// Curriculum level shown on the directory card (L1, L2, L3…). Asked on the
+  /// Add Student form; separate from school grade on purpose.
+  level            String?
+  /// Where the family lives — shown on the directory card. Asked alongside
+  /// level on the Add/Edit Student forms.
+  country          String?
   isActive         Boolean          @default(true)
   requiresFtlReset Boolean          @default(false)
   createdAt        DateTime         @default(now())
