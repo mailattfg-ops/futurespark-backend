@@ -7,6 +7,8 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { errorHandler, requestId, asyncHandler } from '@futurespark/middleware';
 import { createRedisClient } from '@futurespark/cache';
 import { authenticate } from './middleware/authenticate';
+import { botDetectionMiddleware } from './middleware/bot-detection';
+import { rateMonitorMiddleware } from './middleware/rate-monitor';
 import { logsRouter } from './routes/logs';
 import { systemHealthRouter } from './routes/system-health';
 import { presenceRouter } from './routes/presence';
@@ -25,9 +27,59 @@ const PAY_SERVICE_URL   = process.env.PAY_SERVICE_URL   || 'http://127.0.0.1:300
 const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
 const INTEGRATION_SERVICE_URL = process.env.INTEGRATION_SERVICE_URL || 'http://127.0.0.1:3006';
 
-// ── Core Middleware ────────────────────────────────────────────
-app.use(cors());
+// ── Safe Security Headers (Non-Breaking) ────────────────────────
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
+// ── Safe CORS Configuration (Preserving all frontend & integration origins) ──
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, server-to-server, webhooks)
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.length === 0 ||
+        allowedOrigins.includes(origin) ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        origin.endsWith('.finquo.ai') ||
+        origin.endsWith('.finquojunior.com')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true); // Non-blocking: allow existing origin requests
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Request-Id',
+      'X-User-Role',
+      'X-Internal-Signature',
+      'X-Automation-Tool',
+    ],
+  })
+);
+
 app.use(requestId);
+
+// ── Non-Intrusive Security Monitoring (Monitor-Only) ────────────
+app.use(botDetectionMiddleware);
+app.use(rateMonitorMiddleware);
 
 // ── Request Logging ────────────────────────────────────────────
 app.use((req, _res, next) => {

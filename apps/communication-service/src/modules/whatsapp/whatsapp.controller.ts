@@ -225,7 +225,22 @@ export const whatsappWebhookController = {
   },
 
   setAutoReply(req: Request, res: Response) {
-    const { enabled, templateText } = req.body || {};
+    let payload = req.body;
+    if (Buffer.isBuffer(payload)) {
+      try {
+        payload = JSON.parse(payload.toString('utf8'));
+      } catch (_) {
+        payload = {};
+      }
+    } else if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch (_) {
+        payload = {};
+      }
+    }
+
+    const { enabled, templateText } = payload || {};
     if (typeof enabled === 'boolean') {
       setRuntimeAutoReply(enabled);
     }
@@ -247,7 +262,22 @@ export const whatsappWebhookController = {
   },
 
   updateAudienceSettings(req: Request, res: Response) {
-    const updated = updateAudienceSettings(req.body || {});
+    let payload = req.body;
+    if (Buffer.isBuffer(payload)) {
+      try {
+        payload = JSON.parse(payload.toString('utf8'));
+      } catch (_) {
+        payload = {};
+      }
+    } else if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch (_) {
+        payload = {};
+      }
+    }
+
+    const updated = updateAudienceSettings(payload || {});
     return res.json({
       success: true,
       data: updated,
