@@ -510,6 +510,8 @@ export const userService = {
         passwordHash,
         firstName: input.firstName,
         lastName: input.lastName,
+        level: typeof input.level === 'string' && input.level.trim() ? input.level.trim() : undefined,
+        country: typeof input.country === 'string' && input.country.trim() ? input.country.trim() : undefined,
         // Only the first child can inherit the family's legacy approval — the
         // old columns describe one enrolment. A sibling starts unpaid and is
         // approved per programme in Finance.
@@ -804,6 +806,8 @@ export const userService = {
         isActive: input.isActive !== undefined ? input.isActive : undefined,
         paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
         credits: input.credits !== undefined ? Number(input.credits) : undefined,
+        level: typeof input.level === 'string' ? (input.level.trim() || null) : undefined,
+        country: typeof input.country === 'string' ? (input.country.trim() || null) : undefined,
         timezone: input.timezone || undefined,
         // Empty string clears the photo; undefined leaves it untouched.
         avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl || null : undefined,
