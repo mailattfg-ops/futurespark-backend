@@ -121,7 +121,17 @@ let audienceSettings: WhatsAppAudienceSettings = loadAudienceSettings();
 export const getAudienceSettings = (): WhatsAppAudienceSettings => audienceSettings;
 
 export const updateAudienceSettings = (settings: Partial<WhatsAppAudienceSettings>): WhatsAppAudienceSettings => {
-  audienceSettings = { ...audienceSettings, ...settings };
+  if (!settings || typeof settings !== 'object' || Buffer.isBuffer(settings)) {
+    return audienceSettings;
+  }
+
+  const cleanSettings: Partial<WhatsAppAudienceSettings> = {};
+  if (typeof settings.regularParents === 'boolean') cleanSettings.regularParents = settings.regularParents;
+  if (typeof settings.pilotProgramLeads === 'boolean') cleanSettings.pilotProgramLeads = settings.pilotProgramLeads;
+  if (typeof settings.leadsManagement === 'boolean') cleanSettings.leadsManagement = settings.leadsManagement;
+  if (typeof settings.masterWhatsAppEnabled === 'boolean') cleanSettings.masterWhatsAppEnabled = settings.masterWhatsAppEnabled;
+
+  audienceSettings = { ...audienceSettings, ...cleanSettings };
   try {
     fs.mkdirSync(path.dirname(AUDIENCE_FILE), { recursive: true });
     fs.writeFileSync(AUDIENCE_FILE, JSON.stringify(audienceSettings, null, 2));
