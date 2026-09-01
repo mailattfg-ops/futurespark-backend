@@ -479,6 +479,19 @@ export const scheduleController = {
   },
 
   /** Internal: integration-service reporting that a Meet room emptied. */
+  async activeMeetingLinks(req: Request, res: Response) {
+    // Service-to-service only, by the same tell as markRoomEnded below: a real
+    // internal call never carries the gateway's identity headers.
+    if (req.headers['x-user-id'] || req.headers['x-user-role']) {
+      return res.status(HTTP_STATUS.FORBIDDEN).json({
+        success: false,
+        message: 'This endpoint is service-to-service only.',
+      });
+    }
+    const links = await scheduleService.activeMeetingLinks();
+    return res.status(HTTP_STATUS.OK).json(successResponse(links, 'Active meeting links fetched'));
+  },
+
   async markRoomEnded(req: Request, res: Response) {
     // "Internal" was a naming convention, not a control. The gateway proxies the
     // whole `/api/schedules/*` prefix, so any logged-in user could POST a

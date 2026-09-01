@@ -20,6 +20,10 @@ router.get('/mentors', asyncHandler(scheduleController.listMentors));
 // an emptied room. The gateway *does* proxy this prefix, so the handler refuses
 // any request carrying gateway identity headers rather than trusting the path.
 router.post('/internal/room-ended', asyncHandler(scheduleController.markRoomEnded));
+// Service-to-service only, same refusal. Lets the presence pollers watch a
+// room that is reused across sessions, whose meeting row still carries the
+// date of the first class booked on it.
+router.get('/internal/active-links', asyncHandler(scheduleController.activeMeetingLinks));
 // Static prefix, so "students" is never matched as a class id by "/:id".
 // Gated: the student, their parent, or a mentor who teaches them.
 router.get('/students/:studentId/overview', asyncHandler(scheduleController.getStudentOverview));
