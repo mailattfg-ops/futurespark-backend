@@ -45,8 +45,18 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
      * 403 and not 401 on purpose: the admin app signs a user out on 401, and
      * a display screen must not log itself out when a stray widget polls. */
     if (payload.role === 'DISPLAY') {
+      /* Exactly the feeds the wall board reads, and nothing else. Notably
+       * absent: /api/courses/leads. The board only used it to put a name on a
+       * demo card and falls back to "Demo Student" without it, so a screen in
+       * a room never carries the enquiry funnel. */
+      const DISPLAY_FEEDS = [
+        '/api/schedules',
+        '/api/courses',
+        '/api/google/presence',
+        '/api/zoom/presence',
+      ];
       const path = req.originalUrl.split('?')[0].replace(/\/+$/, '');
-      const permitted = req.method === 'GET' && path === '/api/schedules/display-metrics';
+      const permitted = req.method === 'GET' && DISPLAY_FEEDS.includes(path);
       if (!permitted) {
         logger.warn(`[Gateway Auth] DISPLAY role refused ${req.method} ${path}`);
         return next(

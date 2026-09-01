@@ -130,7 +130,11 @@ export const gatherCurriculum = async (input: CurriculumLookup): Promise<ReportC
 
     if (session) {
       const { hub, labels } = topicLabels(effectiveSessionTopics(session.topics));
-      out.topicHub = hub ?? program?.title ?? null;
+      /* The session names its own topic map. `hub` (the root topic, when the
+       * curriculum nests them one level) stands in only if a session somehow
+       * has no title - and the programme title never does, because it is the
+       * same on every report in the course. */
+      out.topicHub = session.title?.trim() || hub || null;
       out.topics = labels;
       out.learningOutcomes = session.learningOutcomes ?? [];
 
