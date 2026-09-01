@@ -150,13 +150,60 @@ const sanitizePublic = (user: any): PublicUser => {
   };
 };
 
+/**
+ * Programmes that cost nothing.
+ *
+ * A free programme has no payment to approve, so gating its classes behind
+ * `paymentApproved` locks a child out of something nobody will ever be asked
+ * to pay for - and Finance deliberately hides zero-price programmes, so there
+ * is no screen left on which to approve them either.
+ *
+ * "Free" means every plan on the programme totals zero. A programme with a
+ * paid option is not free even if it also offers a zero-price one, and a
+ * programme with no plan at all is unknown rather than free - neither is
+ * auto-approved.
+ */
+const planTotal = (plan: { price: number; installments: { amount: number }[] }): number =>
+  plan.installments.length ? plan.installments.reduce((n, i) => n + i.amount, 0) : plan.price;
+
+/** Pure half of the rule, so it can be checked without a database. */
+export const isFreePlanSet = (plans: { price: number; installments: { amount: number }[] }[]): boolean =>
+  plans.length > 0 && plans.every((pl) => planTotal(pl) === 0);
+
+const freeProgramIds = async (): Promise<Set<string>> => {
+  const programs = await db.program.findMany({
+    select: {
+      id: true,
+      paymentPlans: { select: { price: true, installments: { select: { amount: true } } } },
+    },
+  });
+  return new Set(
+    programs
+      .filter((p) => isFreePlanSet(p.paymentPlans))
+      .map((p) => p.id)
+  );
+};
+
+const isProgramFree = async (programId?: string | null): Promise<boolean> =>
+  !!programId && (await freeProgramIds()).has(programId);
+
+/**
+ * Reads report a free enrolment as approved. Applied on the way out rather
+ * than only at creation so enrolments made before this rule existed unlock
+ * too, without a migration.
+ */
+const unlockFree = <T extends { programId?: string | null; paymentApproved?: boolean | null }>(
+  row: T,
+  free: Set<string>
+): T => (row.programId && free.has(row.programId) && !row.paymentApproved ? { ...row, paymentApproved: true } : row);
+
 export const userService = {
   async createUser(input: CreateUserInput): Promise<UserWithoutPassword> {
     const existing = await userRepository.findByEmail(input.email);
     if (existing) throw new AppError('Email already in use', HTTP_STATUS.CONFLICT);
 
     const passwordHash = hashPassword(input.password);
-    const user = await userRepository.create({ ...input, passwordHash, requiresFtlReset: true });
+    const user = await userRepository.create({ ...input, passwordHash, requiresFtlReset: false });
     return sanitize(user);
   },
 
@@ -221,7 +268,17 @@ export const userService = {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return customers;
+
+    const free = await freeProgramIds();
+    return customers.map((c) => ({
+      ...c,
+      paymentApproved: c.programId && free.has(c.programId) ? true : c.paymentApproved,
+      students: c.students.map((st) => ({
+        ...st,
+        paymentApproved: c.programId && free.has(c.programId) ? true : st.paymentApproved,
+        enrollments: st.enrollments.map((e) => unlockFree(e, free)),
+      })),
+    }));
   },
 
   /**
@@ -268,8 +325,10 @@ export const userService = {
     });
     if (!student) return [];
 
+    const free = await freeProgramIds();
+
     if (student.enrollments.length > 0) {
-      return student.enrollments.map((e) => ({ ...e, source: 'ENROLLMENT' as const }));
+      return student.enrollments.map((e) => ({ ...unlockFree(e, free), source: 'ENROLLMENT' as const }));
     }
 
     const legacyProgramId = student.parentAccount?.programId;
@@ -299,7 +358,9 @@ export const userService = {
         programId: legacyProgramId,
         // Either tier could hold the approval before enrolments: the parent on a
         // FULL plan, the student individually on instalments.
-        paymentApproved: Boolean(student.parentAccount?.paymentApproved || student.paymentApproved),
+        paymentApproved:
+          free.has(legacyProgramId) ||
+          Boolean(student.parentAccount?.paymentApproved || student.paymentApproved),
         selectedPlanType: student.parentAccount?.selectedPlanType ?? null,
         paidInstallmentIds: student.parentAccount?.paidInstallmentIds ?? [],
         createdAt: new Date(0),
@@ -313,9 +374,14 @@ export const userService = {
    *
    * Idempotent by the `(studentId, programId)` unique constraint — a
    * double-submit returns the existing enrolment rather than a duplicate or a
-   * 500. New enrolments always start unpaid: money is Finance's decision, and
-   * an enrolment that arrived pre-approved would let anyone with access to this
+   * 500. New enrolments start unpaid: money is Finance's decision, and an
+   * enrolment that arrived pre-approved would let anyone with access to this
    * screen grant free classes.
+   *
+   * The one exception is a programme that costs nothing, where "approved" is
+   * the only truthful state. That is read from the programme's own plans, not
+   * from anything the caller sends, so it grants nobody anything they could
+   * not already see on the pricing screen.
    */
   async addEnrollment(parentId: string, input: { studentId: string; programId: string }) {
     const studentId = String(input?.studentId ?? '').trim();
@@ -343,7 +409,7 @@ export const userService = {
     if (existing) return existing;
 
     return db.enrollment.create({
-      data: { studentId, programId, paymentApproved: false },
+      data: { studentId, programId, paymentApproved: await isProgramFree(programId) },
     });
   },
 
@@ -434,7 +500,7 @@ export const userService = {
         email: input.email,
         passwordHash,
         programId: input.programId || null,
-        requiresFtlReset: true,
+        requiresFtlReset: false,
         profiles: {
           createMany: {
             data: input.profiles || [],
@@ -515,8 +581,9 @@ export const userService = {
         // Only the first child can inherit the family's legacy approval — the
         // old columns describe one enrolment. A sibling starts unpaid and is
         // approved per programme in Finance.
-        paymentApproved: isParentPaid && isFirstStudent,
-        requiresFtlReset: true,
+        paymentApproved:
+          (isParentPaid && isFirstStudent) || (await isProgramFree(parent.programId)),
+        requiresFtlReset: false,
       },
     });
 
@@ -534,7 +601,7 @@ export const userService = {
       if (!program) throw new AppError('Program not found', HTTP_STATUS.NOT_FOUND);
 
       await db.enrollment.create({
-        data: { studentId: student.id, programId, paymentApproved: false },
+        data: { studentId: student.id, programId, paymentApproved: await isProgramFree(programId) },
       });
       logger.info(
         `[Student] ${normalizedEmail} enrolled in "${program.title}" as UNPAID — awaiting approval in Finance.`
@@ -609,8 +676,23 @@ export const userService = {
       }
     }
 
+    // A free programme unlocks on read, so a child enrolled before this rule
+    // existed is not left locked out of classes nobody has to pay for.
+    const free = await freeProgramIds();
+    const unlocked = students.map((st) => {
+      const legacyFree = !!st.parentAccount?.programId && free.has(st.parentAccount.programId);
+      return {
+        ...st,
+        paymentApproved: legacyFree ? true : st.paymentApproved,
+        parentAccount: st.parentAccount
+          ? { ...st.parentAccount, paymentApproved: legacyFree ? true : st.parentAccount.paymentApproved }
+          : st.parentAccount,
+        enrollments: st.enrollments.map((e) => unlockFree(e, free)),
+      };
+    });
+
     // Sort descending by createdAt for display
-    return students.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return unlocked.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   },
 
   async deleteStudent(id: string) {
@@ -711,7 +793,7 @@ export const userService = {
     // Unpaid families can still be moved — nothing has been bought yet — but the
     // approval flag is cleared so the new programme starts from a clean state.
     if (programChanging && input.paymentApproved === undefined) {
-      dataToUpdate.paymentApproved = false;
+      dataToUpdate.paymentApproved = await isProgramFree(input.programId);
     }
 
     return await db.parentAccount.update({

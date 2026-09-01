@@ -3,7 +3,7 @@ import { logger } from '@futurespark/logger';
 import { successResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { authService } from './auth.service';
-import { validateRegister, validateLogin, validateRefresh, validateLogout, validateCompleteFtl } from './auth.schema';
+import { validateRegister, validateLogin, validateRefresh, validateLogout, validateChangePassword } from './auth.schema';
 import { verifyAccessToken } from '@futurespark/authentication';
 
 export const authController = {
@@ -60,9 +60,10 @@ export const authController = {
   },
 
   /**
-   * POST /auth/complete-ftl
+   * POST /auth/change-password — the signed-in account changes its own
+   * password from its profile menu.
    */
-  async completeFtl(req: Request, res: Response) {
+  async changePassword(req: Request, res: Response) {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
       return res.status(HTTP_STATUS.UNAUTHORIZED).json({
@@ -84,18 +85,10 @@ export const authController = {
       });
     }
 
-    const input = validateCompleteFtl(req.body);
-    const result = await authService.completeFtl(
-      decoded.userId,
-      input.currentPassword,
-      input.newPassword,
-      input.firstName,
-      input.lastName
-    );
+    const input = validateChangePassword(req.body);
+    const result = await authService.changePassword(decoded.userId, input.currentPassword, input.newPassword);
 
-    logger.info(`[Auth] FTL flow completed for user ${decoded.email}`);
-    return res
-      .status(HTTP_STATUS.OK)
-      .json(successResponse(result, 'Password changed and profile completed successfully'));
+    logger.info(`[Auth] Password changed for user ${decoded.email}`);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Password changed successfully'));
   },
 };

@@ -276,15 +276,11 @@ export const authService = {
   },
 
   /**
-   * Complete the first-time login flow by forcing a password change.
+   * Change your own password. Works for staff, parents and students alike —
+   * the account type is resolved below. Proving the current password is the
+   * only authorisation: knowing it is what makes the caller the owner.
    */
-  async completeFtl(
-    userId: string,
-    currentPassword: string,
-    newPassword: string,
-    firstName?: string,
-    lastName?: string
-  ): Promise<AuthResponse> {
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<AuthResponse> {
     let account: any = null;
     let type: 'user' | 'parent' | 'student' = 'user';
     let role = '';
@@ -326,10 +322,6 @@ export const authService = {
       throw new AppError('Account is deactivated', HTTP_STATUS.FORBIDDEN);
     }
 
-    if (!account.requiresFtlReset) {
-      throw new AppError('First-time login setup is not required for this account', HTTP_STATUS.BAD_REQUEST);
-    }
-
     const isPasswordValid = verifyPassword(currentPassword, account.passwordHash);
     if (!isPasswordValid) {
       throw new AppError('Invalid current password', HTTP_STATUS.UNAUTHORIZED);
@@ -343,8 +335,6 @@ export const authService = {
         where: { id: userId },
         data: {
           passwordHash: newPasswordHash,
-          firstName: firstName || account.firstName,
-          lastName: lastName || account.lastName,
           requiresFtlReset: false,
         },
         include: { role: true },
@@ -367,8 +357,6 @@ export const authService = {
         where: { id: userId },
         data: {
           passwordHash: newPasswordHash,
-          firstName: firstName || account.firstName,
-          lastName: lastName || account.lastName,
           requiresFtlReset: false,
         },
       });

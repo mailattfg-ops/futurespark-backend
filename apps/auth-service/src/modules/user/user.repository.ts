@@ -99,7 +99,7 @@ export const userRepository = {
       where: { id },
       data: {
         passwordHash,
-        requiresFtlReset: true,
+        requiresFtlReset: false,
       },
       include: { role: true },
     });
