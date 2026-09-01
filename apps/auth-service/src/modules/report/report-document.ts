@@ -100,7 +100,7 @@ export const resolveLearningOutcomes = (
   report: SessionReport | null
 ): string[] => {
   const authored = cleanList(curriculum.learningOutcomes);
-  return (authored.length ? authored : cleanList(report?.learningGoals)).slice(0, 5);
+  return (authored.length ? authored : cleanList(report?.learningGoals)).slice(0, 8);
 };
 
 export interface DocumentInputs {
@@ -189,7 +189,7 @@ export const buildReportDocument = (
     (items ?? [])
       .map((item) => ({ label: clean(item.label) ?? '', done: Boolean(item.done) }))
       .filter((item) => item.label.length > 0)
-      .slice(0, 3);
+      .slice(0, 5);
 
   return {
     studentName: clean(base.studentName) ?? 'Your child',

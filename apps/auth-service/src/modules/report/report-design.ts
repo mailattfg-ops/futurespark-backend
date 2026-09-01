@@ -882,7 +882,7 @@ const wordCloud = (doc: Doc, d: ReportDocument): void => {
 
 const learningOutcomes = (doc: Doc, d: ReportDocument): void => {
   sectionHeader(doc, 'LEARNING OUTCOMES', 292.5);
-  const items = d.learningOutcomes.slice(0, 5);
+  const items = d.learningOutcomes.slice(0, 8);
 
   if (items.length === 0) {
     line(doc, 'No outcomes are set for this session yet.', M, 320, {
@@ -893,8 +893,12 @@ const learningOutcomes = (doc: Doc, d: ReportDocument): void => {
     return;
   }
 
+  /* Five rows fit at the original 29.6pt pitch; past five the rows compress
+   * so the sixth-through-eighth outcome still land inside the panel instead
+   * of being silently cut. */
+  const step = items.length > 5 ? (471.7 - 318.6 - 8) / items.length : 29.6;
   items.forEach((text, i) => {
-    const y = 318.6 + i * 29.6;
+    const y = 318.6 + i * step;
     line(doc, String(i + 1).padStart(2, '0'), M, y + 0.5, {
       size: 5.6,
       font: FONT.mono,
@@ -904,7 +908,7 @@ const learningOutcomes = (doc: Doc, d: ReportDocument): void => {
     doc.font(FONT.body).fontSize(7.5).fillColor(C.ink);
     doc.text(text, 54.7, y, { width: W - 15, height: 11, ellipsis: true, lineBreak: false });
     if (i < items.length - 1) {
-      doc.rect(M, y + 18.9, W, 0.8).fill(C.border);
+      doc.rect(M, y + step * 0.64, W, 0.8).fill(C.border);
     }
   });
 };
@@ -932,43 +936,53 @@ const activityCard = (
   });
   doc.rect(x + 0.4, 511.5, w - 0.8, 0.8).fill(C.border);
 
-  items.slice(0, 3).forEach((item, i) => {
-    const ry = 520.9 + i * 40.5;
+  /* Three rows fill the card at the original 40.5pt pitch; past three the
+   * boxes compress so a fourth and fifth activity still fit inside it. Every
+   * inner element is placed relative to the box height, so the compressed
+   * rows keep their alignment instead of drifting. */
+  const shown = items.slice(0, 5);
+  const step = shown.length > 3 ? 120 / shown.length : 40.5;
+  const boxH = Math.min(33, step - 5);
+  shown.forEach((item, i) => {
+    const ry = 520.9 + i * step;
     const color = ACCENTS[i % ACCENTS.length];
     const rx = x + 9;
     const rw = w - 18;
 
     if (filled) {
       // A wash of the row's own accent, so the take-home list reads as a set
-      // rather than three unrelated boxes.
-      tint(doc, color, 0.07, () => doc.roundedRect(rx, ry, rw, 33, 4).fill(color));
-      doc.roundedRect(rx, ry, rw, 33, 4).lineWidth(0.75).stroke(C.border);
+      // rather than unrelated boxes.
+      tint(doc, color, 0.07, () => doc.roundedRect(rx, ry, rw, boxH, 4).fill(color));
+      doc.roundedRect(rx, ry, rw, boxH, 4).lineWidth(0.75).stroke(C.border);
     } else {
-      doc.roundedRect(rx, ry, rw, 33, 4).lineWidth(0.75).fillAndStroke(C.white, C.border);
+      doc.roundedRect(rx, ry, rw, boxH, 4).lineWidth(0.75).fillAndStroke(C.white, C.border);
     }
 
-    doc.rect(rx + 0.4, ry + 0.4, 1.8, 32.2).fill(color);
-    tint(doc, color, 0.14, () => doc.roundedRect(rx + 8.6, ry + 8.6, 15.8, 15.8, 4).fill(color));
-    centered(doc, String(i + 1).padStart(2, '0'), rx + 16.5, ry + 12.7, {
+    doc.rect(rx + 0.4, ry + 0.4, 1.8, boxH - 0.8).fill(color);
+    const cs = boxH >= 28 ? 15.8 : 11.5;
+    const chipY = ry + (boxH - cs) / 2;
+    tint(doc, color, 0.14, () => doc.roundedRect(rx + 8.6, chipY, cs, cs, 4).fill(color));
+    centered(doc, String(i + 1).padStart(2, '0'), rx + 8.6 + cs / 2, chipY + cs / 2 - 3.7, {
       size: 5.6,
       font: FONT.mono,
       color,
     });
 
     doc.font(FONT.body).fontSize(7.4).fillColor(C.ink);
-    doc.text(item.label, rx + 31, ry + 12.3, { width: rw - 62, height: 10, ellipsis: true, lineBreak: false });
+    doc.text(item.label, rx + 31, ry + boxH / 2 - 4.2, { width: rw - 62, height: 10, ellipsis: true, lineBreak: false });
 
     const bx = rx + rw - 28;
     if (item.done) {
-      doc.roundedRect(bx, ry + 11.9, 11.3, 11.2, 3).fill(C.teal);
+      const by = ry + (boxH - 11.2) / 2;
+      doc.roundedRect(bx, by, 11.3, 11.2, 3).fill(C.teal);
       doc
-        .moveTo(bx + 2.6, ry + 17.5)
-        .lineTo(bx + 4.7, ry + 19.6)
-        .lineTo(bx + 8.8, ry + 15.1)
+        .moveTo(bx + 2.6, by + 5.6)
+        .lineTo(bx + 4.7, by + 7.7)
+        .lineTo(bx + 8.8, by + 3.2)
         .lineWidth(1.77)
         .stroke(C.white);
     } else {
-      doc.roundedRect(bx, ry + 12.2, 10.5, 10.5, 3).lineWidth(0.75).fillAndStroke(C.white, C.borderDim);
+      doc.roundedRect(bx, ry + (boxH - 10.5) / 2, 10.5, 10.5, 3).lineWidth(0.75).fillAndStroke(C.white, C.borderDim);
     }
   });
 };

@@ -953,12 +953,36 @@ export const scheduleService = {
       }
     }
 
+    /* Re-pointing a class at another curriculum session — the mis-filed
+     * class case. Guarded to the SAME programme: crossing programmes would
+     * detach the class from its student's enrolment, quizzes and report
+     * curriculum, which is a delete-and-rebook, not an edit. Staff only. */
+    let nextSessionId: string | undefined;
+    if (input.sessionId !== undefined && input.sessionId !== classSession.sessionId) {
+      if (!isUnscopedStaffRole(callerRole)) {
+        throw new AppError('Only staff can move a class to a different session', HTTP_STATUS.FORBIDDEN);
+      }
+      const target = await db.session.findUnique({
+        where: { id: input.sessionId },
+        select: { id: true, programId: true, title: true },
+      });
+      if (!target) throw new AppError('That session does not exist', HTTP_STATUS.NOT_FOUND);
+      if (target.programId !== classSession.programId) {
+        throw new AppError(
+          'That session belongs to a different programme. To move a class across programmes, cancel and rebook it.',
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
+      nextSessionId = target.id;
+    }
+
     const updatedClass = await db.scheduledClass.update({
       where: { id },
       data: {
         startTime,
         endTime,
         status,
+        ...(nextSessionId ? { sessionId: nextSessionId } : {}),
         ...(slotMoved ? { rescheduledCount: { increment: 1 } } : {}),
         mentorId: effectiveMentorId,
         meetingLink: rehomedLink ?? (input.meetingLink !== undefined ? input.meetingLink : undefined),

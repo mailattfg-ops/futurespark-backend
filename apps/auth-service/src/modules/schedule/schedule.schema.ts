@@ -117,6 +117,15 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
 
 export interface UpdateScheduleInput {
   status?: string;
+  /**
+   * Re-point the class at a different curriculum session.
+   *
+   * Exists for the mis-filed class: everyone was booked under one session
+   * record, its NAME gets corrected for the many — and the one student who
+   * genuinely took different content must be moved to the right session
+   * instead of being dragged along by the rename.
+   */
+  sessionId?: string;
   startTime?: string;
   mentorId?: string;
   meetingLink?: string | null;
@@ -157,6 +166,12 @@ export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
     }
   }
 
+  if (data.sessionId !== undefined) {
+    if (typeof data.sessionId !== 'string' || data.sessionId.trim() === '') {
+      errors.push('Session ID must be a non-empty string');
+    }
+  }
+
   if (data.qaStatus !== undefined) {
     if (typeof data.qaStatus !== 'string' || !['PENDING', 'PASSED', 'FAILED', 'FLAGGED'].includes(data.qaStatus)) {
       errors.push('qaStatus must be PENDING, PASSED, FAILED, or FLAGGED');
@@ -175,6 +190,7 @@ export const validateUpdateSchedule = (data: any): UpdateScheduleInput => {
     status: data.status,
     startTime: data.startTime,
     mentorId: data.mentorId?.trim(),
+    sessionId: data.sessionId?.trim(),
     meetingLink: data.meetingLink === null ? null : (typeof data.meetingLink === 'string' ? data.meetingLink.trim() : undefined),
     updateAll: typeof data.updateAll === 'boolean' ? data.updateAll : undefined,
     rescheduleReason: data.rescheduleReason === null ? null : (typeof data.rescheduleReason === 'string' ? data.rescheduleReason.trim() : undefined),
