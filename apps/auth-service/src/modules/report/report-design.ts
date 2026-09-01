@@ -613,10 +613,24 @@ const topicsCovered = (doc: Doc, d: ReportDocument): void => {
 
   const spineY = 564.9;
 
-  // The hub, sized to its own label.
-  const hub = d.topicHub || 'Session';
+  /* The hub, sized to its own label - but only so far.
+   *
+   * The pill grows to fit its text and the spine starts where the pill ends,
+   * so an over-long label eats the runway the topic chips are spaced along:
+   * past a point `step` collapses and the chips pile up on each other. The
+   * label is a session title now ("Orientation & Introduction to Money"),
+   * which runs longer than the programme name this used to hold, so it is
+   * truncated to a width the spine can still work with. */
+  const HUB_MAX_W = 260;
   doc.font(FONT.display).fontSize(12.2);
-  const hubW = Math.max(60, doc.widthOfString(hub, { lineBreak: false }) + 30);
+  let hub = d.topicHub || 'Session';
+  if (doc.widthOfString(hub, { lineBreak: false }) + 30 > HUB_MAX_W) {
+    while (hub.length > 1 && doc.widthOfString(`${hub}\u2026`, { lineBreak: false }) + 30 > HUB_MAX_W) {
+      hub = hub.slice(0, -1);
+    }
+    hub = `${hub.trimEnd()}\u2026`;
+  }
+  const hubW = Math.max(60, Math.min(HUB_MAX_W, doc.widthOfString(hub, { lineBreak: false }) + 30));
   doc.roundedRect(47.9, 550.6, hubW, 28.7, 14.35).fill(C.ink);
   /* Optically centred, not arithmetically.
    *

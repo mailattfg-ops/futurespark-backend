@@ -217,7 +217,8 @@ export const buildReportDocument = (
     highlights: buildHighlights(report),
     wordCloud: buildWordCloud(report),
 
-    topicHub: clean(curriculum.topicHub) ?? arcName,
+    // Never `arcName`: see report-curriculum. The session names the map.
+    topicHub: clean(curriculum.topicHub) ?? clean(base.sessionTitle) ?? null,
     topics,
     learningOutcomes,
     inSession: sanitiseActivities(curriculum.inSession),

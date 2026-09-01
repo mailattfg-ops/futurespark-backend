@@ -16,10 +16,6 @@ import { scheduleController } from './schedule.controller';
 const router = Router();
 
 router.get('/mentors', asyncHandler(scheduleController.listMentors));
-// Gated: ADMIN / DISPLAY. Aggregate counts only - the sole endpoint the
-// read-only DISPLAY role is allowed to reach, so it must never carry a name.
-// Declared above '/:id' so the literal path is not read as a class id.
-router.get('/display-metrics', asyncHandler(scheduleController.getDisplayMetrics));
 // Service-to-service only: the presence pollers and the Zoom webhook reporting
 // an emptied room. The gateway *does* proxy this prefix, so the handler refuses
 // any request carrying gateway identity headers rather than trusting the path.
