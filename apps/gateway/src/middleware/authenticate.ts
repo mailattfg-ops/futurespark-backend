@@ -33,11 +33,6 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return next(new AppError('Token has been revoked', HTTP_STATUS.UNAUTHORIZED));
     }
 
-    // Enforce First-Time Login (FTL) constraint
-    if (payload.requiresFtlReset) {
-      return next(new AppError('First-time login password change required', HTTP_STATUS.FORBIDDEN));
-    }
-
     // Sign and inject internal HMAC headers for downstream services
     const p = payload as any;
     const userId = p.userId || p.id || p.sub;
