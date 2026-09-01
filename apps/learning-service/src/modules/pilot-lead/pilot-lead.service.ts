@@ -4,6 +4,88 @@ import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
 export const pilotLeadService = {
+  isSameDate(storedDate: string, targetDate: string): boolean {
+    if (!storedDate || !targetDate) return false;
+    const s = storedDate.trim().toLowerCase();
+    const t = targetDate.trim().toLowerCase();
+    if (s === t || s.includes(t) || t.includes(s)) return true;
+
+    const extractParts = (str: string) => {
+      const match = str.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+      if (match) return `${match[1].padStart(2, '0')}/${match[2].padStart(2, '0')}/${match[3]}`;
+      return null;
+    };
+    const sPart = extractParts(s);
+    const tPart = extractParts(t);
+    if (sPart && tPart && sPart === tPart) return true;
+
+    return false;
+  },
+
+  async getDemoSettings() {
+    try {
+      const row = await (db as any).appSetting.findUnique({ where: { key: 'demo_settings' } });
+      const val = (row?.value as any) || {};
+      const demoTeachersCount = typeof val.demoTeachersCount === 'number' && val.demoTeachersCount > 0 ? val.demoTeachersCount : 3;
+      return { demoTeachersCount };
+    } catch {
+      return { demoTeachersCount: 3 };
+    }
+  },
+
+  async updateDemoSettings(countInput: number) {
+    const demoTeachersCount = Math.max(1, Math.floor(Number(countInput) || 3));
+    await (db as any).appSetting.upsert({
+      where: { key: 'demo_settings' },
+      create: { key: 'demo_settings', value: { demoTeachersCount } },
+      update: { value: { demoTeachersCount } },
+    });
+    return { demoTeachersCount };
+  },
+
+  async getSlotAvailability(dateQuery?: string) {
+    const { demoTeachersCount } = await this.getDemoSettings();
+    const leads = await (db as any).pilotLead.findMany({
+      where: { status: { not: 'LOST' } },
+      select: { preferredSlotDate: true, preferredSlotTime: true },
+    });
+
+    const defaultSlots = [
+      "10:00 AM", "11:00 AM", "12:00 PM", "01:00 PM", "02:00 PM", "03:00 PM",
+      "04:00 PM", "05:00 PM", "06:00 PM", "07:00 PM", "08:00 PM", "09:00 PM",
+    ];
+
+    const slotCounts: Record<string, number> = {};
+    defaultSlots.forEach((s) => (slotCounts[s] = 0));
+
+    for (const lead of leads) {
+      if (!lead.preferredSlotTime || !lead.preferredSlotDate) continue;
+      if (dateQuery && !this.isSameDate(lead.preferredSlotDate, dateQuery)) continue;
+
+      const slotTime = lead.preferredSlotTime;
+      slotCounts[slotTime] = (slotCounts[slotTime] || 0) + 1;
+    }
+
+    const slotResults = defaultSlots.map((time) => {
+      const bookedCount = slotCounts[time] || 0;
+      const remainingSeats = Math.max(0, demoTeachersCount - bookedCount);
+      const isBookedOut = bookedCount >= demoTeachersCount;
+      return {
+        time,
+        bookedCount,
+        maxCapacity: demoTeachersCount,
+        remainingSeats,
+        isBookedOut,
+      };
+    });
+
+    return {
+      demoTeachersCount,
+      date: dateQuery || null,
+      slots: slotResults,
+    };
+  },
+
   async getAllPilotLeads() {
     return (db as any).pilotLead.findMany({
       orderBy: { createdAt: 'desc' },
@@ -19,6 +101,28 @@ export const pilotLeadService = {
   },
 
   async createPilotLead(input: CreatePilotLeadInput) {
+    if (input.preferredSlotDate && input.preferredSlotTime) {
+      const { demoTeachersCount } = await this.getDemoSettings();
+      const existingLeads = await (db as any).pilotLead.findMany({
+        where: {
+          status: { not: 'LOST' },
+          preferredSlotTime: input.preferredSlotTime,
+        },
+        select: { preferredSlotDate: true },
+      });
+
+      const matchingCount = existingLeads.filter((l: any) =>
+        l.preferredSlotDate && this.isSameDate(l.preferredSlotDate, input.preferredSlotDate!)
+      ).length;
+
+      if (matchingCount >= demoTeachersCount) {
+        throw new AppError(
+          `The time slot '${input.preferredSlotTime}' on ${input.preferredSlotDate} is fully booked (${demoTeachersCount}/${demoTeachersCount} demo teachers booked). Please select another time slot.`,
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
+    }
+
     const lead = await (db as any).pilotLead.create({
       data: {
         parentName: input.parentName,
@@ -53,15 +157,6 @@ export const pilotLeadService = {
     });
 
     // Tell the family, on WhatsApp.
-    //
-    // The block above is addressed to `recipientId: 'ADMIN'` — a literal
-    // string, not a user id — so it could only ever raise the admin's bell
-    // icon. Nothing here has ever messaged the parent: `parentPhone` was
-    // collected by the form, stored, and read by no one. The regular demo
-    // lead flow in lead.service.ts has always done this properly; the pilot
-    // form is a separate table and a separate function, and never got the
-    // same wiring. This is that wiring, deliberately identical to it so the
-    // two forms behave the same way and are fixed in the same place.
     if (input.parentPhone) {
       const baseUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
       fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/session-reminder`, {
@@ -72,17 +167,9 @@ export const pilotLeadService = {
           parentName: input.parentName || 'Parent',
           studentName: input.studentName || 'Student',
           courseName: '1-on-1 Financial Literacy Mentorship',
-          // The slot the parent picked on the form. Falling back to today
-          // would state a date they never chose, so an unfilled slot stays
-          // unfilled and the template renders what they actually asked for.
           sessionDate: input.preferredSlotDate || 'to be confirmed',
           sessionTime: input.preferredSlotTime || 'to be confirmed',
           timezone: input.preferredTimezone || 'Asia/Kolkata',
-          // The same portal link the regular demo form sends. It has to carry
-          // the lead's own id: the page looks the enquiry up by it to show the
-          // family their slot and, once a mentor is assigned, their join
-          // button. A bare landing-page URL would have opened a page that
-          // knows nothing about them.
           joinUrl: `${baseUrl.replace(/\/$/, '')}/demo-class?leadId=${lead.id}`,
         }),
       }).catch((err) => {

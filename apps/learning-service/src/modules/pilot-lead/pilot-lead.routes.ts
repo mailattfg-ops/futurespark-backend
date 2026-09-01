@@ -4,8 +4,11 @@ import { pilotLeadController } from './pilot-lead.controller';
 
 export const pilotLeadRoutes = Router();
 
-// Public route for pilot form submissions
+// Public routes for pilot form submissions & slot availability
 pilotLeadRoutes.post('/', asyncHandler(pilotLeadController.createPilotLead));
+pilotLeadRoutes.get('/slot-availability', asyncHandler(pilotLeadController.getSlotAvailability));
+pilotLeadRoutes.get('/settings', asyncHandler(pilotLeadController.getDemoSettings));
+pilotLeadRoutes.put('/settings', asyncHandler(pilotLeadController.updateDemoSettings));
 
 // Administrative / Protected routes
 pilotLeadRoutes.get('/', asyncHandler(pilotLeadController.getAllPilotLeads));
