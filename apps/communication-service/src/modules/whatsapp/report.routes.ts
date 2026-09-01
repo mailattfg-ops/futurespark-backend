@@ -84,6 +84,58 @@ router.post('/session-report', async (req: Request, res: Response) => {
  * Sends a demo session reminder WhatsApp message using template "session_reminder"
  * or free-text fallback when someone registers on the demo booking form.
  */
+/**
+ * A stored slot time is IST-canonical; the parent reading the message may be
+ * in Dubai. "01:00 PM (UAE)" was the stored IST clock wearing the wrong
+ * label — 01:00 PM IST is 11:30 AM in the UAE. Converted ONLY here, at the
+ * display edge: the stored value and the mentor's IST schedule are never
+ * touched. IST has no DST, so the fixed -330 offset is safe server-side.
+ */
+const TZ_ALIASES: Record<string, string> = {
+  uae: 'Asia/Dubai',
+  gst: 'Asia/Dubai',
+  dubai: 'Asia/Dubai',
+  uk: 'Europe/London',
+  bst: 'Europe/London',
+  gmt: 'Europe/London',
+  ist: 'Asia/Kolkata',
+  india: 'Asia/Kolkata',
+};
+
+const slotInTimezone = (slotTime: string, tz: string | undefined, sessionDate: string | undefined): string => {
+  try {
+    if (!tz) return slotTime;
+    const zone = TZ_ALIASES[tz.trim().toLowerCase()] ?? tz.trim();
+    if (/kolkata/i.test(zone)) return slotTime;
+    const m = /^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i.exec(String(slotTime).trim());
+    if (!m) return slotTime;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (m[3]) {
+      h = h % 12;
+      if (m[3].toUpperCase() === 'PM') h += 12;
+    }
+    // The session's calendar date (IST), so zones with DST convert on the
+    // right side of their boundary: dd/mm/yyyy when present, else today.
+    const dm = /(\d{1,2})[/](\d{1,2})[/](\d{4})/.exec(String(sessionDate ?? ''));
+    const istNow = new Date(Date.now() + 330 * 60 * 1000);
+    const [d, mo, y] = dm
+      ? [Number(dm[1]), Number(dm[2]) - 1, Number(dm[3])]
+      : [istNow.getUTCDate(), istNow.getUTCMonth(), istNow.getUTCFullYear()];
+    const utcMs = Date.UTC(y, mo, d, 0, h * 60 + min - 330); // IST = UTC+5:30
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).format(new Date(utcMs));
+  } catch {
+    // An unknown timezone string must not break the send; an IST time with a
+    // wrong label is recoverable, a failed message is not.
+    return slotTime;
+  }
+};
+
 router.post('/session-reminder', async (req: Request, res: Response) => {
   const audience = getAudienceSettings();
   const courseLower = (req.body?.courseName || '').toLowerCase();
@@ -151,6 +203,7 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
     };
 
     const displayTimezone = formatTimezone(timezone);
+    const displayTime = slotInTimezone(sessionTime, timezone, sessionDate);
 
     const templateComponents = [
       {
@@ -160,7 +213,7 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
           { type: 'text', text: studentName },
           { type: 'text', text: courseName },
           { type: 'text', text: sessionDate },
-          { type: 'text', text: sessionTime },
+          { type: 'text', text: displayTime },
           { type: 'text', text: displayTimezone },
           { type: 'text', text: joinUrl },
         ],
@@ -181,7 +234,7 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
         `Hi ${parentName} 👋\n\n` +
         `⏰ Reminder: ${studentName}’s *${courseName}* session is scheduled:\n\n` +
         `📅 *Date:* ${sessionDate}\n` +
-        `⏰ *Time:* ${sessionTime} (${displayTimezone})\n\n` +
+        `⏰ *Time:* ${displayTime} (${displayTimezone})\n\n` +
         `💻 Please join using a laptop/desktop with a stable internet connection.\n\n` +
         `🔗 *Join & Reschedule Here:* ${joinUrl}\n` +
         `_(You can also request to reschedule your session on this page if needed.)_\n\n` +
