@@ -51,6 +51,135 @@ export class ZoomRecordingService {
   }
 
   /**
+   * Every past occurrence of a Zoom meeting, newest first.
+   *
+   * `GET /meetings/{id}/recordings` answers for the LATEST occurrence only.
+   * That is fine for a room booked once, and wrong for the way this platform
+   * actually runs: one room is reused for every session of a programme, so
+   * that call returns last night's class no matter which session is asked
+   * about, and earlier sessions can never be fetched at all.
+   *
+   * Returns [] on any failure — the caller then does exactly what it did
+   * before this existed.
+   */
+  static async listPastInstances(
+    zoomId: string,
+    accessToken: string
+  ): Promise<{ uuid: string; startTime: Date | null }[]> {
+    try {
+      const res = await fetch(
+        `https://api.zoom.us/v2/past_meetings/${encodeURIComponent(zoomId)}/instances`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!res.ok) {
+        logger.info(`[ZoomRecording] No instance list for ${zoomId} (HTTP ${res.status}); using the latest occurrence only.`);
+        return [];
+      }
+      const body = (await res.json()) as any;
+      const list: any[] = Array.isArray(body?.meetings) ? body.meetings : [];
+      return list
+        .filter((m) => m?.uuid)
+        .map((m) => ({
+          uuid: String(m.uuid),
+          startTime: m.start_time && !Number.isNaN(new Date(m.start_time).getTime()) ? new Date(m.start_time) : null,
+        }))
+        .sort((a, b) => (b.startTime?.getTime() ?? 0) - (a.startTime?.getTime() ?? 0));
+    } catch (err: any) {
+      logger.warn(`[ZoomRecording] Could not list instances for ${zoomId}: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Zoom's own encoding rule for an instance UUID used as a path segment: a
+   * UUID that starts with `/` or contains `//` must be double URL-encoded, or
+   * the request 404s.
+   */
+  static encodeInstanceUuid(uuid: string): string {
+    const once = encodeURIComponent(uuid);
+    return uuid.startsWith('/') || uuid.includes('//') ? encodeURIComponent(once) : once;
+  }
+
+  /**
+   * Fetch every occurrence's recording for a reused room, not just the latest.
+   *
+   * Additive on purpose: it only ever fills in occurrences that are missing,
+   * and any failure leaves the ordinary single-occurrence sync to do its job.
+   * Returns how many new recordings were stored.
+   */
+  static async syncAllOccurrences(meetingId: string): Promise<number> {
+    const meeting = await withDbRetry(() => db.meeting.findUnique({ where: { id: meetingId } }));
+    if (!meeting?.zoomMeetingId) return 0;
+
+    const accessToken = await ZoomAuthService.getAccessToken(meeting.organizerEmail);
+    const instances = await this.listPastInstances(meeting.zoomMeetingId, accessToken);
+    if (instances.length <= 1) return 0; // nothing the ordinary sync will not cover
+
+    // What is already stored, so a re-run is cheap and does not re-download.
+    const existing = await withDbRetry(() =>
+      db.meetingRecording.findMany({ where: { meetingId: meeting.id }, select: { recordedAt: true } })
+    );
+    const haveAt = existing.map((r) => r.recordedAt?.getTime()).filter((t): t is number => !!t);
+    const NEAR_MS = 5 * 60 * 1000;
+
+    let added = 0;
+    for (const instance of instances) {
+      if (instance.startTime && haveAt.some((t) => Math.abs(t - instance.startTime!.getTime()) < NEAR_MS)) {
+        continue; // this occurrence is already stored
+      }
+      try {
+        const res = await fetch(
+          `https://api.zoom.us/v2/meetings/${this.encodeInstanceUuid(instance.uuid)}/recordings`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!res.ok) continue;
+        const data = (await res.json()) as any;
+        const ready: any[] = (data.recording_files || []).filter((f: any) => f.status === 'completed');
+        const videoFile =
+          ready.find((f: any) => f.file_type === 'MP4') || ready.find((f: any) => f.file_extension === 'MP4');
+        if (!videoFile) continue;
+
+        const recIdStr = String(videoFile.id || `${meeting.zoomMeetingId}-${instance.uuid}`);
+        const recordedAtRaw = videoFile.recording_start || data.start_time || instance.startTime;
+        const recordedAt =
+          recordedAtRaw && !Number.isNaN(new Date(recordedAtRaw).getTime()) ? new Date(recordedAtRaw) : null;
+
+        const recording = await withDbRetry(() =>
+          db.meetingRecording.upsert({
+            where: { zoomRecordingId: recIdStr },
+            update: { meetingId: meeting.id, ...(recordedAt ? { recordedAt } : {}) },
+            create: {
+              meetingId: meeting.id,
+              zoomRecordingId: recIdStr,
+              fileName: `${meeting.title.replace(/[^a-zA-Z0-9_-]/g, '_')}_${recIdStr}.mp4`,
+              fileSize: videoFile.file_size || 0,
+              duration: data.duration ? data.duration * 60 : videoFile.duration || 0,
+              recordedAt,
+              downloadUrl: videoFile.download_url,
+              playUrl: videoFile.play_url || data.share_url,
+              downloadStatus: 'PENDING',
+              extractedAudioStatus: 'PENDING',
+            },
+          })
+        );
+
+        added++;
+        logger.info(
+          `[ZoomRecording] Recovered occurrence ${recordedAt?.toISOString() ?? instance.uuid} ` +
+          `for "${meeting.title}" (rec ${recording.id}).`
+        );
+        this.downloadRecording(recording.id).catch((err: any) => {
+          logger.warn(`[ZoomRecording] Background download failed for ${recording.id}: ${err.message}`);
+        });
+      } catch (err: any) {
+        logger.warn(`[ZoomRecording] Occurrence ${instance.uuid} could not be synced: ${err.message}`);
+      }
+    }
+
+    return added;
+  }
+
+  /**
    * Syncs cloud recordings from Zoom API for a specific meeting.
    */
   static async syncMeetingRecording(meetingId: string) {
@@ -135,6 +264,14 @@ export class ZoomRecordingService {
       readyFiles.find((f: any) => f.file_extension === 'MP4') ||
       readyFiles[0];
 
+    /* Zoom dates each recording: `recording_start` on the file, falling back
+     * to the instance's own `start_time`. This is the only thing that can tell
+     * two sessions apart in a room they share. */
+    const recordedAtRaw = videoFile.recording_start || data.start_time || null;
+    const recordedAt = recordedAtRaw && !Number.isNaN(new Date(recordedAtRaw).getTime())
+      ? new Date(recordedAtRaw)
+      : null;
+
     const recIdStr = String(videoFile.id || `${zoomId}-video`);
     const fileName = `${meeting.title.replace(/[^a-zA-Z0-9_-]/g, '_')}_${recIdStr}.mp4`;
     const fileSize = videoFile.file_size || 0;
@@ -148,6 +285,7 @@ export class ZoomRecordingService {
           fileName,
           fileSize,
           duration,
+          ...(recordedAt ? { recordedAt } : {}),
           downloadUrl: videoFile.download_url,
           playUrl: videoFile.play_url || data.share_url,
         },
@@ -157,6 +295,7 @@ export class ZoomRecordingService {
           fileName,
           fileSize,
           duration,
+          recordedAt,
           downloadUrl: videoFile.download_url,
           playUrl: videoFile.play_url || data.share_url,
           downloadStatus: 'PENDING',
@@ -171,6 +310,16 @@ export class ZoomRecordingService {
     this.downloadRecording(recording.id).catch((err: any) => {
       logger.warn(`[ZoomRecording] Background download failed for ${recording.id}: ${err.message}`);
     });
+
+    /* The call above answered for the latest occurrence only. In a reused room
+     * the earlier sessions have recordings of their own that nothing else will
+     * ever fetch, so pick them up in the background. Failure here must never
+     * disturb the sync that has already succeeded. */
+    this.syncAllOccurrences(meeting.id)
+      .then((added) => {
+        if (added > 0) logger.info(`[ZoomRecording] Recovered ${added} earlier occurrence(s) for "${meeting.title}".`);
+      })
+      .catch((err: any) => logger.warn(`[ZoomRecording] Occurrence backfill failed: ${err.message}`));
 
     return recording;
   }

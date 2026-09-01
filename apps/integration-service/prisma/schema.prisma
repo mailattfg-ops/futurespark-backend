@@ -142,6 +142,13 @@ model MeetingRecording {
   meeting              Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   driveFileId          String?  @unique
   zoomRecordingId      String?  @unique
+  /// When the provider says this recording actually started.
+  ///
+  /// The meeting row is shared by every session held in a reused room, so its
+  /// own start time cannot date a recording. This can. Null on rows synced
+  /// before the column existed - readers fall back to `createdAt`, which is
+  /// when the sync first saw the file and is close enough to the class.
+  recordedAt           DateTime?
   fileName             String
   fileSize             Int
   duration             Int?     // Duration in seconds
