@@ -143,17 +143,18 @@ export const pilotLeadService = {
     });
 
     /* Meta CAPI — same rules as the demo-lead flow: only after the commit,
-     * own try/catch, never able to fail the application. */
-    try {
-      const capiEventId = await sendLeadEvent({
+     * not awaited, never able to fail the application. */
+    if (!input.staffEntry) {
+      sendLeadEvent({
         email: input.parentEmail,
         phone: input.parentPhone,
         firstName: input.parentName,
         eventId: input.eventId,
-      });
-      if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${input.parentEmail}`);
-    } catch (err: any) {
-      console.error('Meta CAPI failed:', err?.message ?? err);
+      })
+        .then((capiEventId) => {
+          if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${input.parentEmail}`);
+        })
+        .catch((err: any) => console.error('Meta CAPI failed:', err?.message ?? err));
     }
 
     // Tell the team, in-app.

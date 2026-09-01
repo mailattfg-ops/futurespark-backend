@@ -219,11 +219,11 @@ export const validateCreateSession = (data: any): CreateSessionInput => {
 /**
  * The outcomes this session teaches, as the report prints them.
  *
- * Capped at five because that is what the report's layout holds — accepting a
- * sixth here would mean silently dropping it at render time, which is worse
+ * Capped at eight because that is what the report's layout holds — accepting a
+ * ninth here would mean silently dropping it at render time, which is worse
  * than telling the author now.
  */
-const MAX_LEARNING_OUTCOMES = 5;
+const MAX_LEARNING_OUTCOMES = 8;
 const OUTCOME_MAX_LEN = 160;
 
 const normalizeLearningOutcomes = (raw: any): string[] => {
@@ -235,7 +235,7 @@ const normalizeLearningOutcomes = (raw: any): string[] => {
     .map((v) => v.slice(0, OUTCOME_MAX_LEN));
   if (out.length > MAX_LEARNING_OUTCOMES) {
     throw new AppError(
-      `A session can have at most ${MAX_LEARNING_OUTCOMES} learning outcomes; the report prints five.`,
+      `A session can have at most ${MAX_LEARNING_OUTCOMES} learning outcomes.`,
       HTTP_STATUS.BAD_REQUEST
     );
   }
@@ -251,7 +251,7 @@ const normalizeActivitiesInput = (raw: any): SessionActivities => {
   for (const [key, list] of [['in-session', cleaned.inSession], ['take-home', cleaned.takeHome]] as const) {
     if (list.length > MAX_SESSION_ACTIVITIES) {
       throw new AppError(
-        `A session can have at most ${MAX_SESSION_ACTIVITIES} ${key} activities; the report prints three.`,
+        `A session can have at most ${MAX_SESSION_ACTIVITIES} ${key} activities.`,
         HTTP_STATUS.BAD_REQUEST
       );
     }

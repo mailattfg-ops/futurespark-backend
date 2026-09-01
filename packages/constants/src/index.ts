@@ -715,15 +715,16 @@ export interface SessionActivity {
  *
  * Fixed per session in the curriculum rather than observed from the recording:
  * the parent report lists what the session is built around, and the mentor
- * marks off what was actually reached. Three of each is what the report's
- * layout holds; more are stored but not printed.
+ * marks off what was actually reached. Five of each is what the report's
+ * layout holds — past three the PDF compresses the rows to fit rather than
+ * clipping them; more than five are stored but not printed.
  */
 export interface SessionActivities {
   inSession: SessionActivity[];
   takeHome: SessionActivity[];
 }
 
-export const MAX_SESSION_ACTIVITIES = 3;
+export const MAX_SESSION_ACTIVITIES = 5;
 const MAX_ACTIVITY_LABEL_LEN = 120;
 
 const normalizeActivityList = (raw: unknown): SessionActivity[] => {

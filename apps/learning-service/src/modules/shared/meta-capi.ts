@@ -102,6 +102,9 @@ export const sendLeadEvent = async (input: LeadEventInput): Promise<string | nul
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      // Without this, a stalled connection sits on undici's ~5-minute default.
+      // Ad attribution is never worth holding a request open that long.
+      signal: AbortSignal.timeout(5000),
     }
   );
   if (!res.ok) {
