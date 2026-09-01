@@ -1452,14 +1452,32 @@ export const scheduleService = {
         startTime: { lte: endedAt },
         endTime: { gte: new Date(endedAt.getTime() - OVERRUN_GRACE_MS) },
       },
-      select: { id: true, startTime: true, actualEndedAt: true },
+      select: { id: true, startTime: true, endTime: true, actualEndedAt: true },
       orderBy: { startTime: 'desc' },
     });
+
+    /* Two classes booked into the SAME room at the SAME time cannot be told
+     * apart by presence: the room reports one set of occupants and there is no
+     * way to know whose class they are in. Stamping either one records a class
+     * as having taken place on the strength of somebody else's attendance —
+     * and `actualEndedAt` is evidence, so the dashboard then shows a class
+     * nobody joined as completed and `rateClass` opens against its mentor.
+     *
+     * Refuse instead. The double-booking is a scheduling fault to fix, not
+     * something to paper over with a coin flip. */
+    const liveThen = candidates.filter((c) => c.startTime <= endedAt && c.endTime >= endedAt);
+    if (liveThen.length > 1) {
+      logger.warn(
+        `[Presence] Room ${meetingLink} emptied while ${liveThen.length} classes were booked into it ` +
+        `at once (${liveThen.map((c) => c.id).join(', ')}). Not attributing the end to any of them.`
+      );
+      return { updated: 0 };
+    }
 
     // Only ever the single most recent class that was live at that moment. If it
     // is already stamped, this is a repeat report from the 30-second poller and
     // there is nothing to do — never fall through to an earlier class.
-    const target = candidates[0];
+    const target = liveThen[0] ?? candidates[0];
     if (!target || target.actualEndedAt) return { updated: 0 };
 
     await db.scheduledClass.update({
