@@ -208,18 +208,52 @@ export class MeetPresenceService {
           if (active) live++;
 
           const now = new Date();
+
+          /* A reused room carries its presence forward for ever.
+           *
+           * `presenceFirstJoinAt` is stamped once and never cleared, and
+           * `presenceLastLiveAt` holds whenever the room was last busy. One
+           * room now serves every session of a programme, so on the NEXT
+           * session those fields still describe the LAST one - the room reads
+           * as "somebody joined, and it has since emptied", which the
+           * dashboard renders as a finished class before anyone has arrived.
+           *
+           * If the room is idle now and its last sign of life predates this
+           * watch window, that life belonged to an earlier session. Wipe the
+           * slate so this session starts from "nobody has joined yet", which
+           * is what makes the red waiting/no-show states reachable at all. */
+          const lastSign = Math.max(
+            meeting.presenceLastLiveAt ? new Date(meeting.presenceLastLiveAt).getTime() : 0,
+            meeting.presenceFirstJoinAt ? new Date(meeting.presenceFirstJoinAt).getTime() : 0
+          );
+          const staleOccurrence = !active && lastSign > 0 && now.getTime() - lastSign > WATCH_AFTER_MS;
+
           await withDbRetry(() =>
             db.meeting.update({
               where: { id: meeting.id },
-              data: {
-                presenceIsLive: active,
-                presenceCheckedAt: now,
-                ...(active ? { presenceLastLiveAt: now } : {}),
-                // Only stamp the first-ever join once.
-                ...(active && !meeting.presenceFirstJoinAt ? { presenceFirstJoinAt: now } : {}),
-              },
+              data: staleOccurrence
+                ? {
+                    presenceIsLive: false,
+                    presenceCheckedAt: now,
+                    presenceFirstJoinAt: null,
+                    presenceLastLiveAt: null,
+                  }
+                : {
+                    presenceIsLive: active,
+                    presenceCheckedAt: now,
+                    ...(active ? { presenceLastLiveAt: now } : {}),
+                    // Only stamp the first-ever join once.
+                    ...(active && !meeting.presenceFirstJoinAt ? { presenceFirstJoinAt: now } : {}),
+                  },
             })
           );
+
+          if (staleOccurrence) {
+            logger.info(
+              `[MeetPresence] "${meeting.title}" (${code}) is idle and its last activity predates ` +
+              `this window — presence reset for the new session.`
+            );
+          }
 
           if (active && !meeting.presenceFirstJoinAt) {
             logger.info(`[MeetPresence] First join detected for "${meeting.title}" (${code})`);
@@ -229,7 +263,8 @@ export class MeetPresenceService {
           // the class is over, whatever the clock says. Tell auth-service once
           // so the portals can stop offering a Join button and start offering
           // the reflection quiz, without waiting out the full 90-minute slot.
-          if (!active && meeting.presenceFirstJoinAt && meeting.presenceLastLiveAt) {
+          // Never on a stale slate: that "end" happened in an earlier session.
+          if (!active && !staleOccurrence && meeting.presenceFirstJoinAt && meeting.presenceLastLiveAt) {
             const emptyFor = now.getTime() - new Date(meeting.presenceLastLiveAt).getTime();
             if (emptyFor >= EMPTY_GRACE_MS) {
               await reportRoomEnded(meeting.meetUrl, new Date(meeting.presenceLastLiveAt), meeting.title);
