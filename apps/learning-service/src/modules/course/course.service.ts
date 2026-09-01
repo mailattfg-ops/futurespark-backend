@@ -91,7 +91,25 @@ export const courseService = {
 
   async deleteProgram(id: string) {
     await this.getProgramById(id);
-    return db.program.delete({ where: { id } });
+
+    return db.$transaction(async (tx) => {
+      /* Strip the programme from every mentor qualified to teach it.
+       * `qualifiedPrograms` is a scalar String[] rather than a relation, so
+       * there is no cascade to rely on: a delete without this leaves a dead
+       * id on the mentor for ever, and the admin cards render it raw. */
+      const qualified = await tx.user.findMany({
+        where: { qualifiedPrograms: { has: id } },
+        select: { id: true, qualifiedPrograms: true },
+      });
+      for (const mentor of qualified) {
+        await tx.user.update({
+          where: { id: mentor.id },
+          data: { qualifiedPrograms: mentor.qualifiedPrograms.filter((p) => p !== id) },
+        });
+      }
+
+      return tx.program.delete({ where: { id } });
+    });
   },
 
   // ── PaymentPlan Operations (upsert by type) ───────────────────

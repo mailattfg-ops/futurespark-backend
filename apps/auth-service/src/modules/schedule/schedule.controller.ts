@@ -516,6 +516,11 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Room end recorded'));
   },
 
+  async getDisplayMetrics(req: Request, res: Response) {
+    const metrics = await scheduleService.getDisplayMetrics(req.headers['x-user-role'] as string | undefined);
+    return res.status(HTTP_STATUS.OK).json(successResponse(metrics, 'Display metrics fetched successfully'));
+  },
+
   async getStudentOverview(req: Request, res: Response) {
     const overview = await scheduleService.getStudentOverview(
       req.params.studentId,

@@ -238,8 +238,20 @@ export const userService = {
       role: query.role,
       isNotRole: query.isNotRole,
     });
+
+    const livePrograms = new Set(
+      (await db.program.findMany({ select: { id: true } })).map((p) => p.id)
+    );
     return {
-      data: users.map(sanitizePublic),
+      /* A qualification for a programme that no longer exists is not a
+       * qualification. Deleted programmes used to linger in this array and
+       * surfaced on the mentor cards as bare UUIDs; they are dropped here so
+       * every reader - cards, counts and the scheduler's mentor matching -
+       * sees the same truthful list. */
+      data: users.map((u) => ({
+        ...sanitizePublic(u),
+        qualifiedPrograms: (u.qualifiedPrograms ?? []).filter((pid: string) => livePrograms.has(pid)),
+      })),
       pagination: {
         page: query.page,
         limit: query.limit,

@@ -33,6 +33,28 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       return next(new AppError('Token has been revoked', HTTP_STATUS.UNAUTHORIZED));
     }
 
+    /* ── DISPLAY is a screen, not an operator ────────────────────────────
+     * Page-level role checks live in the admin app's layout and are only as
+     * strong as a browser's localStorage. This role is handed out to put
+     * numbers on a wall, so its restriction is enforced here instead: one
+     * aggregate endpoint, read-only, and nothing else in the platform.
+     *
+     * Every gated route in the gateway passes through this middleware, so
+     * this is the one place the rule cannot be routed around.
+     *
+     * 403 and not 401 on purpose: the admin app signs a user out on 401, and
+     * a display screen must not log itself out when a stray widget polls. */
+    if (payload.role === 'DISPLAY') {
+      const path = req.originalUrl.split('?')[0].replace(/\/+$/, '');
+      const permitted = req.method === 'GET' && path === '/api/schedules/display-metrics';
+      if (!permitted) {
+        logger.warn(`[Gateway Auth] DISPLAY role refused ${req.method} ${path}`);
+        return next(
+          new AppError('This account may only view the display dashboard', HTTP_STATUS.FORBIDDEN)
+        );
+      }
+    }
+
     // Sign and inject internal HMAC headers for downstream services
     const p = payload as any;
     const userId = p.userId || p.id || p.sub;
