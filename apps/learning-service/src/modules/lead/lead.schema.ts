@@ -9,6 +9,8 @@ export interface CreateLeadInput {
   phone?: string;
   /** The browser pixel's Lead event id, so Meta deduplicates it against CAPI. */
   eventId?: string;
+  /** Set by the controller, never read from the body: staff keyed this in. */
+  staffEntry?: boolean;
   /** The CHILD who will attend. Optional: a web enquiry may not name them. */
   studentFirstName?: string;
   studentLastName?: string;

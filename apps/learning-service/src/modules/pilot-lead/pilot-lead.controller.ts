@@ -35,7 +35,11 @@ export const pilotLeadController = {
 
   async createPilotLead(req: Request, res: Response) {
     const validatedInput = validateCreatePilotLead(req.body);
-    const newLead = await pilotLeadService.createPilotLead(validatedInput);
+    // Manual entries from the Pilot Leads page are not ad conversions.
+    const newLead = await pilotLeadService.createPilotLead({
+      ...validatedInput,
+      staffEntry: !!req.headers.authorization,
+    });
     return res.status(HTTP_STATUS.CREATED).json(successResponse(newLead, 'Pilot lead application submitted successfully'));
   },
 

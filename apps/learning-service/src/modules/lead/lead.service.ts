@@ -182,19 +182,20 @@ export const leadService = {
 
     /* ── Meta Conversions API ─────────────────────────────────────────────
      * The server-side "Lead", fired ONLY after the row above committed —
-     * validation failures and database errors never reach this line. Its own
-     * try/catch: Meta being down is Meta's problem, never the family's, and
-     * the response shape to the caller is unchanged either way. */
-    try {
-      const capiEventId = await sendLeadEvent({
+     * validation failures and database errors never reach this line. Not
+     * awaited, like the notification and WhatsApp dispatches below it: Meta
+     * being slow is Meta's problem, never the family's. */
+    if (!input.staffEntry) {
+      sendLeadEvent({
         email: lead.email,
         phone: lead.phone,
         firstName: lead.firstName,
         eventId: input.eventId,
-      });
-      if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${lead.email}`);
-    } catch (err: any) {
-      console.error('Meta CAPI failed:', err?.message ?? err);
+      })
+        .then((capiEventId) => {
+          if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${lead.email}`);
+        })
+        .catch((err: any) => console.error('Meta CAPI failed:', err?.message ?? err));
     }
 
     // Dispatch System In-App Notification for Lead Creation

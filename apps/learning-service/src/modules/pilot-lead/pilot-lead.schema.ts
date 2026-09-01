@@ -16,6 +16,8 @@ export interface CreatePilotLeadInput {
   telecallerNotes?: string;
   /** The browser pixel's Lead event id, so Meta deduplicates it against CAPI. */
   eventId?: string;
+  /** Set by the controller, never read from the body: staff keyed this in. */
+  staffEntry?: boolean;
 }
 
 export interface UpdatePilotLeadInput {

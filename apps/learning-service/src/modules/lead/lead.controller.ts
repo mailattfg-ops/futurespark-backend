@@ -17,7 +17,9 @@ export const leadController = {
 
   async create(req: Request, res: Response) {
     const input = validateCreateLead(req.body);
-    const lead = await leadService.createLead(input);
+    // A telecaller adding a phone enquiry is not an ad conversion. Admin
+    // requests carry a Bearer token; the public form's POST does not.
+    const lead = await leadService.createLead({ ...input, staffEntry: !!req.headers.authorization });
     return res.status(HTTP_STATUS.CREATED).json(successResponse(lead, 'Lead created successfully'));
   },
 
