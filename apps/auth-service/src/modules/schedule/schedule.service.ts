@@ -39,6 +39,17 @@ const isMentorRole = (role?: string): boolean => role === 'TEACHER' || role === 
 const isUnscopedStaffRole = (role?: string): boolean => role === 'ADMIN' || role === 'SCHEDULER';
 
 /**
+ * The office wall board.
+ *
+ * DISPLAY reads the whole timetable and does nothing else. It is deliberately
+ * kept out of `isUnscopedStaffRole`, which in nine other places authorises
+ * moving a class, deleting one, awarding credits and filing a report - none of
+ * which a screen bolted to a wall should ever be able to do by virtue of
+ * appearing in a "staff" list. Its only privilege is the unscoped read below.
+ */
+const isWallDisplayRole = (role?: string): boolean => role === 'DISPLAY';
+
+/**
  * Staff whose job is auditing classes that have already been delivered: they
  * sign off a class's QA verdict, work the session-report queue, and are the only
  * roles allowed to read a class's transcript and reflection answer key.
@@ -358,7 +369,7 @@ export const scheduleService = {
     // A caller-supplied filter is still honoured, but only ever as a further
     // AND on top of this: it can narrow what the caller already owns and can
     // never reach outside it.
-    if (!isUnscopedStaffRole(callerRole)) {
+    if (!isUnscopedStaffRole(callerRole) && !isWallDisplayRole(callerRole)) {
       if (!callerId) {
         throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
       }
@@ -1394,6 +1405,34 @@ export const scheduleService = {
    * in: one Meet link can be shared by all 40 sessions of a programme, so
    * matching on link alone would stamp the wrong week.
    */
+  /**
+   * The meeting links of classes running around now.
+   *
+   * One room is reused for every session of a programme, so the meeting row a
+   * link belongs to keeps the date of the FIRST class booked on it. The
+   * presence pollers window on that row's own start/end time, which means a
+   * reused room reports presence only on its original day and every later
+   * class on the same link renders as "cannot confirm anyone joined" - never
+   * green, never the red no-show warning.
+   *
+   * This answers "which rooms should be watched" from the timetable instead,
+   * which is the thing that actually moves.
+   */
+  async activeMeetingLinks(): Promise<string[]> {
+    const now = Date.now();
+    const rows = await db.scheduledClass.findMany({
+      where: {
+        meetingLink: { not: null },
+        status: { not: 'CANCELLED' },
+        // Mirrors the pollers' window: joined-early through overrun.
+        startTime: { lte: new Date(now + 30 * 60 * 1000) },
+        endTime: { gte: new Date(now - 60 * 60 * 1000) },
+      },
+      select: { meetingLink: true },
+    });
+    return [...new Set(rows.map((r) => r.meetingLink).filter((l): l is string => !!l))];
+  },
+
   async markRoomEnded(meetingLink: string, endedAt: Date) {
     if (!meetingLink) return { updated: 0 };
 

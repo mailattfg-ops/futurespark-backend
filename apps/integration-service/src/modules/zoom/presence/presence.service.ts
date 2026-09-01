@@ -78,20 +78,51 @@ export class ZoomPresenceService {
   }
 
   /**
-   * Retrieves all Zoom meetings currently inside the active watch window.
+   * The links of classes running around now, asked of auth-service.
+   *
+   * Empty on any failure: a room is then watched only by its own dates, which
+   * is the behaviour that existed before this call - degraded, never broken.
+   */
+  static async activeClassLinks(): Promise<string[]> {
+    try {
+      const res = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/active-links`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return [];
+      const body: any = await res.json().catch(() => null);
+      return Array.isArray(body?.data) ? body.data.filter((l: unknown) => typeof l === 'string') : [];
+    } catch (err: any) {
+      logger.warn(`[ZoomPresence] Could not read active class links: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Zoom meetings worth polling right now.
+   *
+   * Two ways in, unioned:
+   *   1. the meeting's OWN slot is current - a room booked for this class;
+   *   2. a class running now is using its link - a room reused across sessions,
+   *      whose row still carries the date of the first class booked on it.
+   *
+   * (2) is why a reused room used to sit permanently on "cannot confirm anyone
+   * joined": it never entered the window again after its first day.
    */
   static async getWatchWindowMeetings() {
     const now = Date.now();
     const windowStart = new Date(now - WATCH_AFTER_MS);
     const windowEnd = new Date(now + WATCH_BEFORE_MS);
+    const activeLinks = await this.activeClassLinks();
 
     return withDbRetry(() =>
       db.meeting.findMany({
         where: {
           provider: 'ZOOM',
           status: { not: 'CANCELLED' },
-          startTime: { lte: windowEnd },
-          endTime: { gte: windowStart },
+          OR: [
+            { AND: [{ startTime: { lte: windowEnd } }, { endTime: { gte: windowStart } }] },
+            ...(activeLinks.length ? [{ meetUrl: { in: activeLinks } }] : []),
+          ],
         },
       })
     );

@@ -138,13 +138,48 @@ export class MeetPresenceService {
    * Reading presence is cheap and read-only; knowing the truth about a room that
    * is being used matters more than skipping a few polls.
    */
+  /**
+   * The links of classes running around now, asked of auth-service.
+   *
+   * Empty on any failure: a room is then watched only by its own dates, which
+   * is the behaviour that existed before this call - degraded, never broken.
+   */
+  static async activeClassLinks(): Promise<string[]> {
+    try {
+      const res = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/active-links`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return [];
+      const body: any = await res.json().catch(() => null);
+      return Array.isArray(body?.data) ? body.data.filter((l: unknown) => typeof l === 'string') : [];
+    } catch (err: any) {
+      logger.warn(`[MeetPresence] Could not read active class links: ${err.message}`);
+      return [];
+    }
+  }
+
   static async getWatchWindowMeetings() {
     const now = Date.now();
+    const activeLinks = await MeetPresenceService.activeClassLinks();
     return withDbRetry(() =>
       db.meeting.findMany({
         where: {
-          startTime: { lte: new Date(now + WATCH_BEFORE_MS) },
-          endTime: { gte: new Date(now - WATCH_AFTER_MS) },
+          /* Two ways into the window, unioned: the meeting's own slot is
+           * current, OR a class running now is using its link. The second is
+           * what keeps a REUSED room visible - one link serves every session of
+           * a programme, and its row keeps the date of the first class booked
+           * on it, so windowing on that row alone blinds the poller from day
+           * two onwards and the dashboard sits on "cannot confirm anyone
+           * joined" for ever. */
+          OR: [
+            {
+              AND: [
+                { startTime: { lte: new Date(now + WATCH_BEFORE_MS) } },
+                { endTime: { gte: new Date(now - WATCH_AFTER_MS) } },
+              ],
+            },
+            ...(activeLinks.length ? [{ meetUrl: { in: activeLinks } }] : []),
+          ],
         },
         take: 100,
       })
