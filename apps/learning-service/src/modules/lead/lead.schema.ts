@@ -7,6 +7,8 @@ export interface CreateLeadInput {
   lastName: string;
   email: string;
   phone?: string;
+  /** The browser pixel's Lead event id, so Meta deduplicates it against CAPI. */
+  eventId?: string;
   /** The CHILD who will attend. Optional: a web enquiry may not name them. */
   studentFirstName?: string;
   studentLastName?: string;
@@ -87,6 +89,7 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
     lastName: data.lastName ? data.lastName.trim() : '',
     email: data.email.trim().toLowerCase(),
     phone: data.phone?.trim() || undefined,
+    eventId: typeof data.eventId === 'string' && data.eventId.trim() ? data.eventId.trim() : undefined,
     // Empty string collapses to undefined so a blank form field stores NULL
     // rather than '' — readers test for a missing student name, and '' would
     // pass that test and then render as nothing at all.

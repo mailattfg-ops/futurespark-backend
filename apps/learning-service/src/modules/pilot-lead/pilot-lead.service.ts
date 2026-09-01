@@ -1,4 +1,5 @@
 import { db } from '../../database/datasource';
+import { sendLeadEvent } from '../shared/meta-capi';
 import { CreatePilotLeadInput, UpdatePilotLeadInput } from './pilot-lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -140,6 +141,20 @@ export const pilotLeadService = {
         telecallerNotes: input.telecallerNotes || null,
       },
     });
+
+    /* Meta CAPI — same rules as the demo-lead flow: only after the commit,
+     * own try/catch, never able to fail the application. */
+    try {
+      const capiEventId = await sendLeadEvent({
+        email: input.parentEmail,
+        phone: input.parentPhone,
+        firstName: input.parentName,
+        eventId: input.eventId,
+      });
+      if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${input.parentEmail}`);
+    } catch (err: any) {
+      console.error('Meta CAPI failed:', err?.message ?? err);
+    }
 
     // Tell the team, in-app.
     const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';

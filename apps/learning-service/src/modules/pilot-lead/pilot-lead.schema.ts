@@ -14,6 +14,8 @@ export interface CreatePilotLeadInput {
   preferredSlotTime?: string;
   preferredTimezone?: string;
   telecallerNotes?: string;
+  /** The browser pixel's Lead event id, so Meta deduplicates it against CAPI. */
+  eventId?: string;
 }
 
 export interface UpdatePilotLeadInput {
@@ -78,6 +80,7 @@ export const validateCreatePilotLead = (data: any): CreatePilotLeadInput => {
     preferredSlotTime: data.preferredSlotTime || data.preferredTime || undefined,
     preferredTimezone: data.preferredTimezone || undefined,
     telecallerNotes: data.telecallerNotes ? String(data.telecallerNotes).trim() : undefined,
+    eventId: typeof data.eventId === 'string' && data.eventId.trim() ? data.eventId.trim() : undefined,
   };
 };
 

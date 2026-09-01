@@ -1,4 +1,5 @@
 import { db } from '../../database/datasource';
+import { sendLeadEvent } from '../shared/meta-capi';
 import { CreateLeadInput, UpdateLeadInput } from './lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -178,6 +179,23 @@ export const leadService = {
         },
       },
     });
+
+    /* ── Meta Conversions API ─────────────────────────────────────────────
+     * The server-side "Lead", fired ONLY after the row above committed —
+     * validation failures and database errors never reach this line. Its own
+     * try/catch: Meta being down is Meta's problem, never the family's, and
+     * the response shape to the caller is unchanged either way. */
+    try {
+      const capiEventId = await sendLeadEvent({
+        email: lead.email,
+        phone: lead.phone,
+        firstName: lead.firstName,
+        eventId: input.eventId,
+      });
+      if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${lead.email}`);
+    } catch (err: any) {
+      console.error('Meta CAPI failed:', err?.message ?? err);
+    }
 
     // Dispatch System In-App Notification for Lead Creation
     const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
