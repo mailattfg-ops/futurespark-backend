@@ -368,6 +368,9 @@ export const tidyDeckTerm = (raw: string): string => {
 
 /** Words that carry no meaning in a cloud: grammar, and the noise of speech. */
 const CLOUD_STOPWORDS = new Set([
+  // Transcription stage directions, for the models that emit them without
+  // brackets. Never lesson vocabulary in a children's finance class.
+  'inaudible', 'unintelligible', 'indistinct', 'crosstalk', 'laughter', 'applause',
   // grammar
   'the', 'and', 'that', 'have', 'for', 'not', 'with', 'you', 'this', 'but', 'his', 'her',
   'they', 'she', 'him', 'from', 'their', 'what', 'about', 'which', 'who', 'when', 'will',
@@ -560,7 +563,14 @@ export const buildWordCloud = (
   };
 
   for (const turn of turns) {
-    const text = String(turn.text ?? '');
+    /* Square-bracketed segments are the transcriber's stage directions -
+     * [inaudible], [crosstalk], [music] - not words anyone spoke. A stretch
+     * the model could not hear repeats its marker dozens of times, which is
+     * precisely the frequency signal this counter reads as importance: one
+     * real cloud carried "inaudible" as lesson vocabulary. Stripped as a
+     * family rather than listed word by word, so next month's new marker
+     * dies here too. */
+    const text = String(turn.text ?? '').replace(/\[[^\]\n]{0,60}\]/g, ' ');
     const raw: string[] = [];
     const atSentenceStart: boolean[] = [];
     const tokenRe = /[A-Za-z'’]+/g;
