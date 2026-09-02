@@ -79,6 +79,13 @@ router.post('/:id/reflection', asyncHandler(scheduleController.submitReflection)
 router.post('/:id/reflection/review', asyncHandler(scheduleController.reviewReflection));
 router.get('/:id/doubts', asyncHandler(scheduleController.listDoubts));
 router.post('/:id/doubts', asyncHandler(scheduleController.createDoubt));
+// Gated: read is the class circle (student, parent, mentor, staff); write is
+// the student or their parent only — the mentor never files the child's work.
+router.get('/:id/submissions', asyncHandler(scheduleController.listSubmissions));
+router.post('/:id/submissions', asyncHandler(scheduleController.addSubmission));
+router.delete('/:id/submissions/:submissionId', asyncHandler(scheduleController.deleteSubmission));
+// Gated: the mentor who taught this class, or an admin.
+router.put('/:id/submissions/:submissionId/comment', asyncHandler(scheduleController.commentOnSubmission));
 // Gated: staff, or someone who was in the class. Participants get a narrowed
 // payload — the transcript and the reflection answer key are auditor-only.
 router.get('/:id',    asyncHandler(scheduleController.getById));

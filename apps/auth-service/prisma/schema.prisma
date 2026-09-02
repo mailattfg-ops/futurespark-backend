@@ -284,6 +284,7 @@ model ScheduledClass {
   reportAttempts      Int       @default(0)
   reportLastError     String?   @db.Text
   doubts              ClassDoubt[]
+  submissions        ClassSubmission[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @default(now()) @updatedAt
 
@@ -296,6 +297,36 @@ model ScheduledClass {
 /// compound-interest bit" is only answerable if the mentor knows which lesson it
 /// came from, and it gives the mentor the recording and the quiz answers as
 /// context when they sit down to reply.
+/// A photo or file of the child's work, attached to the class it was done for.
+///
+/// Anchored to the ScheduledClass (the occurrence), never the curriculum
+/// Session: after a reschedule "week 2's worksheet" must mean the class the
+/// child actually sat, and the mentor reads it beside the class they taught.
+model ClassSubmission {
+  id           String         @id @default(uuid())
+  classId      String
+  class        ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  studentId    String
+  /// Who pressed upload: the student themselves, or their parent photographing
+  /// paper work. Kept so a family can remove their own item and staff can see
+  /// who sent what.
+  uploaderId   String
+  uploaderRole String
+  fileUrl      String
+  fileName     String
+  note         String?
+  /// The mentor's feedback on this piece of work — one note, editable, the
+  /// same shape as reflectionMentorNote. Written by the class's mentor (or an
+  /// admin), read by the family under the file they handed in.
+  mentorComment     String?
+  mentorCommentAt   DateTime?
+  mentorCommentById String?
+  createdAt    DateTime       @default(now())
+
+  @@index([classId])
+  @@schema("auth")
+}
+
 model ClassDoubt {
   id             String         @id @default(uuid())
   classId        String

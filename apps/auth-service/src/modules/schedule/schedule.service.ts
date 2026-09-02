@@ -2212,6 +2212,160 @@ export const scheduleService = {
   },
 
   /** Every question raised against one class, newest first. */
+  /* ── Class submissions ────────────────────────────────────────────────────
+   * The child's own work — a photographed worksheet, a finished activity —
+   * attached to the class it was done for. Reading is the same circle as
+   * doubts: the student, their parent, the mentor who taught it, and staff.
+   * WRITING is narrower: the mentor does not upload the child's work, and a
+   * submission on a cancelled class is a filing error waiting to happen. */
+
+  async listSubmissions(classId: string, callerId?: string, callerRole?: string) {
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        id: true,
+        studentId: true,
+        mentorId: true,
+        student: { select: { parentAccountId: true } },
+      },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    assertClassAccess(scheduledClass, callerId, callerRole);
+
+    return db.classSubmission.findMany({
+      where: { classId },
+      orderBy: { createdAt: 'asc' },
+    });
+  },
+
+  async addSubmission(
+    classId: string,
+    input: { fileUrl?: unknown; fileName?: unknown; note?: unknown },
+    callerId?: string,
+    callerRole?: string
+  ) {
+    const fileUrl = typeof input.fileUrl === 'string' ? input.fileUrl.trim() : '';
+    const fileName = typeof input.fileName === 'string' ? input.fileName.trim().slice(0, 200) : '';
+    const note = typeof input.note === 'string' ? input.note.trim().slice(0, 500) : null;
+    if (!fileUrl || !fileName) {
+      throw new AppError('A file URL and file name are required', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        id: true,
+        status: true,
+        studentId: true,
+        student: { select: { parentAccountId: true } },
+      },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    if (scheduledClass.status === 'CANCELLED') {
+      throw new AppError('This class was cancelled', HTTP_STATUS.BAD_REQUEST);
+    }
+    if (!scheduledClass.studentId) {
+      // A demo class has a lead, not a student — there is nobody whose work
+      // this could be filed under.
+      throw new AppError('This class has no enrolled student to submit work for', HTTP_STATUS.BAD_REQUEST);
+    }
+    if (!callerId) {
+      throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
+    }
+
+    // The child, their parent, or an admin fixing a filing mistake. Never the
+    // mentor: the work is the family's to hand in.
+    const permitted =
+      callerRole === 'ADMIN' ||
+      (callerRole === 'STUDENT' && callerId === scheduledClass.studentId) ||
+      (callerRole === 'PARENT' && callerId === scheduledClass.student?.parentAccountId);
+    if (!permitted) {
+      throw new AppError('You do not have access to this class', HTTP_STATUS.FORBIDDEN);
+    }
+
+    // ponytail: flat cap, per-class. Enough for a worksheet photographed page
+    // by page; stops a stuck retry loop filing five hundred copies.
+    const existing = await db.classSubmission.count({ where: { classId } });
+    if (existing >= 12) {
+      throw new AppError('This class already has the maximum of 12 submissions', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    return db.classSubmission.create({
+      data: {
+        classId,
+        studentId: scheduledClass.studentId,
+        uploaderId: callerId,
+        uploaderRole: callerRole ?? 'STUDENT',
+        fileUrl,
+        fileName,
+        note,
+      },
+    });
+  },
+
+  /**
+   * The mentor's feedback on one handed-in piece of work.
+   *
+   * One editable note, mirroring reflectionMentorNote — a comment thread on a
+   * worksheet photo is ceremony a mentor will not fill in. Only the mentor who
+   * taught the class (or an admin) writes it; the family reads it under the
+   * file. An empty comment clears it.
+   */
+  async commentOnSubmission(
+    classId: string,
+    submissionId: string,
+    comment: unknown,
+    callerId?: string,
+    callerRole?: string
+  ) {
+    const text = typeof comment === 'string' ? comment.trim().slice(0, 600) : '';
+
+    const scheduledClass = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: { id: true, mentorId: true },
+    });
+    if (!scheduledClass) {
+      throw new AppError('Class session not found', HTTP_STATUS.NOT_FOUND);
+    }
+    if (!callerId) {
+      throw new AppError('Unable to identify the caller', HTTP_STATUS.UNAUTHORIZED);
+    }
+    const permitted =
+      callerRole === 'ADMIN' || (isMentorRole(callerRole) && scheduledClass.mentorId === callerId);
+    if (!permitted) {
+      throw new AppError('Only the mentor who taught this class can comment', HTTP_STATUS.FORBIDDEN);
+    }
+
+    const submission = await db.classSubmission.findUnique({ where: { id: submissionId } });
+    if (!submission || submission.classId !== classId) {
+      throw new AppError('Submission not found', HTTP_STATUS.NOT_FOUND);
+    }
+
+    return db.classSubmission.update({
+      where: { id: submissionId },
+      data: text
+        ? { mentorComment: text, mentorCommentAt: new Date(), mentorCommentById: callerId }
+        : { mentorComment: null, mentorCommentAt: null, mentorCommentById: null },
+    });
+  },
+
+  async deleteSubmission(classId: string, submissionId: string, callerId?: string, callerRole?: string) {
+    const submission = await db.classSubmission.findUnique({ where: { id: submissionId } });
+    if (!submission || submission.classId !== classId) {
+      throw new AppError('Submission not found', HTTP_STATUS.NOT_FOUND);
+    }
+    // Whoever uploaded it may withdraw it; an admin can tidy a mis-filing.
+    if (callerRole !== 'ADMIN' && submission.uploaderId !== callerId) {
+      throw new AppError('Only the uploader can remove this submission', HTTP_STATUS.FORBIDDEN);
+    }
+    await db.classSubmission.delete({ where: { id: submissionId } });
+    return { deleted: true };
+  },
+
   async listDoubts(classId: string, callerId?: string, callerRole?: string) {
     const scheduledClass = await db.scheduledClass.findUnique({
       where: { id: classId },
