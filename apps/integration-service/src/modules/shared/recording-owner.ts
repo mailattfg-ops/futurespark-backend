@@ -26,6 +26,9 @@ export interface LessonOwner {
   programId: string | null;
   startTime: string;
   endTime: string;
+  /** This lesson's stored summary, so the panel need not guess which to show. */
+  classSummary?: string | null;
+  transcript?: string | null;
 }
 
 export const findLessonForRecording = async (

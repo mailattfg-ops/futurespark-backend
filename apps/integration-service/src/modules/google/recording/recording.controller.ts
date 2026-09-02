@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { findLessonForRecording } from '../../shared/recording-owner';
 import { GoogleRecordingService } from './recording.service';
 import { buildAiFailureBanner, parseAiFailure, hasRealName } from '../../shared/ai-failure-banner';
 import { startTranscriptionJob, isTranscriptionRunning, getTranscriptionState, describeJobState } from '../../shared/transcription-job';
@@ -388,15 +389,22 @@ export class GoogleRecordingController {
       if (!forceRefresh && recording.meeting) {
         const authDbUrl = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
         try {
-          const rawCode = recording.meeting.meetUrl.split('/').pop() || '';
-          const meetCode = rawCode.split('?')[0].split('#')[0].trim();
-          const classRes = await fetch(`${authDbUrl}/schedules?programId=${recording.meeting.programId}`);
-          if (classRes.ok) {
-            const classData = await classRes.json() as any;
-            const schedules = classData?.data || [];
-            const matchedClass = schedules.find((s: any) => s.meetingLink && s.meetingLink.includes(meetCode));
-            if (matchedClass && (matchedClass.classSummary || matchedClass.transcript)) {
-              let summaryContent = matchedClass.classSummary || matchedClass.transcript;
+          /* Which lesson this recording is, by room AND time.
+           *
+           * This used to pull every class in the PROGRAMME and take the first
+           * whose link contained the room code. One room serves every session,
+           * so that is an arbitrary class - in practice the earliest, which is
+           * why every recording in a shared room came back showing session
+           * one's summary and session one's name. `class-at` answers for the
+           * moment the recording was actually made, and refuses when two
+           * classes could match. */
+          const lesson = await findLessonForRecording(
+            recording.meeting.meetUrl,
+            recording.recordedAt ?? recording.createdAt
+          );
+          if (lesson && (lesson.classSummary || lesson.transcript)) {
+            {
+              let summaryContent: string = lesson.classSummary || lesson.transcript || '';
               if (summaryContent && summaryContent.includes('FULL TRANSCRIPT')) {
                 summaryContent = summaryContent.split('FULL TRANSCRIPT')[0].replace(/=+\s*$/g, '').trim();
               }
