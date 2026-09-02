@@ -1,4 +1,5 @@
 import { extractVerifiedAudio } from "../../shared/audio";
+import { findLessonForRecording } from '../../shared/recording-owner';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -512,15 +513,36 @@ export class ZoomRecordingService {
        * ninety-nine-minute class is still mid-pipeline at that mark, so every
        * attempt died as a bare "fetch failed" until the retry budget was gone
        * — for a recording that was never broken, only long. */
+      const lesson = await findLessonForRecording(
+        recording.meeting.meetUrl,
+        recording.recordedAt ?? recording.createdAt
+      );
+      if (lesson) {
+        logger.info(
+          `[Recording] ${recording.id} belongs to class ${lesson.id} ` +
+          `(session ${lesson.sessionId ?? 'n/a'}, ${lesson.startTime}).`
+        );
+      } else {
+        logger.warn(
+          `[Recording] Could not identify the lesson for ${recording.id}; falling back to the meeting row, ` +
+          'which in a reused room may name the wrong session.'
+        );
+      }
+
       const transcribeRes = await postJsonPatient(`${learnServiceUrl}/transcription/transcribe`, {
           audioFilePath: audioPathToSend,
           meetUrl: recording.meeting.meetUrl,
-          studentId: recording.meeting.studentId,
-          teacherId: recording.meeting.teacherId,
-          sessionId: recording.meeting.sessionId,
-          programId: recording.meeting.programId,
-          startTime: recording.meeting.startTime?.toISOString(),
-          endTime: recording.meeting.endTime?.toISOString(),
+          /* Identity comes from the lesson that was actually in this room when
+           * the recording was made — never from the shared meeting row, whose
+           * session and slot belong to the first class ever booked there. Falls
+           * back to the row only when the lookup cannot answer, which is the
+           * behaviour that existed before. */
+          studentId: lesson?.studentId ?? recording.meeting.studentId,
+          teacherId: lesson?.mentorId ?? recording.meeting.teacherId,
+          sessionId: lesson?.sessionId ?? recording.meeting.sessionId,
+          programId: lesson?.programId ?? recording.meeting.programId,
+          startTime: lesson?.startTime ?? recording.meeting.startTime?.toISOString(),
+          endTime: lesson?.endTime ?? recording.meeting.endTime?.toISOString(),
           // For the AI usage ledger and error log.
           recordingId: recording.id,
           // Real recording length, so the report can print a true duration and

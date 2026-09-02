@@ -24,6 +24,9 @@ router.post('/internal/room-ended', asyncHandler(scheduleController.markRoomEnde
 // room that is reused across sessions, whose meeting row still carries the
 // date of the first class booked on it.
 router.get('/internal/active-links', asyncHandler(scheduleController.activeMeetingLinks));
+// Service-to-service only, same refusal. Tells a finished recording which
+// lesson it belongs to, which the shared meeting row cannot.
+router.get('/internal/class-at', asyncHandler(scheduleController.classInRoomAt));
 // Static prefix, so "students" is never matched as a class id by "/:id".
 // Gated: the student, their parent, or a mentor who teaches them.
 router.get('/students/:studentId/overview', asyncHandler(scheduleController.getStudentOverview));
