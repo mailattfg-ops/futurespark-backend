@@ -6,6 +6,8 @@ export type UserWithoutPassword = Omit<User, 'passwordHash'>;
 export interface PublicUser {
   id: string;
   email: string;
+  /** WhatsApp number for internal ops pings; null when not set. */
+  phone: string | null;
   firstName: string | null;
   lastName: string | null;
   role: string | null;
