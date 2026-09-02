@@ -81,6 +81,7 @@ export const validateCreateUser = (data: any): CreateUserInput => {
 
   return {
     email: data.email.toLowerCase().trim(),
+    phone: data.phone?.trim(),
     password: data.password,
     firstName: data.firstName?.trim(),
     lastName: data.lastName?.trim(),
@@ -171,6 +172,10 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
 
   return {
     email: data.email?.toLowerCase().trim(),
+    // Validated above but omitted here, so every save was silently dropped
+    // before it reached the repository. A field is only "accepted" once it
+    // appears in BOTH the checks and this object.
+    phone: data.phone?.trim(),
     firstName: data.firstName?.trim(),
     lastName: data.lastName?.trim(),
     avatarUrl: data.avatarUrl?.trim(),
