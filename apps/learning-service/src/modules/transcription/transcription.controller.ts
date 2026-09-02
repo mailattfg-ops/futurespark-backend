@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { signInternalHeaders } from '@futurespark/authentication';
 import { logger } from '@futurespark/logger';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -251,7 +252,9 @@ export const transcriptionController = {
 
       const fetchName = async (url: string, label: string): Promise<string | null> => {
         try {
-          const res = await fetch(url);
+          // Signed per call: auth-service verifies the HMAC and holds a
+          // 30-second replay window, so a header set built once would expire.
+          const res = await fetch(url, { headers: signInternalHeaders('learning-service', 'ADMIN') });
           if (!res.ok) return null;
           const body = (await res.json()) as any;
           const person = body?.data;

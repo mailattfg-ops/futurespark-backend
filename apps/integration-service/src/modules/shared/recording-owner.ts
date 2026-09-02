@@ -1,4 +1,5 @@
 import { logger } from '@futurespark/logger';
+import { internalKeyHeader } from './internal-key';
 
 /**
  * Which lesson a finished recording belongs to.
@@ -40,7 +41,7 @@ export const findLessonForRecording = async (
     const url =
       `${AUTH_SERVICE_URL}/schedules/internal/class-at` +
       `?link=${encodeURIComponent(meetUrl)}&at=${encodeURIComponent(recordedAt.toISOString())}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { headers: internalKeyHeader(), signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const body: any = await res.json().catch(() => null);
     return body?.data ?? null;

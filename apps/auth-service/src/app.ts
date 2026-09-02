@@ -12,6 +12,7 @@ import { schedulerGroupRoutes } from './modules/scheduler-group/scheduler-group.
 import { auditRoutes } from './modules/audit/audit.routes';
 import { metricsRoutes } from './modules/metrics/metrics.routes';
 import { auditMiddleware } from './modules/shared/audit';
+import { requireVerifiedIdentity, stripPasswordHashes } from './middlewares/identity';
 
 const app = express();
 
@@ -29,8 +30,19 @@ app.use((req, _res, next) => {
 // Activity Log — records every successful mutation as a "who did what" event.
 app.use(auditMiddleware);
 
+// No response leaves this service carrying a password hash. See identity.ts.
+app.use(stripPasswordHashes);
+
 // ── Routes ─────────────────────────────────────────────────────
+// /auth stays public — login must work for someone who is not yet anyone.
 app.use('/auth', authRoutes);
+
+/* Everything below requires either the gateway's HMAC-signed identity or, on
+ * the machine paths, the internal key. Finding S1-00: without this, a direct
+ * request to this port with a bare `x-user-role: ADMIN` header — or on the
+ * roster endpoints, no headers at all — read every family's records. */
+app.use(requireVerifiedIdentity);
+
 app.use('/audit', auditRoutes);
 app.use('/users', userRoutes);
 app.use('/roles', roleRoutes);

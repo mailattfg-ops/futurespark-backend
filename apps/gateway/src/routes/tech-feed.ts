@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { signInternalHeaders } from '@futurespark/authentication';
 import { successResponse } from '@futurespark/response';
 import { asyncHandler } from '@futurespark/middleware';
 import { logger } from '@futurespark/logger';
@@ -68,8 +69,8 @@ techFeedRouter.get(
     }
 
     const headers = {
-      'x-user-role': 'ADMIN',
-      'x-user-id': String(req.headers['x-user-id'] ?? ''),
+      // Signed, not asserted — auth-service verifies the HMAC now.
+      ...signInternalHeaders(String(req.headers['x-user-id'] ?? 'tech-feed'), 'ADMIN'),
     };
 
     // `since` is passed straight through; each service applies it to the field

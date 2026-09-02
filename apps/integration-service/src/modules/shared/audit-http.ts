@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { internalKeyHeader } from './internal-key';
 import { logger } from '@futurespark/logger';
 
 /**
@@ -83,7 +84,7 @@ const captureChanges = (body: unknown): Array<{ field: string; to: string }> => 
 const post = (entry: object): void => {
   fetch(`${AUTH_SERVICE_URL}/audit/record`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...internalKeyHeader() },
     body: JSON.stringify(entry),
   }).catch((err) => logger.warn(`[Audit] Could not post event to auth-service: ${err.message}`));
 };
