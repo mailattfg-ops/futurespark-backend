@@ -1471,6 +1471,10 @@ export const scheduleService = {
         programId: true,
         startTime: true,
         endTime: true,
+        // Carried so integration-service can show THIS lesson's summary
+        // without a second, differently-gated request.
+        classSummary: true,
+        transcript: true,
       },
       take: 5,
     });
