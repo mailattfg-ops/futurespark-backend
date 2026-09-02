@@ -129,6 +129,9 @@ const sanitizePublic = (user: any): PublicUser => {
   return {
     id: user.id,
     email: user.email,
+    // Without this the staff form reopened blank after a successful save: the
+    // number was stored, this shape just never sent it back.
+    phone: user.phone || null,
     firstName: user.firstName,
     lastName: user.lastName,
     role: user.role?.name || null,
