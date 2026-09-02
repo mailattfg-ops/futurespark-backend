@@ -9,6 +9,7 @@ export const userRepository = {
         passwordHash: data.passwordHash,
         firstName: data.firstName,
         lastName: data.lastName,
+        phone: data.phone ?? null,
         roleId: data.roleId,
         qualifiedPrograms: data.qualifiedPrograms || [],
         mentorTypes: data.mentorTypes || ['REGULAR'],
@@ -44,6 +45,8 @@ export const userRepository = {
         email: data.email,
         firstName: data.firstName,
         lastName: data.lastName,
+        // Empty string clears the number; undefined leaves it untouched.
+        phone: data.phone !== undefined ? data.phone.trim() || null : undefined,
         // Was accepted by the validator but never written here, so a staff
         // profile photo silently reverted on the next page load.
         avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl || null : undefined,

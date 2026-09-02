@@ -24,6 +24,8 @@ router.post('/internal/room-ended', asyncHandler(scheduleController.markRoomEnde
 // room that is reused across sessions, whose meeting row still carries the
 // date of the first class booked on it.
 router.get('/internal/active-links', asyncHandler(scheduleController.activeMeetingLinks));
+// Service-to-service only. Staff WhatsApp numbers for internal ops pings.
+router.get('/internal/staff-numbers', asyncHandler(scheduleController.staffNotifyNumbers));
 // Service-to-service only, same refusal. Tells a finished recording which
 // lesson it belongs to, which the shared meeting row cannot.
 router.get('/internal/class-at', asyncHandler(scheduleController.classInRoomAt));

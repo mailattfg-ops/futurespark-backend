@@ -18,6 +18,9 @@ model User {
   firstName         String?
   lastName          String?
   avatarUrl         String?
+  /// WhatsApp number for internal ops pings (session scheduled/rescheduled).
+  /// Mirrored in the sibling schema — see the shared-tables rule.
+  phone            String?
   roleId            String?
   role              Role?             @relation(fields: [roleId], references: [id], onDelete: SetNull)
   isActive          Boolean           @default(true)
@@ -237,6 +240,10 @@ model ScheduledClass {
   status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
   classType       String    @default("REGULAR")   // "REGULAR", "DEMO"
   leadId            String?   // Lead UUID if classType is DEMO
+  /// Which internal reminders (24h / 1h / 10m) have already gone out for this
+  /// class, so a restart or a second cron tick cannot re-send one.
+  /// Mirrored in the sibling schema — shared tables, see the Student note.
+  internalRemindersSent String[] @default([])
   meetingLink       String?   // Optional Google Meet / Zoom / video call URL
   rescheduleReason  String?
   rescheduleMessage String?

@@ -193,6 +193,32 @@ export const pilotLeadService = {
       });
     }
 
+    /* Tell the TEAM, on WhatsApp — the website only blocks a slot; a human
+     * still has to put the class on the calendar, so this is the message that
+     * starts that work. Recipients are staff numbers held in auth-service, so
+     * they are resolved there rather than duplicated here. */
+    fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/internal-notify-staff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'DEMO_SCHEDULED',
+        context: {
+          studentName: input.studentName || 'Student',
+          grade: input.studentGrade || '-',
+          country: input.presentCountry || '-',
+          parentContact: input.parentPhone || '-',
+          date: input.preferredSlotDate || 'to be confirmed',
+          time: input.preferredSlotTime || 'to be confirmed',
+          // The website only blocks a slot — a human assigns the mentor and
+          // creates the room, which is exactly what this message asks for.
+          mentorName: 'To be assigned',
+          meetingLink: 'To be created',
+        },
+      }),
+    }).catch((err) => {
+      console.error('[Pilot Lead Internal Notify Error]', err?.message);
+    });
+
     return lead;
   },
 
