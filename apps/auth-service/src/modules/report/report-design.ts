@@ -1079,7 +1079,7 @@ export const drawSessionReport = (doc: Doc, d: ReportDocument): void => {
   participation(doc, d);
   topicsCovered(doc, d);
   sessionHighlights(doc, d);
-  pageFooter(doc, `${d.brandName.toUpperCase()} · THINK FORGE GLOBAL LLP`, 1, 2);
+  pageFooter(doc, d.brandName.toUpperCase(), 1, 2);
 
   doc.addPage();
 
