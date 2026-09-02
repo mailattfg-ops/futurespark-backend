@@ -337,16 +337,14 @@ const voiceBalance = (doc: Doc, d: ReportDocument): void => {
     doc.path(arcPath(cx, cy, ringR, -90, (share / 100) * 360))
       .lineWidth(9.97)
       .stroke(C.teal);
-    centered(doc, `${Math.round(share)}%`, cx, 267, {
+    /* The percentage alone. A tiny name caption used to sit under it, but at
+     * larger renders it collided with the figure — and the legend beside the
+     * donut already names whose share this is. Recentred on the ring now that
+     * it stands by itself. */
+    centered(doc, `${Math.round(share)}%`, cx, 269.5, {
       size: 14.2,
       font: FONT.bodyBold,
       color: C.ink,
-    });
-    centered(doc, d.studentName.split(' ')[0].toUpperCase(), cx, 278.8, {
-      size: 3.6,
-      font: FONT.mono,
-      color: C.body,
-      spacing: 0.8,
     });
   } else {
     // Not measured is not zero. An empty ring with a dash says so; a 0% ring
