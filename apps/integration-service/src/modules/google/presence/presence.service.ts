@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { internalKeyHeader } from '../../shared/internal-key';
 import { db, withDbRetry } from '../../../database/datasource';
 import { GoogleAuthService } from '../auth/auth.service';
 import { logger } from '@futurespark/logger';
@@ -77,7 +78,7 @@ async function reportRoomEnded(meetUrl: string, endedAt: Date, title: string): P
   try {
     const res = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/room-ended`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...internalKeyHeader() },
       body: JSON.stringify({ meetingLink: meetUrl, endedAt: endedAt.toISOString() }),
     });
     if (!res.ok) {
@@ -147,6 +148,7 @@ export class MeetPresenceService {
   static async activeClassLinks(): Promise<string[]> {
     try {
       const res = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/active-links`, {
+        headers: internalKeyHeader(),
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) return [];

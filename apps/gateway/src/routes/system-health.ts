@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { signInternalHeaders } from '@futurespark/authentication';
 import fs from 'fs';
 import path from 'path';
 import { successResponse } from '@futurespark/response';
@@ -165,10 +166,11 @@ const cache = new Map<number, { at: number; data: any }>();
 
 // Downstream metrics endpoints enforce the same x-user-role gate, so forward
 // the identity the authenticate middleware already verified for this request.
-const adminHeaders = (req: Request): Record<string, string> => ({
-  'x-user-role': 'ADMIN',
-  'x-user-id': String(req.headers['x-user-id'] ?? ''),
-});
+/* Signed, not asserted: auth-service now verifies the HMAC on these, so a
+ * bare role header would be refused. Signing fresh here also keeps the call
+ * inside the 30-second replay window however long this handler ran first. */
+const adminHeaders = (req: Request): Record<string, string> =>
+  signInternalHeaders(String(req.headers['x-user-id'] ?? 'system-health'), 'ADMIN');
 
 /** Compare phone numbers on their last 10 digits: the DB stores +91XXXXXXXXXX
  *  while Meta echoes 91XXXXXXXXXX, so full strings never match verbatim. */

@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { internalKeyHeader } from '../../shared/internal-key';
 import { db, withDbRetry } from '../../../database/datasource';
 import { ZoomRecordingService } from '../recording/recording.service';
 import { logger } from '@futurespark/logger';
@@ -79,7 +80,7 @@ export class ZoomWebhooksService {
           // Report room ended to auth-service
           fetch(`${AUTH_SERVICE_URL}/schedules/internal/room-ended`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...internalKeyHeader() },
             body: JSON.stringify({ meetingLink: meeting.meetUrl, endedAt: now.toISOString() }),
           }).catch((err) => {
             logger.warn(`[ZoomWebhook] Failed to report room ended: ${err.message}`);
