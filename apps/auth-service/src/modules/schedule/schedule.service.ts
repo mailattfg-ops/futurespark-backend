@@ -7,6 +7,7 @@ import {
   effectiveReflectionQuiz,
   effectiveSessionTopics,
   snapshotReflection,
+  DEFAULT_REFLECTION_POINTS,
   applyMentorMarks,
   mentorAwardedTotal,
   deriveAttendance,
@@ -1890,9 +1891,17 @@ export const scheduleService = {
       // the unbounded-minting bug this whole path is written to avoid.
       const current = await tx.scheduledClass.findUnique({
         where: { id: classId },
-        select: { studentId: true, reflectionAnswers: true },
+        select: { studentId: true, reflectionAnswers: true, reflectionSubmittedAt: true },
       });
       const clawback = mentorAwardedTotal(current?.reflectionAnswers as ReflectionAnswerEntry[] | null);
+
+      /* Submitting the quiz pays instantly - the child sees their effort
+       * counted the moment they press send, not whenever marking happens.
+       * FIRST submission only, read inside the transaction: an admin
+       * resubmitting over an existing attempt re-mints nothing, and the
+       * "already submitted" lock above keeps students to one attempt. The
+       * mentor's per-answer marks still arrive on top at review time. */
+      const instantAward = !current?.reflectionSubmittedAt && current?.studentId ? DEFAULT_REFLECTION_POINTS : 0;
 
       const row = await tx.scheduledClass.update({
         where: { id: classId },
@@ -1931,7 +1940,15 @@ export const scheduleService = {
         );
       }
 
-      return row;
+      if (instantAward > 0 && current?.studentId) {
+        await tx.student.update({
+          where: { id: current.studentId },
+          data: { credits: { increment: instantAward } },
+        });
+        logger.info(`[Reflection] Class ${classId} — ${instantAward} points awarded instantly for submitting the quiz`);
+      }
+
+      return { row, instantAward };
     });
 
     logger.info(
@@ -1941,11 +1958,12 @@ export const scheduleService = {
     // The score/max/badge keys are kept (null) so the client shape does not
     // change; `awaitingReview` is what it should actually be reading.
     return {
-      ...updated,
+      ...updated.row,
       badge: null,
       answeredCount: snapshot.answeredCount,
       pointsAvailable: snapshot.maxScore,
       awaitingReview: true,
+      pointsAwarded: updated.instantAward,
     };
   },
 
@@ -2294,6 +2312,8 @@ export const scheduleService = {
       throw new AppError('This class already has the maximum of 12 submissions', HTTP_STATUS.BAD_REQUEST);
     }
 
+    // No points here, by decision: credits come from the quiz and the mentor's
+    // awards only. Handing in a file must never become a farming loop.
     return db.classSubmission.create({
       data: {
         classId,

@@ -444,7 +444,11 @@ model Session {
   program       Program?     @relation(fields: [programId], references: [id], onDelete: SetNull)
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
-  credits       Int          @default(10)
+  /// Per-session credit override for the mentor's Complete box. Defaulted
+  /// to 10 for years, which silently stamped every session ever created -
+  /// nobody chose that number, and it made "no award on completion" a
+  /// decision the data always overrode. 0 = no default award.
+  credits       Int          @default(0)
   // Post-class reflection prompts the student answers before the next class.
   // Empty means "not customised" — readers fall back to the platform defaults.
   reflectionQuestions String[] @default([])

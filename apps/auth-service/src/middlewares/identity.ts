@@ -39,6 +39,11 @@ const isMachinePath = (path: string): boolean =>
 let warnedNoKey = false;
 
 export const requireVerifiedIdentity = (req: Request, res: Response, next: NextFunction) => {
+  /* The liveness probe answers anyone. It carries the capability list and no
+   * data, and gating it made every monitor — including the gateway's own
+   * system-health page — read this service as down while it was fine. */
+  if (req.path === '/health') return next();
+
   if (isMachinePath(req.path)) {
     const key = process.env.INTERNAL_API_KEY;
     if (!key) {

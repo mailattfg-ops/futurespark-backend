@@ -166,6 +166,11 @@ model Student {
   firstName        String
   lastName         String
   avatarUrl        String?
+  /// Mirrors auth-service's Student. Both schemas map the same physical `auth`
+  /// tables, so a `db push` from EITHER must model every column or it drops the
+  /// ones it does not know — which is exactly how level/country were lost.
+  level            String?
+  country          String?
   isActive         Boolean          @default(true)
   requiresFtlReset Boolean          @default(false)
   createdAt        DateTime         @default(now())
@@ -266,6 +271,7 @@ model ScheduledClass {
   reportAttempts      Int       @default(0)
   reportLastError     String?   @db.Text
   doubts              ClassDoubt[]
+  submissions              ClassSubmission[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @default(now()) @updatedAt
 
@@ -281,6 +287,36 @@ model ScheduledClass {
 ///
 /// Mirrored from auth-service: this schema also drives `prisma db push`, and a
 /// model missing from it would be dropped from the database.
+/// A photo or file of the child's work, attached to the class it was done for.
+///
+/// Anchored to the ScheduledClass (the occurrence), never the curriculum
+/// Session: after a reschedule "week 2's worksheet" must mean the class the
+/// child actually sat, and the mentor reads it beside the class they taught.
+model ClassSubmission {
+  id           String         @id @default(uuid())
+  classId      String
+  class        ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  studentId    String
+  /// Who pressed upload: the student themselves, or their parent photographing
+  /// paper work. Kept so a family can remove their own item and staff can see
+  /// who sent what.
+  uploaderId   String
+  uploaderRole String
+  fileUrl      String
+  fileName     String
+  note         String?
+  /// The mentor's feedback on this piece of work — one note, editable, the
+  /// same shape as reflectionMentorNote. Written by the class's mentor (or an
+  /// admin), read by the family under the file they handed in.
+  mentorComment     String?
+  mentorCommentAt   DateTime?
+  mentorCommentById String?
+  createdAt    DateTime       @default(now())
+
+  @@index([classId])
+  @@schema("auth")
+}
+
 model ClassDoubt {
   id             String         @id @default(uuid())
   classId        String
@@ -398,7 +434,11 @@ model Session {
   program       Program?     @relation(fields: [programId], references: [id], onDelete: SetNull)
   installmentId String?
   installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
-  credits       Int          @default(10)
+  /// Per-session credit override for the mentor's Complete box. Defaulted
+  /// to 10 for years, which silently stamped every session ever created -
+  /// nobody chose that number, and it made "no award on completion" a
+  /// decision the data always overrode. 0 = no default award.
+  credits       Int          @default(0)
   // Post-class reflection prompts the student answers before the next class.
   // Empty means "not customised" — readers fall back to the platform defaults.
   reflectionQuestions String[] @default([])
