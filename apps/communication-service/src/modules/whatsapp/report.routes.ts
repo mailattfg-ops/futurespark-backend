@@ -4,6 +4,12 @@ import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
 import { getAudienceSettings, maskPhone, whatsappConfig, whatsappService } from './whatsapp.service';
 import { sessionReportService } from './report.service';
+import {
+  buildInternalComponents,
+  InternalNotifyContext,
+  InternalNotifyKind,
+  TEMPLATE_NAMES,
+} from './internal-notify';
 
 const router = Router();
 
@@ -253,6 +259,95 @@ router.post('/session-reminder', async (req: Request, res: Response) => {
     return res
       .status(HTTP_STATUS.INTERNAL_SERVER_ERROR)
       .json(errorResponse(err.message || 'Failed to send session reminder'));
+  }
+});
+
+/** Send one internal template to every resolved number. Never throws. */
+const dispatchInternal = async (
+  kind: InternalNotifyKind,
+  context: InternalNotifyContext,
+  recipients: string[]
+): Promise<{ sent: number; failed: number }> => {
+  const components = buildInternalComponents(kind, context);
+  let sent = 0;
+  const failures: string[] = [];
+  for (const to of recipients) {
+    const result = await whatsappService.sendTemplateMessage(to, TEMPLATE_NAMES[kind], 'en', components);
+    if (result.success) sent++;
+    else failures.push(`${maskPhone(to)}: ${result.error ?? result.failureKind}`);
+  }
+  if (failures.length) {
+    logger.warn(`[Internal Notify] ${kind} — ${failures.length} send(s) failed: ${failures.join(' | ')}`);
+  }
+  logger.info(`[Internal Notify] ${kind} — sent to ${sent}/${recipients.length} internal number(s).`);
+  return { sent, failed: failures.length };
+};
+
+/**
+ * POST /whatsapp/internal-notify
+ *
+ * Ops pings to the TEAM (schedulers, the class's mentor) — never to families.
+ * Service-to-service only, like session-report above: no gateway path reaches
+ * it. Deliberately NOT gated on the parent-audience toggles — those switch
+ * customer messaging; the team still needs to know a demo landed. It does
+ * respect the global outbound mode, so "reports only" keeps every automatic
+ * send quiet.
+ */
+router.post('/internal-notify', async (req: Request, res: Response) => {
+  if (whatsappConfig.outboundMode !== 'all') {
+    logger.info('[Internal Notify] Skipped — outbound WhatsApp is limited to the manual session report.');
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse({ sent: 0, skipped: true }, 'Internal notifications disabled by outbound mode.')
+    );
+  }
+
+  const kind = req.body?.kind as InternalNotifyKind;
+  if (!TEMPLATE_NAMES[kind]) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(`Unknown internal notification kind: ${kind}`));
+  }
+  const context: InternalNotifyContext = req.body?.context ?? {};
+  const recipients: string[] = Array.isArray(req.body?.recipients)
+    ? [...new Set((req.body.recipients as unknown[]).filter((r): r is string => typeof r === 'string' && !!r.trim()))]
+    : [];
+  if (recipients.length === 0) {
+    logger.info(`[Internal Notify] ${kind} — no recipients with a phone number configured; nothing sent.`);
+    return res.status(HTTP_STATUS.OK).json(successResponse({ sent: 0 }, 'No internal recipients configured.'));
+  }
+
+  const { sent, failed } = await dispatchInternal(kind, context, recipients);
+  return res.status(HTTP_STATUS.OK).json(successResponse({ sent, failed }, 'Internal notify complete'));
+});
+
+/**
+ * POST /whatsapp/internal-notify-staff
+ *
+ * Same ping, for callers that do not know who the staff are — learning-service
+ * handles website demo bookings but cannot read auth-service's user table. It
+ * asks auth-service for the numbers, then reuses the route above.
+ */
+router.post('/internal-notify-staff', async (req: Request, res: Response) => {
+  const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://127.0.0.1:3001';
+  try {
+    const lookup = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/staff-numbers`, {
+      headers: process.env.INTERNAL_API_KEY ? { 'x-internal-key': process.env.INTERNAL_API_KEY } : {},
+      signal: AbortSignal.timeout(5000),
+    });
+    const body: any = lookup.ok ? await lookup.json().catch(() => null) : null;
+    const recipients: string[] = Array.isArray(body?.data) ? body.data : [];
+
+    const kind = req.body?.kind as InternalNotifyKind;
+    if (!TEMPLATE_NAMES[kind]) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse(`Unknown internal notification kind: ${kind}`));
+    }
+    if (whatsappConfig.outboundMode !== 'all') {
+      logger.info('[Internal Notify] Skipped — outbound WhatsApp is limited to the manual session report.');
+      return res.status(HTTP_STATUS.OK).json(successResponse({ sent: 0, skipped: true }, 'Disabled by outbound mode.'));
+    }
+    const result = await dispatchInternal(kind, req.body?.context ?? {}, recipients);
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Internal notify complete'));
+  } catch (err: any) {
+    logger.warn(`[Internal Notify] Could not resolve staff numbers: ${err?.message ?? err}`);
+    return res.status(HTTP_STATUS.OK).json(successResponse({ sent: 0 }, 'No internal recipients resolved.'));
   }
 });
 

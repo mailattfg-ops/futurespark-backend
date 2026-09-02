@@ -2,6 +2,7 @@ import './load-env'; // must stay first — populates process.env before ./app l
 import app from './app';
 import { logger } from '@futurespark/logger';
 import { startPostClassReportCron } from './modules/report/report.cron';
+import { startInternalReminderCron } from './modules/schedule/reminder.cron';
 
 
 const PORT = process.env.AUTH_SERVICE_PORT || 3001;
@@ -14,4 +15,6 @@ app.listen(PORT, () => {
   // at module load sees an empty environment — a cron started there would read
   // its intervals and service URLs as undefined.
   startPostClassReportCron();
+  // Internal team reminders: 24h / 1h / 10m before each class.
+  startInternalReminderCron();
 });

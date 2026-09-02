@@ -493,6 +493,17 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(found, 'Class lookup complete'));
   },
 
+  async staffNotifyNumbers(req: Request, res: Response) {
+    if (req.headers['x-user-id'] || req.headers['x-user-role']) {
+      return res.status(HTTP_STATUS.FORBIDDEN).json({
+        success: false,
+        message: 'This endpoint is service-to-service only.',
+      });
+    }
+    const numbers = await scheduleService.staffNotifyNumbers();
+    return res.status(HTTP_STATUS.OK).json(successResponse(numbers, 'Staff numbers fetched'));
+  },
+
   async activeMeetingLinks(req: Request, res: Response) {
     // Service-to-service only, by the same tell as markRoomEnded below: a real
     // internal call never carries the gateway's identity headers.

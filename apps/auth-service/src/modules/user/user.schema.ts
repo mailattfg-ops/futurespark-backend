@@ -10,6 +10,7 @@ export interface CreateUserInput {
   password: string;
   firstName?: string;
   lastName?: string;
+  phone?: string;
   roleId?: string;
   qualifiedPrograms?: string[];
   mentorTypes?: string[];
@@ -100,6 +101,8 @@ export interface UpdateUserInput {
   email?: string;
   firstName?: string;
   lastName?: string;
+  /** WhatsApp number for internal ops pings. */
+  phone?: string;
   avatarUrl?: string;
   isActive?: boolean;
   roleId?: string;
@@ -125,6 +128,9 @@ export const validateUpdateUser = (data: any): UpdateUserInput => {
   }
   if (data.lastName !== undefined && typeof data.lastName !== 'string') {
     errors.push('Last name must be a string');
+  }
+  if (data.phone !== undefined && typeof data.phone !== 'string') {
+    errors.push('Phone must be a string');
   }
   if (data.isActive !== undefined && typeof data.isActive !== 'boolean') {
     errors.push('isActive must be a boolean');

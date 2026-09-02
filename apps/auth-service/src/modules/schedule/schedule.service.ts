@@ -1,4 +1,5 @@
 import { db } from '../../database/datasource';
+import { notifyInternal, formatWhen } from '../shared/internal-notify';
 import { CreateScheduleInput, UpdateScheduleInput } from './schedule.schema';
 import { AppError } from '@futurespark/middleware';
 import {
@@ -714,6 +715,12 @@ export const scheduleService = {
       classesToCreate.map((cls) => db.scheduledClass.create({ data: cls }))
     );
 
+    /* No internal message on booking, by design: the approved templates for
+     * regular sessions are a REMINDER (24h / 1h / 10m before, sent by
+     * reminder.cron.ts) and a reschedule notice. There is no "just booked"
+     * body, and firing the reminder template here would tell the team a class
+     * "begins in 3 weeks" the moment it is created. */
+
     return { count: classesToCreate.length };
   },
 
@@ -1037,6 +1044,32 @@ export const scheduleService = {
         'Credits Adjusted',
         `Admin adjusted points for session "${session?.title || 'Class'}": ${creditsDiff > 0 ? '+' : ''}${creditsDiff} pts.`,
         'LOW'
+      );
+    }
+
+    /* Ops ping when the SLOT actually moved — not on a QA note or a credits
+     * tweak, which also come through this method. Never awaited. */
+    if (slotMoved) {
+      const isDemo = updatedClass.classType === 'DEMO';
+      const when = formatWhen(updatedClass.startTime);
+      void notifyInternal(
+        isDemo ? 'DEMO_RESCHEDULED' : 'SESSION_RESCHEDULED',
+        {
+          studentName:
+            `${updatedClass.student?.firstName ?? ''} ${updatedClass.student?.lastName ?? ''}`.trim() || 'Student',
+          level: (updatedClass.student as any)?.level ?? '-',
+          topic: session?.title ?? 'Class session',
+          mentorName:
+            `${updatedClass.mentor?.firstName ?? ''} ${updatedClass.mentor?.lastName ?? ''}`.trim() || 'Unassigned',
+          meetingLink: updatedClass.meetingLink ?? 'To be shared',
+          // Demo bodies carry grade/country/contact; a demo booked in-app has
+          // no lead row attached here, so these read as unset rather than wrong.
+          grade: '-',
+          country: (updatedClass.student as any)?.country ?? '-',
+          parentContact: '-',
+          ...when,
+        },
+        updatedClass.mentorId
       );
     }
 
@@ -1488,6 +1521,15 @@ export const scheduleService = {
       return null;
     }
     return matches[0];
+  },
+
+  /** WhatsApp numbers of the staff who run the timetable. Internal callers only. */
+  async staffNotifyNumbers(): Promise<string[]> {
+    const staff = await db.user.findMany({
+      where: { isActive: true, phone: { not: null }, role: { name: { in: ['ADMIN', 'SCHEDULER'] } } },
+      select: { phone: true },
+    });
+    return [...new Set(staff.map((s) => s.phone?.trim()).filter((p): p is string => !!p))];
   },
 
   async markRoomEnded(meetingLink: string, endedAt: Date) {
