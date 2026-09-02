@@ -194,7 +194,7 @@ export const courseService = {
         worksheetUrl: input.worksheetUrl ?? null,
         slideContent: input.slideContent ?? null,
         programId: resolvedProgramId ?? null,
-        credits: input.credits ?? 10,
+        credits: input.credits ?? 0,
         reflectionQuestions: input.reflectionQuestions ?? [],
         reflectionQuiz: (input.reflectionQuiz ?? []) as any,
         topics: (input.topics ?? []) as any,
