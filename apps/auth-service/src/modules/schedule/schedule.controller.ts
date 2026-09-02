@@ -543,6 +543,46 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Room end recorded'));
   },
 
+  async listSubmissions(req: Request, res: Response) {
+    const items = await scheduleService.listSubmissions(
+      req.params.id,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(items, 'Submissions fetched successfully'));
+  },
+
+  async addSubmission(req: Request, res: Response) {
+    const created = await scheduleService.addSubmission(
+      req.params.id,
+      req.body ?? {},
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(created, 'Submission saved'));
+  },
+
+  async commentOnSubmission(req: Request, res: Response) {
+    const updated = await scheduleService.commentOnSubmission(
+      req.params.id,
+      req.params.submissionId,
+      req.body?.comment,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(updated, 'Feedback saved'));
+  },
+
+  async deleteSubmission(req: Request, res: Response) {
+    const result = await scheduleService.deleteSubmission(
+      req.params.id,
+      req.params.submissionId,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Submission removed'));
+  },
+
   async getStudentOverview(req: Request, res: Response) {
     const overview = await scheduleService.getStudentOverview(
       req.params.studentId,
