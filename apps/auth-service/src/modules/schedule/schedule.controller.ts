@@ -479,6 +479,20 @@ export const scheduleController = {
   },
 
   /** Internal: integration-service reporting that a Meet room emptied. */
+  async classInRoomAt(req: Request, res: Response) {
+    // Service-to-service only, by the same tell as the siblings below.
+    if (req.headers['x-user-id'] || req.headers['x-user-role']) {
+      return res.status(HTTP_STATUS.FORBIDDEN).json({
+        success: false,
+        message: 'This endpoint is service-to-service only.',
+      });
+    }
+    const link = typeof req.query.link === 'string' ? req.query.link : '';
+    const atRaw = typeof req.query.at === 'string' ? req.query.at : '';
+    const found = await scheduleService.classInRoomAt(link, new Date(atRaw));
+    return res.status(HTTP_STATUS.OK).json(successResponse(found, 'Class lookup complete'));
+  },
+
   async activeMeetingLinks(req: Request, res: Response) {
     // Service-to-service only, by the same tell as markRoomEnded below: a real
     // internal call never carries the gateway's identity headers.

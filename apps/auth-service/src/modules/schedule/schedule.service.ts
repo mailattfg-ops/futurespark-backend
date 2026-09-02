@@ -1433,6 +1433,58 @@ export const scheduleService = {
     return [...new Set(rows.map((r) => r.meetingLink).filter((l): l is string => !!l))];
   },
 
+  /**
+   * The one class held in a given room at a given moment.
+   *
+   * A recording knows the room it came from and when it was made; it does NOT
+   * know whose lesson it was. Integration-service used to answer that from the
+   * meeting row the recording hangs off — but one room serves every session of
+   * a programme, so that row carries the studentId, sessionId and slot of the
+   * FIRST class ever booked there. Every later recording was therefore
+   * transcribed and summarised against session one's material and session
+   * one's clock, which is how a Budgeting recording came back headed
+   * "Orientation" and dated three weeks earlier.
+   *
+   * Refuses when two classes could match: writing a summary onto the wrong
+   * child's lesson is worse than writing none.
+   */
+  async classInRoomAt(meetingLink: string, at: Date) {
+    if (!meetingLink || Number.isNaN(at.getTime())) return null;
+
+    // The room opens half an hour early and classes overrun; the same window
+    // presence and the admin's recording matcher use.
+    const EARLY_MS = 30 * 60 * 1000;
+    const OVERRUN_MS = 60 * 60 * 1000;
+
+    const matches = await db.scheduledClass.findMany({
+      where: {
+        meetingLink,
+        status: { not: 'CANCELLED' },
+        startTime: { lte: new Date(at.getTime() + EARLY_MS) },
+        endTime: { gte: new Date(at.getTime() - OVERRUN_MS) },
+      },
+      select: {
+        id: true,
+        studentId: true,
+        mentorId: true,
+        sessionId: true,
+        programId: true,
+        startTime: true,
+        endTime: true,
+      },
+      take: 5,
+    });
+
+    if (matches.length !== 1) {
+      logger.warn(
+        `[Recording] ${matches.length} classes match room ${meetingLink} at ${at.toISOString()}; ` +
+        'refusing to guess which lesson the recording belongs to.'
+      );
+      return null;
+    }
+    return matches[0];
+  },
+
   async markRoomEnded(meetingLink: string, endedAt: Date) {
     if (!meetingLink) return { updated: 0 };
 
