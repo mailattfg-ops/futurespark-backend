@@ -124,6 +124,30 @@ app.get('/health', (_req, res) => {
  * ────────────────────────────────────────────────────────────────────────── */
 
 // ── Public Routes (No Auth Required) ──────────────────────────
+
+/* Login throttle: 20 attempts per IP per 5 minutes. Without it, the login
+ * endpoint accepts an unlimited credential-stuffing stream.
+ * ponytail: in-memory and per-process — move to Redis if the gateway is ever
+ * scaled past one instance. Keyed on x-forwarded-for because the gateway sits
+ * behind a proxy; 20 is generous enough that a school NAT sharing one IP
+ * doesn't lock a class of children out. */
+const loginAttempts = new Map<string, number[]>();
+app.use('/api/auth/login', (req, res, next) => {
+  const ip = String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown')
+    .split(',')[0]
+    .trim();
+  const now = Date.now();
+  const recent = (loginAttempts.get(ip) ?? []).filter((t) => now - t < 5 * 60_000);
+  if (recent.length >= 20) {
+    logger.warn(`[Gateway] Login throttled for ${ip}`);
+    return res.status(429).json({ success: false, message: 'Too many login attempts. Try again in a few minutes.' });
+  }
+  recent.push(now);
+  if (loginAttempts.size > 5000) loginAttempts.clear(); // crude flush so the map cannot grow unbounded
+  loginAttempts.set(ip, recent);
+  next();
+});
+
 // Auth flows: register, login, refresh are public
 app.use('/api/auth', createProxyMiddleware({
   target: AUTH_SERVICE_URL,
@@ -158,8 +182,16 @@ app.use('/api/leads', createProxyMiddleware({
   },
 }));
 
-// Dedicated Pilot Program Leads (Reserve Your Seat form)
-app.use('/api/pilot-leads', createProxyMiddleware({
+// Dedicated Pilot Program Leads (Reserve Your Seat form).
+// The website widget needs exactly three anonymous paths; everything else is
+// admin traffic and must carry a signed identity or the service refuses it.
+const isPublicPilotPath = (req: any): boolean =>
+  (req.method === 'POST' && (req.path === '/' || req.path === '')) ||
+  (req.method === 'GET' && ['/slot-availability', '/settings'].includes(req.path));
+
+app.use('/api/pilot-leads',
+  (req: any, res: any, next: any) => (isPublicPilotPath(req) ? next() : asyncHandler(authenticate)(req, res, next)),
+  createProxyMiddleware({
   target: LEARN_SERVICE_URL,
   changeOrigin: true,
   pathRewrite: { '^/': '/courses/pilot-leads/' },

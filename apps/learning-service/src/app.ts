@@ -9,6 +9,7 @@ import { resourceRoutes } from './modules/resource/resource.routes';
 import { transcriptionRoutes } from './modules/transcription/transcription.routes';
 import { aiAdminRoutes } from './modules/ai-admin/ai-admin.routes';
 import { metricsRoutes } from './modules/metrics/metrics.routes';
+import { requireInternalAuth, requireRoles } from './middlewares/auth';
 import { auditMiddleware } from './modules/shared/audit';
 import { migratePromptSuite } from './modules/ai-admin/ai-admin.service';
 import { startLogRetentionCron } from './cron/log-retention.cron';
@@ -41,7 +42,7 @@ app.use('/courses', courseRoutes);
 app.use('/resources', resourceRoutes);
 app.use('/transcription', transcriptionRoutes);
 // Model catalogue + selection, spend ledger, error log (admin surface)
-app.use('/ai', aiAdminRoutes);
+app.use('/ai', requireInternalAuth, requireRoles(['ADMIN']), aiAdminRoutes);
 // System Health aggregates for the gateway dashboard (admin surface)
 app.use('/metrics', metricsRoutes);
 

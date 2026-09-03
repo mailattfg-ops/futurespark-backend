@@ -155,7 +155,15 @@ export const userController = {
 
   async updateParentAccount(req: Request, res: Response) {
     const { id } = req.params;
-    const result = await userService.updateParentAccount(id, req.body);
+    // A parent updating their own account may choose a programme and a photo —
+    // nothing else. The raw body carries money fields (paymentApproved,
+    // paidInstallmentIds) that only staff may write; passing them through for a
+    // self-update would let a family approve its own payment.
+    const role = String(req.headers['x-user-role'] ?? '');
+    const input = ['ADMIN', 'SCHEDULER'].includes(role)
+      ? req.body
+      : { programId: req.body.programId, avatarUrl: req.body.avatarUrl };
+    const result = await userService.updateParentAccount(id, input);
     logger.info(`[Parent Account Update] Updated parentAccountId: ${id}`);
     return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Parent account updated successfully'));
   },
