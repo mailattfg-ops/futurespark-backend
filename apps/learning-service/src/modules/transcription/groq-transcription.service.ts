@@ -1742,6 +1742,135 @@ export class GroqTranscriptionService {
       .slice(0, CLOUD_MAX_TERMS);
   }
 
+  /** Share of Indic-script characters among all letters — how much of the class was not spoken in English. */
+  static indicShare(text: string): number {
+    const indic = (text.match(/[ऀ-ൿ]/g) || []).length;
+    const latin = (text.match(/[A-Za-z]/g) || []).length;
+    const total = indic + latin;
+    return total === 0 ? 0 : indic / total;
+  }
+
+  /** Pure filter for model-suggested supplement words: English-looking, deduped, capped. Exported shape for the self-check. */
+  static pickSupplementWords(raw: unknown, current: WordCloudEntry[], cap: number): WordCloudEntry[] {
+    if (!Array.isArray(raw)) return [];
+    const have = new Set(current.map((c) => c.word.toLowerCase()));
+    const extras: WordCloudEntry[] = [];
+    for (const item of raw) {
+      if (current.length + extras.length >= cap) break;
+      const word = String(item ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+      // single words or two-word phrases, plain latin, sane length
+      if (!/^[a-z][a-z]{2,17}( [a-z]{2,17})?$/.test(word)) continue;
+      if (have.has(word)) continue;
+      if (GroqTranscriptionService.CLOUD_FILLER.has(word)) continue;
+      have.add(word);
+      // Modest fixed weight: these are named, not counted, so they must never
+      // outrank a word with a real frequency behind it.
+      extras.push({ word, weight: 3, inLexicon: false });
+    }
+    return extras;
+  }
+
+  /**
+   * English vocabulary for a class taught mostly in Malayalam.
+   *
+   * The mechanical counter reads Latin script only, so a Malayalam-medium
+   * class yields a five-word cloud no matter how rich the lesson was — the
+   * vocabulary was spoken, just not in English (a real 90-minute class: 36k
+   * Malayalam characters, 661 English tokens, cloud of five). When the cloud
+   * is thin AND the transcript is substantial and largely Indic-script, the
+   * analysis model names the English terms for concepts the transcript
+   * demonstrably covers. It can only add — counted words are untouchable.
+   */
+  private async supplementThinCloud(
+    current: WordCloudEntry[],
+    turns: Array<{ text?: unknown }>,
+    context: { sessionTitle: string | null; plannedTopics: string[] }
+  ): Promise<WordCloudEntry[]> {
+    const minTerms = Math.min(readNumberEnv('AI_CLOUD_MIN_TERMS', 18), CLOUD_MAX_TERMS);
+    if (current.length >= minTerms || !this.hasAnalysisKey) return current;
+
+    const text = turns.map((t) => String(t.text ?? '')).join(NEWLINE);
+    if (text.length < 4000) return current; // a short class HAS few words; nothing to recover
+    if (GroqTranscriptionService.indicShare(text) < 0.25) return current; // thin for some other reason
+
+    // Beginning, middle and end of the lesson — enough to name vocabulary
+    // while keeping the call inside the TPM budget.
+    const third = Math.floor(text.length / 3);
+    const sample =
+      text.length <= 15_000
+        ? text
+        : [text.slice(0, 5000), text.slice(third, third + 5000), text.slice(-5000)].join(NEWLINE + '...' + NEWLINE);
+
+    const provider = this.analysisProvider;
+    const instructions = [
+      'A school lesson was taught mostly in Malayalam. You are completing the word cloud for a',
+      'parent-facing report about it.',
+      context.sessionTitle ? `The lesson was: "${context.sessionTitle}".` : '',
+      '',
+      'Below are transcript excerpts. List the ENGLISH words for the financial-literacy vocabulary',
+      'and concrete concepts this lesson clearly covered — words a parent would recognise as what',
+      'their child was taught.',
+      '',
+      'Rules:',
+      '  - Only concepts genuinely present in the excerpts. Do not invent, and do not use the',
+      '    session title as a source.',
+      '  - Single words or two-word phrases, in English, lowercase.',
+      '  - No filler, no names of people, no classroom words (session, homework, teacher, doubt).',
+      `  - At most ${minTerms}.`,
+      '',
+      'Return JSON only: {"words": ["word", ...]}',
+      '',
+      'TRANSCRIPT EXCERPTS:',
+      sample,
+    ]
+      .filter(Boolean)
+      .join(NEWLINE);
+
+    const startedAt = Date.now();
+    try {
+      const response = await axios.post(
+        `${provider.baseUrl}/chat/completions`,
+        {
+          model: provider.model,
+          messages: [{ role: 'user', content: instructions }],
+          response_format: { type: 'json_object' },
+          ...MODEL_CALL_DEFAULTS,
+          max_tokens: 800,
+          usage: { include: true },
+          ...providerBodyExtras(provider),
+        },
+        {
+          headers: providerHeaders(provider),
+          timeout: readNumberEnv('AI_CLOUD_PRUNE_TIMEOUT_MS', 60_000),
+        }
+      );
+
+      const usage = response.data?.usage ?? {};
+      void recordAiUsage({
+        stage: 'analysis',
+        provider: provider.label,
+        model: provider.model,
+        inputTokens: Number(usage.prompt_tokens) || 0,
+        outputTokens: Number(usage.completion_tokens) || 0,
+        costUsd: Number(usage.cost) || 0,
+        processingMs: Date.now() - startedAt,
+        ...this.jobTag,
+      });
+
+      const parsed = this.parseJson(response.data?.choices?.[0]?.message?.content ?? '');
+      const extras = GroqTranscriptionService.pickSupplementWords(parsed?.words, current, minTerms);
+      if (extras.length) {
+        logger.info(
+          `[GroqTranscriptionService] Malayalam-medium class: cloud supplemented ${current.length} -> ${current.length + extras.length} words.`
+        );
+      }
+      return [...current, ...extras];
+    } catch (err: any) {
+      logger.warn(`[GroqTranscriptionService] Cloud supplement failed (${err?.message ?? err}) — keeping the counted words.`);
+      return current;
+    }
+  }
+
   private async pruneWordCloud(
     candidates: WordCloudEntry[],
     context: { sessionTitle: string | null; plannedTopics: string[] }
@@ -2250,6 +2379,10 @@ Return the JSON object now.`;
     /* The cloud arrives as frequency-ranked candidates; a model decides which
      * of them are actually what the lesson was about. See `pruneWordCloud`. */
     derived.wordCloud = await this.pruneWordCloud(derived.wordCloud, {
+      sessionTitle: context.sessionTitle ?? null,
+      plannedTopics: context.plannedTopics ?? [],
+    });
+    derived.wordCloud = await this.supplementThinCloud(derived.wordCloud, turns, {
       sessionTitle: context.sessionTitle ?? null,
       plannedTopics: context.plannedTopics ?? [],
     });
