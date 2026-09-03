@@ -237,6 +237,47 @@ export const reportService = {
   },
 
   /**
+   * The AI-derived facts an admin verifies before a report goes to a family:
+   * topics, word cloud, voice balance, summary, quiz. Facts only, no PDF.
+   */
+  async classReportChecklist(classId: string) {
+    const cls = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        classSummary: true,
+        interactionMetrics: true,
+        sessionId: true,
+        reflectionScore: true,
+        reflectionMaxScore: true,
+        reflectionReviewedAt: true,
+        student: { select: { firstName: true, lastName: true } },
+      },
+    });
+    if (!cls) return null;
+    const stored = extractStoredReport(cls.interactionMetrics);
+    const session = cls.sessionId
+      ? await db.session.findUnique({ where: { id: cls.sessionId }, select: { title: true } })
+      : null;
+    return {
+      studentName: `${cls.student?.firstName ?? ''} ${cls.student?.lastName ?? ''}`.trim(),
+      sessionTitle: session?.title ?? stored?.sessionTopic ?? null,
+      hasAiAnalysis: !!stored,
+      hasSummaryText: !!cls.classSummary?.trim(),
+      topicsCovered: stored?.topicsCovered ?? [],
+      topicsNotReached: stored?.topicsNotReached ?? [],
+      wordCloud: (stored?.wordCloud ?? []).slice(0, 15).map((w) => w.word),
+      talkTime: stored?.talkTime
+        ? { student: stored.talkTime.studentPercent, teacher: stored.talkTime.teacherPercent }
+        : null,
+      parentSummary: stored?.parentSummary ?? null,
+      learningGoals: stored?.learningGoals ?? [],
+      quiz: cls.reflectionReviewedAt
+        ? { score: cls.reflectionScore, max: cls.reflectionMaxScore }
+        : null,
+    };
+  },
+
+  /**
    * Render the PDF and hand it back without sending anything.
    *
    * Exists so the report can be inspected before it is put in front of a family.
