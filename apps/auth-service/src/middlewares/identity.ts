@@ -114,3 +114,32 @@ export const stripPasswordHashes = (_req: Request, res: Response, next: NextFunc
   }) as Response['json'];
   next();
 };
+
+/**
+ * Role gate for people-lane routes. Mounted AFTER requireVerifiedIdentity, so
+ * x-user-role is HMAC-signed by the gateway — a client cannot forge it, and a
+ * request that never passed the gateway never gets here. Default deny.
+ */
+export const requireRole =
+  (...roles: string[]) =>
+  (req: Request, res: Response, next: NextFunction) => {
+    const role = String(req.headers['x-user-role'] ?? '');
+    if (roles.includes(role)) return next();
+    return res.status(403).json({ success: false, message: 'Forbidden: your role cannot access this.' });
+  };
+
+/**
+ * The record's own subject may pass; anyone else needs one of the given roles.
+ * `param` names the route parameter carrying the subject's id, compared against
+ * the signed x-user-id — the BOLA/IDOR check: changing the id in the URL just
+ * changes which comparison fails.
+ */
+export const allowSelfOr =
+  (param: string, ...roles: string[]) =>
+  (req: Request, res: Response, next: NextFunction) => {
+    const role = String(req.headers['x-user-role'] ?? '');
+    const userId = String(req.headers['x-user-id'] ?? '');
+    if (roles.includes(role)) return next();
+    if (userId && userId === req.params[param]) return next();
+    return res.status(403).json({ success: false, message: 'Forbidden: not your record.' });
+  };
