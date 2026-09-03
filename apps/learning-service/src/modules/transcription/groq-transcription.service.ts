@@ -218,10 +218,10 @@ const readNumberEnv = (name: string, fallback: number): number => {
 class TpmPacer {
   private readonly window: Array<{ at: number; tokens: number }> = [];
 
-  constructor(private readonly limit: number) {}
+  constructor(private readonly limit: number) { }
 
   async waitFor(tokens: number): Promise<void> {
-    for (;;) {
+    for (; ;) {
       const cutoff = Date.now() - 60_000;
       while (this.window.length > 0 && this.window[0].at < cutoff) this.window.shift();
 
@@ -576,8 +576,8 @@ export class GroqTranscriptionService {
     if (hasSessionTerms) {
       logger.info(
         `[GroqTranscriptionService] Priming transcription with ${this.transcriptionVocabulary.split(', ').length} term(s)` +
-          (context.sessionTitle ? ` for "${context.sessionTitle}"` : '') +
-          ' (session material + core vocabulary).'
+        (context.sessionTitle ? ` for "${context.sessionTitle}"` : '') +
+        ' (session material + core vocabulary).'
       );
     } else {
       logger.warn(
@@ -661,14 +661,14 @@ export class GroqTranscriptionService {
       if (talk.basis === 'unmeasurable') {
         logger.warn(
           '[GroqTranscriptionService] Talk time is not measurable from this transcript ' +
-            `(${stats.teacherTurns} teacher turn(s), ${stats.studentTurns} student turn(s), ` +
-            `${stats.unlabelledTurns} unlabelled). The report will say "Not available" rather than ` +
-            'invent a split.'
+          `(${stats.teacherTurns} teacher turn(s), ${stats.studentTurns} student turn(s), ` +
+          `${stats.unlabelledTurns} unlabelled). The report will say "Not available" rather than ` +
+          'invent a split.'
         );
       } else if (talk.basis === 'word-share') {
         logger.info(
           '[GroqTranscriptionService] No usable [mm:ss] stamps — reporting SHARE OF WORDS, not talk ' +
-            'time. Use an audio-capable chat model for timestamped turns and this becomes a real measurement.'
+          'time. Use an audio-capable chat model for timestamped turns and this becomes a real measurement.'
         );
       }
 
@@ -739,7 +739,7 @@ export class GroqTranscriptionService {
             entityName: this.jobTag.fileName ?? null,
             summary: (holdReason ?? 'Parent report held for review.').slice(0, 240),
           })
-        ).catch(() => {});
+        ).catch(() => { });
       }
 
       const classSummary = sessionReportToText(report);
@@ -774,11 +774,10 @@ export class GroqTranscriptionService {
           entityType: 'ai-summary',
           entityId: this.jobTag.recordingId ?? null,
           entityName: this.jobTag.fileName ?? null,
-          summary: `The AI pipeline failed on ${this.jobTag.fileName ?? 'a recording'}: ${
-            (failure?.summary ?? String(err?.message ?? err)).slice(0, 140)
-          }`,
+          summary: `The AI pipeline failed on ${this.jobTag.fileName ?? 'a recording'}: ${(failure?.summary ?? String(err?.message ?? err)).slice(0, 140)
+            }`,
         })
-      ).catch(() => {});
+      ).catch(() => { });
       void recordAiError({
         stage: failure?.stage ?? 'transcription',
         kind: failure?.kind ?? 'UNKNOWN',
@@ -890,9 +889,9 @@ export class GroqTranscriptionService {
       logger.info(
         sourceSeconds !== null
           ? `[GroqTranscriptionService] Compressed audio verified against its source: ${cachePath} ` +
-            `(${newSizeMb.toFixed(2)}MB, ${Math.round(producedSeconds)}s) - Ready for transcription`
+          `(${newSizeMb.toFixed(2)}MB, ${Math.round(producedSeconds)}s) - Ready for transcription`
           : `[GroqTranscriptionService] Compressed audio produced: ${cachePath} (${newSizeMb.toFixed(2)}MB, ` +
-            `${Math.round(producedSeconds)}s). The source length could not be read, so the two were NOT compared.`
+          `${Math.round(producedSeconds)}s). The source length could not be read, so the two were NOT compared.`
       );
       return cachePath;
     } catch (err: any) {
@@ -919,8 +918,8 @@ export class GroqTranscriptionService {
           describeGroqFailure(
             new Error(
               'No transcription API key is set. Refusing to generate a placeholder transcript: it ' +
-                'would produce a parent report about a class that was never analysed. Set ' +
-                'AI_TRANSCRIPTION_API_KEY, or AI_ALLOW_PLACEHOLDER=true for local development.'
+              'would produce a parent report about a class that was never analysed. Set ' +
+              'AI_TRANSCRIPTION_API_KEY, or AI_ALLOW_PLACEHOLDER=true for local development.'
             ),
             'transcription',
             { model: this.transcriptionModel, provider: this.transcriptionProvider.label }
@@ -1012,7 +1011,7 @@ export class GroqTranscriptionService {
       const wireLabel = attempt.wire === 'stt' ? '/audio/transcriptions' : '/chat/completions';
       logger.info(
         `[GroqTranscriptionService] Transcription attempt ${i + 1}/${ladder.length} — ` +
-          `"${attempt.model}" via ${wireLabel} (${attempt.why}).`
+        `"${attempt.model}" via ${wireLabel} (${attempt.why}).`
       );
 
       try {
@@ -1020,8 +1019,8 @@ export class GroqTranscriptionService {
         if (i > 0) {
           logger.warn(
             `[GroqTranscriptionService] Transcribed with "${attempt.model}" via ${wireLabel} after ` +
-              `${i} earlier attempt(s) produced nothing. The selected model may not suit this audio — ` +
-              'check the model setting if this repeats.'
+            `${i} earlier attempt(s) produced nothing. The selected model may not suit this audio — ` +
+            'check the model setting if this repeats.'
           );
         }
         return transcript;
@@ -1041,7 +1040,7 @@ export class GroqTranscriptionService {
 
         logger.warn(
           `[GroqTranscriptionService] "${attempt.model}" via ${wireLabel} produced no transcript ` +
-            `(${isEmpty ? 'empty response' : kind}). Falling back to the next option.`
+          `(${isEmpty ? 'empty response' : kind}). Falling back to the next option.`
         );
       }
     }
@@ -1056,9 +1055,9 @@ export class GroqTranscriptionService {
       describeGroqFailure(
         new Error(
           `No transcription model produced a transcript for this audio. Tried: ` +
-            `${ladder.map((a) => `"${a.model}" (${a.wire})`).join(', ')}. ` +
-            `Last error: ${lastError?.message ?? 'unknown'}. ` +
-            'If the audio is silent this is correct; otherwise change the transcription model.'
+          `${ladder.map((a) => `"${a.model}" (${a.wire})`).join(', ')}. ` +
+          `Last error: ${lastError?.message ?? 'unknown'}. ` +
+          'If the audio is silent this is correct; otherwise change the transcription model.'
         ),
         'transcription',
         { model: this.transcriptionModel, provider: this.transcriptionProvider.label }
@@ -1089,7 +1088,7 @@ export class GroqTranscriptionService {
     const sizeMb = (sizeBytes / (1024 * 1024)).toFixed(1);
     logger.info(
       `[GroqTranscriptionService] Audio is ${sizeMb}MB, over the ${(ceiling / (1024 * 1024)).toFixed(0)}MB ` +
-        `per-request limit. Splitting into ${this.chunkSeconds / 60}-minute chunks and transcribing in sequence.`
+      `per-request limit. Splitting into ${this.chunkSeconds / 60}-minute chunks and transcribing in sequence.`
     );
 
     const chunks = this.splitAudio(filePath);
@@ -1100,7 +1099,7 @@ export class GroqTranscriptionService {
        * whole and transcribed the class. */
       throw new GroqError(describeGroqFailure(
         new Error(
-        `Audio is ${sizeMb}MB, above the ${(ceiling / (1024 * 1024)).toFixed(0)}MB request limit for this endpoint, ` +
+          `Audio is ${sizeMb}MB, above the ${(ceiling / (1024 * 1024)).toFixed(0)}MB request limit for this endpoint, ` +
           'and it could not be split (ffmpeg failed). Raise GROQ_MAX_UPLOAD_MB if you are on the paid ' +
           'dev tier (100MB), or check that ffmpeg is available.'
         ),
@@ -1149,7 +1148,7 @@ export class GroqTranscriptionService {
           try {
             logger.info(
               `[GroqTranscriptionService] Transcribing chunk ${i + 1}/${chunks.length}` +
-                `${tryNo > 1 ? ` (attempt ${tryNo}/${perChunkAttempts})` : ''}...`
+              `${tryNo > 1 ? ` (attempt ${tryNo}/${perChunkAttempts})` : ''}...`
             );
             transcribed = await this.uploadForTranscription(chunks[i], carryOver, attempt);
             break;
@@ -1159,7 +1158,7 @@ export class GroqTranscriptionService {
             if (err instanceof GroqError && !LADDER_WALKABLE_KINDS.has(err.failure.kind)) {
               logger.error(
                 `[GroqTranscriptionService] Chunk ${i + 1} failed with ${err.failure.kind}, which retrying ` +
-                  'cannot fix — abandoning this recording without trying the remaining chunks or models.'
+                'cannot fix — abandoning this recording without trying the remaining chunks or models.'
               );
               fatalError = err;
               break;
@@ -1167,7 +1166,7 @@ export class GroqTranscriptionService {
             const last = tryNo === perChunkAttempts;
             logger.warn(
               `[GroqTranscriptionService] Chunk ${i + 1} attempt ${tryNo} failed: ${err.message}` +
-                `${last ? ' — giving up on this chunk.' : ' — retrying.'}`
+              `${last ? ' — giving up on this chunk.' : ' — retrying.'}`
             );
             if (last) break;
             // Linear backoff. A quota rejection needs time, not immediacy.
@@ -1208,7 +1207,7 @@ export class GroqTranscriptionService {
         describeGroqFailure(
           new Error(
             `${failedChunks} of ${chunks.length} audio chunks failed to transcribe with ` +
-              `"${attempt.model}" — too much of the class is missing to report on.`
+            `"${attempt.model}" — too much of the class is missing to report on.`
           ),
           'transcription',
           { model: attempt.model, provider: this.transcriptionProvider.label }
@@ -1222,7 +1221,7 @@ export class GroqTranscriptionService {
       this.transcriptionGaps += failedChunks;
       logger.error(
         `[GroqTranscriptionService] ${failedChunks}/${chunks.length} chunk(s) could not be transcribed. ` +
-          'The transcript has gaps and the report will be built from what was captured.'
+        'The transcript has gaps and the report will be built from what was captured.'
       );
     }
 
@@ -1464,10 +1463,10 @@ export class GroqTranscriptionService {
             describeGroqFailure(
               new Error(
                 `"${model}" used its entire ${budget}-token output budget ` +
-                  `(${completionTokens} tokens, finish_reason="${finishReason ?? 'unknown'}") without ` +
-                  'returning any transcript text. The audio is not the problem — the model ran out of ' +
-                  'room. Raise AI_TRANSCRIPTION_MAX_TOKENS, shorten the chunks with GROQ_CHUNK_SECONDS, ' +
-                  'or use a dedicated speech-to-text model such as openai/whisper-large-v3-turbo.'
+                `(${completionTokens} tokens, finish_reason="${finishReason ?? 'unknown'}") without ` +
+                'returning any transcript text. The audio is not the problem — the model ran out of ' +
+                'room. Raise AI_TRANSCRIPTION_MAX_TOKENS, shorten the chunks with GROQ_CHUNK_SECONDS, ' +
+                'or use a dedicated speech-to-text model such as openai/whisper-large-v3-turbo.'
               ),
               'transcription',
               { model, provider: provider.label }
@@ -1485,8 +1484,8 @@ export class GroqTranscriptionService {
         this.transcriptionGaps += 1;
         logger.error(
           `[GroqTranscriptionService] "${model}" hit its ${budget}-token output limit mid-transcript ` +
-            `(${completionTokens} tokens). The transcript is CUT SHORT — coverage will be marked as gaps. ` +
-            'Raise AI_TRANSCRIPTION_MAX_TOKENS or lower GROQ_CHUNK_SECONDS.'
+          `(${completionTokens} tokens). The transcript is CUT SHORT — coverage will be marked as gaps. ` +
+          'Raise AI_TRANSCRIPTION_MAX_TOKENS or lower GROQ_CHUNK_SECONDS.'
         );
       }
 
@@ -1885,8 +1884,8 @@ export class GroqTranscriptionService {
       const finalCloud = survivors.slice(0, CLOUD_MAX_TERMS);
       logger.info(
         `[GroqTranscriptionService] Word cloud pruned: ${candidates.length} candidate(s) -> ${survivors.length} concept(s)` +
-          `${removed > 0 ? ` (${removed} common word(s) removed)` : ''}` +
-          `${survivors.length > finalCloud.length ? `, showing the top ${finalCloud.length}` : ''}.`
+        `${removed > 0 ? ` (${removed} common word(s) removed)` : ''}` +
+        `${survivors.length > finalCloud.length ? `, showing the top ${finalCloud.length}` : ''}.`
       );
       return finalCloud;
     } catch (err: any) {
@@ -1915,7 +1914,7 @@ export class GroqTranscriptionService {
     if (!this.hasAnalysisKey) {
       logger.warn(
         '[GroqTranscriptionService] Transcript has no speaker labels and no analysis key is set, ' +
-          'so it cannot be labelled. Talk time will read "Not available".'
+        'so it cannot be labelled. Talk time will read "Not available".'
       );
       return transcript;
     }
@@ -1946,7 +1945,7 @@ export class GroqTranscriptionService {
 
     logger.info(
       `[GroqTranscriptionService] Transcript has no speaker labels — labelling it in ` +
-        `${chunks.length} pass(es) so talk time and the transcript view name who is speaking.`
+      `${chunks.length} pass(es) so talk time and the transcript view name who is speaking.`
     );
 
     const provider = this.analysisProvider;
@@ -1999,7 +1998,7 @@ export class GroqTranscriptionService {
       } catch (err: any) {
         logger.warn(
           `[GroqTranscriptionService] Labelling pass ${i + 1} failed: ${err.message}. ` +
-            'Keeping that part of the transcript unlabelled.'
+          'Keeping that part of the transcript unlabelled.'
         );
         labelled.push(chunks[i]);
       }
@@ -2015,8 +2014,8 @@ export class GroqTranscriptionService {
     if (originalWords > 0 && labelledWords < originalWords * 0.7) {
       logger.error(
         `[GroqTranscriptionService] The labelling pass returned ${labelledWords} words for an ` +
-          `${originalWords}-word transcript — it rewrote rather than labelled. Discarding it and ` +
-          'keeping the original transcript.'
+        `${originalWords}-word transcript — it rewrote rather than labelled. Discarding it and ` +
+        'keeping the original transcript.'
       );
       return transcript;
     }
@@ -2029,7 +2028,7 @@ export class GroqTranscriptionService {
 
     logger.info(
       `[GroqTranscriptionService] Transcript labelled: teacher ${after.teacherPercent}% / ` +
-        `student ${after.studentPercent}% (${after.label.toLowerCase()}).`
+      `student ${after.studentPercent}% (${after.label.toLowerCase()}).`
     );
     return result;
   }
@@ -2058,7 +2057,7 @@ export class GroqTranscriptionService {
     const tail = limit - head;
     logger.warn(
       `[GroqTranscriptionService] Transcript is ${transcript.length} chars, over the ${limit} limit — ` +
-        'summarising the opening and the closing, with the middle omitted.'
+      'summarising the opening and the closing, with the middle omitted.'
     );
     return (
       `${transcript.slice(0, head)}\n\n[... middle of the session omitted for length ...]\n\n${transcript.slice(-tail)}`
@@ -2134,8 +2133,8 @@ export class GroqTranscriptionService {
 
     logger.warn(
       `[GroqTranscriptionService] Transcript is ${size(turns).toLocaleString()} chars, over the ` +
-        `${limit.toLocaleString()} limit — analysing the opening and the closing, ` +
-        `${turns.length - head.length - tail.length} turn(s) omitted from the middle.`
+      `${limit.toLocaleString()} limit — analysing the opening and the closing, ` +
+      `${turns.length - head.length - tail.length} turn(s) omitted from the middle.`
     );
     return { turns: [...head, ...tail], complete: false };
   }
@@ -2220,7 +2219,7 @@ Return the JSON object now.`;
        * ─────────────────────────────────────────────────────────────────── */
       logger.info(
         `[GroqTranscriptionService] The class needs about ${singleShotTokens.toLocaleString()} tokens, over the ` +
-          `${budget.toLocaleString()}-token per-request budget. Reading it in passes.`
+        `${budget.toLocaleString()}-token per-request budget. Reading it in passes.`
       );
       const passResult = await this.analyseInPasses(turns, slideBlock, lexicon, studentName, mentorName, context, budget, durationHint, send);
       envelope = passResult.envelope;
@@ -2240,7 +2239,7 @@ Return the JSON object now.`;
       envelope.coverageNote = 'gaps';
       logger.warn(
         `[GroqTranscriptionService] Coverage marked "gaps": ${this.transcriptionGaps} audio chunk(s) ` +
-          'never transcribed, so part of this class was never analysed.'
+        'never transcribed, so part of this class was never analysed.'
       );
     }
 
@@ -2261,7 +2260,7 @@ Return the JSON object now.`;
       // in a count. A steady climb means the prompt is drifting.
       logger.warn(
         `[GroqTranscriptionService] ${derived.discarded} evidence item(s) were discarded — they cited a turn ` +
-          'that does not exist or belongs to the other speaker. High values mean the model is padding.'
+        'that does not exist or belongs to the other speaker. High values mean the model is padding.'
       );
     }
 
@@ -2309,11 +2308,11 @@ Return the JSON object now.`;
 
     logger.info(
       `[GroqTranscriptionService] Session report built in ${passes} pass(es) — ` +
-        `${report.learningGoals.length} goal(s), ${report.topicsCovered.length} topic(s) covered, ` +
-        `${report.topicsNotReached.length} not reached, ${report.wordCloud.length} concept(s), ` +
-        `${derived.interactions.teacherQuestions} teacher question(s), ` +
-        `${derived.interactions.studentQuestions} student question(s)` +
-        `${slides ? '' : ' (NO session material was available)'} [coverage: ${envelope.coverageNote}].`
+      `${report.learningGoals.length} goal(s), ${report.topicsCovered.length} topic(s) covered, ` +
+      `${report.topicsNotReached.length} not reached, ${report.wordCloud.length} concept(s), ` +
+      `${derived.interactions.teacherQuestions} teacher question(s), ` +
+      `${derived.interactions.studentQuestions} student question(s)` +
+      `${slides ? '' : ' (NO session material was available)'} [coverage: ${envelope.coverageNote}].`
     );
 
     return { report, envelope };
@@ -2339,7 +2338,7 @@ Return the JSON object now.`;
     if (repaired.repair !== 'none') {
       logger.warn(
         `[GroqTranscriptionService] Analysis JSON needed a ${repaired.repair} repair before it parsed ` +
-          `(${this.summaryModel}). The content is unchanged; only punctuation was fixed.`
+        `(${this.summaryModel}). The content is unchanged; only punctuation was fixed.`
       );
     }
     return repaired.value;
@@ -2380,7 +2379,7 @@ Return the JSON object now.`;
       const requestTokens = estimateTokens(system + user) + 6000;
       logger.info(
         `[GroqTranscriptionService] Sending analysis to ${this.analysisProvider.label} ` +
-          `(${this.summaryModel}) — about ${requestTokens.toLocaleString()} tokens.`
+        `(${this.summaryModel}) — about ${requestTokens.toLocaleString()} tokens.`
       );
 
       const provider = this.analysisProvider;
@@ -2494,7 +2493,7 @@ Return the JSON object now.`;
       const keepTail = maxPasses - keepHead;
       logger.warn(
         `[GroqTranscriptionService] ${slices.length} passes needed but the ceiling is ${maxPasses}. ` +
-          'Reading the opening and the closing; the middle will be skipped and the report marked partial.'
+        'Reading the opening and the closing; the middle will be skipped and the report marked partial.'
       );
       slices = [...slices.slice(0, keepHead), ...slices.slice(slices.length - keepTail)];
       coverage = 'partial';
@@ -2586,7 +2585,7 @@ Return the JSON object now.`;
 
     logger.info(
       `[GroqTranscriptionService] Multi-pass evidence merged from ${parts.length} pass(es) — ` +
-        `${interim.interactions.teacherQuestions} teacher question(s), ${interim.wordCloud.length} concept(s).`
+      `${interim.interactions.teacherQuestions} teacher question(s), ${interim.wordCloud.length} concept(s).`
     );
 
     return { envelope: merged, passes: parts.length + 1 };
@@ -2716,7 +2715,7 @@ ${this.transcriptForPrompt(transcript)}
       if (typeof content !== 'string' || content.trim().length === 0) {
         throw new Error(
           `${legacyProvider.label} returned an empty summary from "${this.summaryModel}". Reasoning models can put ` +
-            'their output in a different field — check the raw response shape if this persists.'
+          'their output in a different field — check the raw response shape if this persists.'
         );
       }
       return content;
@@ -2727,7 +2726,7 @@ ${this.transcriptForPrompt(transcript)}
       if (status === 404 || /decommission|deprecat|does not exist|not supported/i.test(detail)) {
         throw new Error(
           `${legacyProvider.label} does not recognise the summary model "${this.summaryModel}": ${detail}. ` +
-            'Set AI_ANALYSIS_MODEL to a current model id. No code change is needed.'
+          'Set AI_ANALYSIS_MODEL to a current model id. No code change is needed.'
         );
       }
       if (status === 429) {
