@@ -58,6 +58,7 @@ router.post('/:id/send-report', asyncHandler(scheduleController.sendClassReport)
 // it inline — sends nothing, writes nothing. Use it to check a report before
 // any family sees one.
 router.get('/:id/report-preview', asyncHandler(scheduleController.previewClassReport));
+router.get('/:id/report-checklist', asyncHandler(scheduleController.classReportChecklist));
 router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
 // Gated: the student, their parent, or the mentor who taught — and the payload
 // is tiered inside. Only `canSeeAnswerKey` roles get `correctOptionId` on the
