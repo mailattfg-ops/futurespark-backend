@@ -88,6 +88,11 @@ export const schedulerGroupRepository = {
         scheduler: {
           select: { id: true, email: true, firstName: true, lastName: true },
         },
+        // Ids, not a bare count: the scheduler-facing mentors page shows only
+        // the mentors of the viewer's own groups, and it matches on these.
+        // With _count alone that filter compared against undefined and every
+        // scheduler saw an empty mentors tab.
+        mentors: { select: { id: true } },
         _count: {
           select: { mentors: true, students: true },
         },

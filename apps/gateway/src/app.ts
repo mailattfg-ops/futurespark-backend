@@ -7,6 +7,7 @@ import { HTTP_STATUS } from '@futurespark/constants';
 import { errorHandler, requestId, asyncHandler } from '@futurespark/middleware';
 import { createRedisClient } from '@futurespark/cache';
 import { authenticate } from './middleware/authenticate';
+import { authorize } from './middleware/authorize';
 import { botDetectionMiddleware } from './middleware/bot-detection';
 import { rateMonitorMiddleware } from './middleware/rate-monitor';
 import { logsRouter } from './routes/logs';
@@ -586,6 +587,7 @@ app.use('/api/zoom',
 // Notification service
 app.use('/api/notifications',
   asyncHandler(authenticate),
+  authorize(['ADMIN']),
   createProxyMiddleware({
     target: COMMUNICATION_SERVICE_URL,
     changeOrigin: true,
@@ -642,6 +644,10 @@ app.use('/api/whatsapp/webhook',
 );
 
 app.use('/api/whatsapp/auto-reply',
+  // These had NO auth at all — anyone on the internet could read and rewrite
+  // the WhatsApp audience and auto-reply configuration.
+  asyncHandler(authenticate),
+  authorize(['ADMIN']),
   createProxyMiddleware({
     target: COMMUNICATION_SERVICE_URL,
     changeOrigin: true,
@@ -650,6 +656,10 @@ app.use('/api/whatsapp/auto-reply',
 );
 
 app.use('/api/whatsapp/audience-settings',
+  // These had NO auth at all — anyone on the internet could read and rewrite
+  // the WhatsApp audience and auto-reply configuration.
+  asyncHandler(authenticate),
+  authorize(['ADMIN']),
   createProxyMiddleware({
     target: COMMUNICATION_SERVICE_URL,
     changeOrigin: true,
