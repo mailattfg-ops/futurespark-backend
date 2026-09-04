@@ -4,11 +4,14 @@ import { courseController } from './course.controller';
 import { requireInternalAuth, requireRoles } from '../../middlewares/auth';
 import { leadRoutes } from '../lead/lead.routes';
 import { pilotLeadRoutes } from '../pilot-lead/pilot-lead.routes';
+import { partialLeadRoutes } from '../partial-lead/partial-lead.routes';
 
 const router = Router();
 
 router.use('/leads', leadRoutes);
 router.use('/pilot-leads', pilotLeadRoutes);
+router.use('/partial-leads', partialLeadRoutes);
+
 
 router.use(requireInternalAuth);
 
