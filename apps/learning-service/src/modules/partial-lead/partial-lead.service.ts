@@ -150,21 +150,14 @@ export const partialLeadService = {
       preferredTime: input.preferredSlotTime,
     });
 
-    // Update partial lead record status to COMPLETED
-    const updatedPartial = await (db as any).partialLead.update({
-      where: { id: partialRecord.id },
-      data: {
-        status: 'COMPLETED',
-        completedLeadId: createdLead.id,
-        parentName: input.parentName || partialRecord.parentName,
-        whoAreYou: input.whoAreYou || partialRecord.whoAreYou,
-        bookingReason: input.bookingReason || partialRecord.bookingReason,
-        purchaseTimeline: input.purchaseTimeline || partialRecord.purchaseTimeline,
-      },
-    });
+    // Delete/Remove from partial forms once Section 3 is fully completed
+    if (partialRecord?.id) {
+      await (db as any).partialLead.delete({
+        where: { id: partialRecord.id },
+      }).catch(() => {});
+    }
 
     return {
-      partialLead: updatedPartial,
       lead: createdLead,
     };
   },
