@@ -702,3 +702,27 @@ model AuditLog {
   @@index([actorRole])
   @@schema("auth")
 }
+
+model PartialLead {
+  id                String   @id @default(uuid())
+  studentName       String
+  studentGrade      String
+  dialCode          String   @default("+91")
+  phone             String
+  email             String
+  hasLaptop         Boolean  @default(true)
+  preferredSlotDate String?
+  preferredSlotTime String?
+  parentName        String?
+  whoAreYou         String?
+  bookingReason     String?
+  purchaseTimeline  String?
+  status            String   @default("PARTIAL")
+  notifiedAt        DateTime?
+  completedLeadId   String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@schema("learning")
+}
+

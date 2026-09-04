@@ -208,6 +208,30 @@ app.use('/api/pilot-leads',
   },
 }));
 
+// Partial Form Leads (Claim Your Free Coding Class form)
+const isPublicPartialPath = (req: any): boolean =>
+  (req.method === 'POST' && (req.path === '/' || req.path === '' || req.path === '/complete')) ||
+  (req.method === 'GET' && req.path.length > 1);
+
+app.use('/api/partial-leads',
+  (req: any, res: any, next: any) => (isPublicPartialPath(req) ? next() : asyncHandler(authenticate)(req, res, next)),
+  createProxyMiddleware({
+  target: LEARN_SERVICE_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/': '/courses/partial-leads/' },
+  on: {
+    error: (err, _req, res: any) => {
+      logger.error(`[Gateway] Learning service unreachable for partial leads: ${err.message}`);
+      res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+        success: false,
+        message: 'Learning service is temporarily unavailable. Please try again shortly.',
+        timestamp: new Date().toISOString(),
+      });
+    },
+  },
+}));
+
+
 
 // ── Protected Routes (JWT + HMAC Required) ────────────────────
 // User management
