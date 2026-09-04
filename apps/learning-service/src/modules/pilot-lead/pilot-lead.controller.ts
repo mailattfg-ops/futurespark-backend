@@ -11,8 +11,8 @@ export const pilotLeadController = {
   },
 
   async updateDemoSettings(req: Request, res: Response) {
-    const { demoTeachersCount } = req.body;
-    const settings = await pilotLeadService.updateDemoSettings(demoTeachersCount);
+    const { demoTeachersCount, todayCutoffHour } = req.body;
+    const settings = await pilotLeadService.updateDemoSettings(demoTeachersCount, todayCutoffHour);
     return res.status(HTTP_STATUS.OK).json(successResponse(settings, 'Demo settings updated successfully'));
   },
 
