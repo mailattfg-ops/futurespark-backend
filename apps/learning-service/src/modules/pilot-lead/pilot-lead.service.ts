@@ -28,24 +28,28 @@ export const pilotLeadService = {
       const row = await (db as any).appSetting.findUnique({ where: { key: 'demo_settings' } });
       const val = (row?.value as any) || {};
       const demoTeachersCount = typeof val.demoTeachersCount === 'number' && val.demoTeachersCount > 0 ? val.demoTeachersCount : 3;
-      return { demoTeachersCount };
+      const todayCutoffHour = typeof val.todayCutoffHour === 'number' ? val.todayCutoffHour : 16;
+      return { demoTeachersCount, todayCutoffHour };
     } catch {
-      return { demoTeachersCount: 3 };
+      return { demoTeachersCount: 3, todayCutoffHour: 16 };
     }
   },
 
-  async updateDemoSettings(countInput: number) {
-    const demoTeachersCount = Math.max(1, Math.floor(Number(countInput) || 3));
+  async updateDemoSettings(countInput?: number, cutoffInput?: number) {
+    const current = await this.getDemoSettings();
+    const demoTeachersCount = countInput !== undefined ? Math.max(1, Math.floor(Number(countInput) || 3)) : current.demoTeachersCount;
+    const todayCutoffHour = cutoffInput !== undefined ? Math.max(0, Math.min(23, Math.floor(Number(cutoffInput)))) : current.todayCutoffHour;
+
     await (db as any).appSetting.upsert({
       where: { key: 'demo_settings' },
-      create: { key: 'demo_settings', value: { demoTeachersCount } },
-      update: { value: { demoTeachersCount } },
+      create: { key: 'demo_settings', value: { demoTeachersCount, todayCutoffHour } },
+      update: { value: { demoTeachersCount, todayCutoffHour } },
     });
-    return { demoTeachersCount };
+    return { demoTeachersCount, todayCutoffHour };
   },
 
   async getSlotAvailability(dateQuery?: string) {
-    const { demoTeachersCount } = await this.getDemoSettings();
+    const { demoTeachersCount, todayCutoffHour } = await this.getDemoSettings();
     const leads = await (db as any).pilotLead.findMany({
       where: { status: { not: 'LOST' } },
       select: { preferredSlotDate: true, preferredSlotTime: true },
@@ -82,6 +86,7 @@ export const pilotLeadService = {
 
     return {
       demoTeachersCount,
+      todayCutoffHour,
       date: dateQuery || null,
       slots: slotResults,
     };
