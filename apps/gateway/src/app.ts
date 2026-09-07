@@ -679,6 +679,42 @@ app.use('/api/whatsapp/auto-reply',
   })
 );
 
+app.use('/api/whatsapp/send-marketing-template',
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/send-marketing-template' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Communication service unreachable for send-marketing-template: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'WhatsApp communication service unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+app.use('/api/whatsapp/session-reminder',
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/session-reminder' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Communication service unreachable for session-reminder: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'WhatsApp communication service unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 app.use('/api/whatsapp/audience-settings',
   // These had NO auth at all — anyone on the internet could read and rewrite
   // the WhatsApp audience and auto-reply configuration.
