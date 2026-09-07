@@ -77,7 +77,7 @@ export const partialLeadService = {
       });
     }
 
-    // Trigger Notification for Section 1 completion if not notified yet or new record
+    // Trigger Notification for Section 1 completion (In-App Admin notification)
     if (!existingRecord?.notifiedAt || !record.notifiedAt) {
       await (db as any).partialLead.update({
         where: { id: record.id },
@@ -96,25 +96,6 @@ export const partialLeadService = {
           priority: 'MEDIUM',
         }),
       }).catch((err) => console.error('[Partial Lead Admin Notification Error]', err?.message));
-
-      // 2. Dispatch WhatsApp Notification / Reminder to Parent's Phone
-      if (record.phone) {
-        const landingUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
-        fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/session-reminder`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: fullPhone,
-            parentName: record.parentName || record.studentName,
-            studentName: record.studentName,
-            courseName: 'Free Trial Coding Class',
-            sessionDate: record.preferredSlotDate || new Date().toLocaleDateString('en-GB'),
-            sessionTime: record.preferredSlotTime || 'Upcoming Slot',
-            timezone: 'IST',
-            joinUrl: `${landingUrl.replace(/\/$/, '')}/claim-free-class?id=${record.id}`,
-          }),
-        }).catch(() => {});
-      }
     }
 
     return record;
@@ -149,6 +130,29 @@ export const partialLeadService = {
       preferredDays: input.preferredSlotDate ? [input.preferredSlotDate] : [],
       preferredTime: input.preferredSlotTime,
     });
+
+    // Send WhatsApp Session Confirmation Message on 3rd Section Submission
+    if (fullPhone && createdLead?.id) {
+      const landingUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
+      const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
+
+      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/session-reminder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: fullPhone,
+          parentName: input.parentName || input.studentName || 'Parent',
+          studentName: input.studentName || 'Student',
+          courseName: 'Free Trial Coding Class',
+          sessionDate: input.preferredSlotDate || new Date().toLocaleDateString('en-GB'),
+          sessionTime: input.preferredSlotTime || 'Upcoming Slot',
+          timezone: 'IST',
+          joinUrl: `${landingUrl.replace(/\/$/, '')}/demo-class?leadId=${createdLead.id}`,
+        }),
+      }).catch((err) => {
+        console.error('[Claim Free Class WhatsApp Error]', err?.message);
+      });
+    }
 
     // Delete/Remove from partial forms once Section 3 is fully completed
     if (partialRecord?.id) {
