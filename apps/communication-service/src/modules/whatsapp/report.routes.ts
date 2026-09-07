@@ -351,5 +351,66 @@ router.post('/internal-notify-staff', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /whatsapp/send-marketing-template
+ *
+ * Sends Meta WhatsApp template "finquo_free_demo_marketing" (or fallback text)
+ * with Book Free Slot link https://junior.finquo.ai/claim-free-class
+ */
+router.post('/send-marketing-template', async (req: Request, res: Response) => {
+  try {
+    const {
+      to,
+      parentName = 'Parent',
+      templateName = 'finquo_free_demo_marketing',
+      claimUrl = 'https://junior.finquo.ai/claim-free-class',
+    } = req.body ?? {};
+
+    if (!to || typeof to !== 'string' || !to.trim()) {
+      return res
+        .status(HTTP_STATUS.BAD_REQUEST)
+        .json(errorResponse('Phone number "to" is required.'));
+    }
+
+    const templateComponents = [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: parentName },
+        ],
+      },
+    ];
+
+    let result = await whatsappService.sendTemplateMessage(
+      to,
+      templateName,
+      'en',
+      templateComponents
+    );
+
+    // Fallback text send if template fails or is pending approval
+    if (!result.success) {
+      const textMessage =
+        `Hi ${parentName}! 👋\n` +
+        `This is Finquo Junior.\n\n` +
+        `Thanks for showing interest in our financial literacy program for kids (ages 8 to 15).\n\n` +
+        `Join and book your free slot here:\n\n` +
+        `Pick a time that works for you 👇\n\n` +
+        `👉 ${claimUrl}`;
+
+      result = await whatsappService.sendTextMessage(to, textMessage);
+    }
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(result, result.success ? 'Marketing template sent.' : 'Delivery attempted.'));
+  } catch (err: any) {
+    logger.error(`[Marketing Template Error]: ${err.message}`);
+    return res
+      .status(HTTP_STATUS.INTERNAL_SERVER_ERROR)
+      .json(errorResponse(err.message || 'Failed to send marketing template'));
+  }
+});
+
 export { router as whatsappReportRoutes };
 
