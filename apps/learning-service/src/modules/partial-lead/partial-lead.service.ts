@@ -131,23 +131,19 @@ export const partialLeadService = {
       preferredTime: input.preferredSlotTime,
     });
 
-    // Send WhatsApp Session Confirmation Message on 3rd Section Submission
-    if (fullPhone && createdLead?.id) {
+    // Send WhatsApp Marketing Template (finquo_free_demo_marketing) on 3rd Section Submission
+    if (fullPhone) {
       const landingUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
       const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
 
-      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/session-reminder`, {
+      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/send-marketing-template`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to: fullPhone,
           parentName: input.parentName || input.studentName || 'Parent',
-          studentName: input.studentName || 'Student',
-          courseName: 'Financial Literacy - Pilot Program',
-          sessionDate: input.preferredSlotDate || new Date().toLocaleDateString('en-GB'),
-          sessionTime: input.preferredSlotTime || 'Upcoming Slot',
-          timezone: 'IST',
-          joinUrl: `${landingUrl.replace(/\/$/, '')}/demo-class?leadId=${createdLead.id}`,
+          templateName: 'finquo_free_demo_marketing',
+          claimUrl: `${landingUrl.replace(/\/$/, '')}/claim-free-class`,
         }),
       }).catch((err) => {
         console.error('[Claim Free Class WhatsApp Error]', err?.message);

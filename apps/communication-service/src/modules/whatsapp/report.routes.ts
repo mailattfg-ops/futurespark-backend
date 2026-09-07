@@ -372,11 +372,26 @@ router.post('/send-marketing-template', async (req: Request, res: Response) => {
         .json(errorResponse('Phone number "to" is required.'));
     }
 
+    // Extract dynamic URL suffix for button {{1}} parameter (e.g. 'claim-free-class')
+    let buttonUrlSuffix = 'claim-free-class';
+    if (typeof claimUrl === 'string' && claimUrl.trim()) {
+      const trimmedUrl = claimUrl.trim();
+      buttonUrlSuffix = trimmedUrl.replace(/^https?:\/\/[^\/]+\/?/, '') || 'claim-free-class';
+    }
+
     const templateComponents = [
       {
         type: 'body',
         parameters: [
           { type: 'text', text: parentName },
+        ],
+      },
+      {
+        type: 'button',
+        sub_type: 'url',
+        index: '0',
+        parameters: [
+          { type: 'text', text: buttonUrlSuffix },
         ],
       },
     ];
