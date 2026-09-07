@@ -82,7 +82,7 @@ export const partialLeadService = {
       await (db as any).partialLead.update({
         where: { id: record.id },
         data: { notifiedAt: now },
-      }).catch(() => {});
+      }).catch(() => { });
 
       // 1. Dispatch System In-App Admin Notification
       const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
@@ -143,7 +143,7 @@ export const partialLeadService = {
           to: fullPhone,
           parentName: input.parentName || input.studentName || 'Parent',
           studentName: input.studentName || 'Student',
-          courseName: 'Free Trial Coding Class',
+          courseName: 'Financial Literacy - Pilot Program',
           sessionDate: input.preferredSlotDate || new Date().toLocaleDateString('en-GB'),
           sessionTime: input.preferredSlotTime || 'Upcoming Slot',
           timezone: 'IST',
@@ -158,7 +158,7 @@ export const partialLeadService = {
     if (partialRecord?.id) {
       await (db as any).partialLead.delete({
         where: { id: partialRecord.id },
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     return {
