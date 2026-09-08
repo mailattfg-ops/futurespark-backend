@@ -74,6 +74,7 @@ export interface WhatsAppAudienceSettings {
   regularParents: boolean;
   pilotProgramLeads: boolean;
   leadsManagement: boolean;
+  internalTeamOps: boolean;
   masterWhatsAppEnabled: boolean;
 }
 
@@ -99,6 +100,7 @@ const audienceDefaults = (): WhatsAppAudienceSettings => ({
   regularParents: envFlag('WHATSAPP_AUDIENCE_REGULAR_PARENTS', true),
   pilotProgramLeads: envFlag('WHATSAPP_AUDIENCE_PILOT_LEADS', false),
   leadsManagement: envFlag('WHATSAPP_AUDIENCE_LEADS', false),
+  internalTeamOps: envFlag('WHATSAPP_AUDIENCE_INTERNAL_OPS', true),
   masterWhatsAppEnabled: envFlag('WHATSAPP_AUDIENCE_MASTER', false),
 });
 
@@ -129,6 +131,7 @@ export const updateAudienceSettings = (settings: Partial<WhatsAppAudienceSetting
   if (typeof settings.regularParents === 'boolean') cleanSettings.regularParents = settings.regularParents;
   if (typeof settings.pilotProgramLeads === 'boolean') cleanSettings.pilotProgramLeads = settings.pilotProgramLeads;
   if (typeof settings.leadsManagement === 'boolean') cleanSettings.leadsManagement = settings.leadsManagement;
+  if (typeof settings.internalTeamOps === 'boolean') cleanSettings.internalTeamOps = settings.internalTeamOps;
   if (typeof settings.masterWhatsAppEnabled === 'boolean') cleanSettings.masterWhatsAppEnabled = settings.masterWhatsAppEnabled;
 
   audienceSettings = { ...audienceSettings, ...cleanSettings };
