@@ -1,5 +1,6 @@
 import { logger } from '@futurespark/logger';
 import {
+  getAudienceSettings,
   maskPhone,
   normalizePhone,
   whatsappConfig,
@@ -186,6 +187,13 @@ export const sessionReportService = {
    * is worse than receiving a message that stands on its own.
    */
   async sendSessionReport(request: SessionReportRequest): Promise<SessionReportResult> {
+    const audience = getAudienceSettings();
+    if (!audience.regularParents) {
+      const error = 'Session report delivery withheld: Regular Parents audience toggle is disabled.';
+      logger.info(`[Session Report] WHATSAPP_SEND_REFUSED WHATSAPP_DISABLED — ${error}`);
+      return { success: false, documentDelivered: false, failureKind: 'WHATSAPP_DISABLED', error, retryable: false };
+    }
+
     const normalized = normalizePhone(request.to);
     if (!normalized.ok || !normalized.value) {
       const error = `Refusing to send the session report: ${normalized.reason}`;

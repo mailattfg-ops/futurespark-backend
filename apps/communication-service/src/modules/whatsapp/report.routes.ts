@@ -374,14 +374,37 @@ router.post('/internal-notify-staff', async (req: Request, res: Response) => {
  * with Book Free Slot link https://junior.finquo.ai/claim-free-class
  */
 router.post('/send-marketing-template', async (req: Request, res: Response) => {
-  try {
-    const {
-      to,
-      parentName = 'Parent',
-      templateName = 'finquo_free_demo_marketing',
-      claimUrl = 'https://junior.finquo.ai/claim-free-class',
-    } = req.body ?? {};
+  const audience = getAudienceSettings();
 
+  const {
+    to,
+    parentName = 'Parent',
+    templateName = 'finquo_free_demo_marketing',
+    claimUrl = 'https://junior.finquo.ai/claim-free-class',
+    courseName = '',
+    programName = '',
+    source = '',
+    isPilotLead = false,
+  } = req.body ?? {};
+
+  const combinedMeta = `${courseName} ${programName} ${source}`.toLowerCase();
+  const isPilot = isPilotLead || combinedMeta.includes('pilot') || combinedMeta.includes('mentorship');
+
+  const isAllowed = isPilot
+    ? audience.pilotProgramLeads
+    : (audience.leadsManagement || audience.pilotProgramLeads || audience.regularParents);
+
+  if (!isAllowed) {
+    logger.info(`[Send Marketing Template] Skipped — Audience section control toggle for ${isPilot ? 'Pilot Program Leads' : 'Leads Management'} is DISABLED.`);
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse(
+        { success: false, skipped: true },
+        `WhatsApp message withheld: Audience Section Control toggle for ${isPilot ? 'Pilot Program Leads' : 'Leads Management'} is disabled.`
+      )
+    );
+  }
+
+  try {
     if (!to || typeof to !== 'string' || !to.trim()) {
       return res
         .status(HTTP_STATUS.BAD_REQUEST)
@@ -440,6 +463,45 @@ router.post('/send-marketing-template', async (req: Request, res: Response) => {
     return res
       .status(HTTP_STATUS.INTERNAL_SERVER_ERROR)
       .json(errorResponse(err.message || 'Failed to send marketing template'));
+  }
+});
+
+/**
+ * POST /whatsapp/test-internal
+ *
+ * Sends a test internal template message to a specific recipient phone number.
+ */
+router.post('/test-internal', async (req: Request, res: Response) => {
+  try {
+    const { to, kind = 'DEMO_SCHEDULED', templateName } = req.body ?? {};
+    if (!to || typeof to !== 'string' || !to.trim()) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json(errorResponse('Recipient phone number "to" is required.'));
+    }
+
+    const targetKind = (kind as InternalNotifyKind) || 'DEMO_SCHEDULED';
+    const targetTemplate = templateName || TEMPLATE_NAMES[targetKind] || 'internal_demo_scheduled';
+
+    const testContext: InternalNotifyContext = {
+      studentName: 'Test Student',
+      grade: 'Grade 6',
+      country: 'India',
+      parentContact: '+91 9999999999',
+      date: new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
+      time: '04:00 PM',
+      mentorName: 'Test Mentor',
+      meetingLink: 'https://junior.finquo.ai/claim-free-class',
+      level: 'Level 1',
+      startsIn: 'in 15 minutes',
+      topic: 'Financial Literacy Demo',
+    };
+
+    const components = buildInternalComponents(targetKind, testContext);
+    const result = await whatsappService.sendTemplateMessage(to.trim(), targetTemplate, 'en', components);
+
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, result.success ? 'Internal test message delivered successfully!' : `Delivery attempted: ${result.error || result.failureKind}`));
+  } catch (err: any) {
+    logger.error(`[Test Internal Error]: ${err.message}`);
+    return res.status(HTTP_STATUS.INTERNAL_SERVER_ERROR).json(errorResponse(err.message || 'Failed to send internal test message'));
   }
 });
 

@@ -727,6 +727,26 @@ app.use('/api/whatsapp/audience-settings',
   })
 );
 
+app.use('/api/whatsapp/test-internal',
+  asyncHandler(authenticate),
+  authorize(['ADMIN', 'SCHEDULER']),
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/test-internal' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Communication service unreachable for test-internal: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'WhatsApp communication service unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
 // ── 404 Handler ────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json({ success: false, message: 'Route not found' });
