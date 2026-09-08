@@ -294,6 +294,14 @@ const dispatchInternal = async (
  * send quiet.
  */
 router.post('/internal-notify', async (req: Request, res: Response) => {
+  const audience = getAudienceSettings();
+  if (audience.internalTeamOps === false) {
+    logger.info('[Internal Notify] Skipped — internalTeamOps audience toggle is disabled.');
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse({ sent: 0, skipped: true }, 'Internal notifications disabled by audience settings.')
+    );
+  }
+
   if (whatsappConfig.outboundMode !== 'all') {
     logger.info('[Internal Notify] Skipped — outbound WhatsApp is limited to the manual session report.');
     return res.status(HTTP_STATUS.OK).json(
@@ -326,6 +334,14 @@ router.post('/internal-notify', async (req: Request, res: Response) => {
  * asks auth-service for the numbers, then reuses the route above.
  */
 router.post('/internal-notify-staff', async (req: Request, res: Response) => {
+  const audience = getAudienceSettings();
+  if (audience.internalTeamOps === false) {
+    logger.info('[Internal Notify] Skipped — internalTeamOps audience toggle is disabled.');
+    return res.status(HTTP_STATUS.OK).json(
+      successResponse({ sent: 0, skipped: true }, 'Internal notifications disabled by audience settings.')
+    );
+  }
+
   const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://127.0.0.1:3001';
   try {
     const lookup = await fetch(`${AUTH_SERVICE_URL}/schedules/internal/staff-numbers`, {
