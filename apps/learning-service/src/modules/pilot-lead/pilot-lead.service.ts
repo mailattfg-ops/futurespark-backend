@@ -29,36 +29,43 @@ export const pilotLeadService = {
       const val = (row?.value as any) || {};
       const demoTeachersCount = typeof val.demoTeachersCount === 'number' && val.demoTeachersCount > 0 ? val.demoTeachersCount : 3;
       const todayCutoffHour = typeof val.todayCutoffHour === 'number' ? val.todayCutoffHour : 16;
-      return { demoTeachersCount, todayCutoffHour };
+      const hiddenSlots: string[] = Array.isArray(val.hiddenSlots) ? val.hiddenSlots : [];
+      return { demoTeachersCount, todayCutoffHour, hiddenSlots };
     } catch {
-      return { demoTeachersCount: 3, todayCutoffHour: 16 };
+      return { demoTeachersCount: 3, todayCutoffHour: 16, hiddenSlots: [] as string[] };
     }
   },
 
-  async updateDemoSettings(countInput?: number, cutoffInput?: number) {
+  async updateDemoSettings(countInput?: number, cutoffInput?: number, hiddenSlotsInput?: string[]) {
     const current = await this.getDemoSettings();
     const demoTeachersCount = countInput !== undefined ? Math.max(1, Math.floor(Number(countInput) || 3)) : current.demoTeachersCount;
     const todayCutoffHour = cutoffInput !== undefined ? Math.max(0, Math.min(23, Math.floor(Number(cutoffInput)))) : current.todayCutoffHour;
+    const hiddenSlots = Array.isArray(hiddenSlotsInput) ? hiddenSlotsInput : current.hiddenSlots;
 
     await (db as any).appSetting.upsert({
       where: { key: 'demo_settings' },
-      create: { key: 'demo_settings', value: { demoTeachersCount, todayCutoffHour } },
-      update: { value: { demoTeachersCount, todayCutoffHour } },
+      create: { key: 'demo_settings', value: { demoTeachersCount, todayCutoffHour, hiddenSlots } },
+      update: { value: { demoTeachersCount, todayCutoffHour, hiddenSlots } },
     });
-    return { demoTeachersCount, todayCutoffHour };
+    return { demoTeachersCount, todayCutoffHour, hiddenSlots };
   },
 
   async getSlotAvailability(dateQuery?: string) {
-    const { demoTeachersCount, todayCutoffHour } = await this.getDemoSettings();
+    const { demoTeachersCount, todayCutoffHour, hiddenSlots } = await this.getDemoSettings();
     const leads = await (db as any).pilotLead.findMany({
       where: { status: { not: 'LOST' } },
       select: { preferredSlotDate: true, preferredSlotTime: true },
     });
 
-    const defaultSlots = [
-      "10:00 AM", "11:00 AM", "12:00 PM", "01:00 PM", "02:00 PM", "03:00 PM",
-      "04:00 PM", "05:00 PM", "06:00 PM", "07:00 PM", "08:00 PM", "09:00 PM",
+    const allSlots = [
+      "12:00 AM", "01:00 AM", "02:00 AM", "03:00 AM", "04:00 AM", "05:00 AM",
+      "06:00 AM", "07:00 AM", "08:00 AM", "09:00 AM", "10:00 AM", "11:00 AM",
+      "12:00 PM", "01:00 PM", "02:00 PM", "03:00 PM", "04:00 PM", "05:00 PM",
+      "06:00 PM", "07:00 PM", "08:00 PM", "09:00 PM", "10:00 PM", "11:00 PM",
     ];
+
+    // Filter out admin-hidden slots before exposing them to the booking widget
+    const defaultSlots = allSlots.filter((s) => !hiddenSlots.includes(s));
 
     const slotCounts: Record<string, number> = {};
     defaultSlots.forEach((s) => (slotCounts[s] = 0));
@@ -87,6 +94,7 @@ export const pilotLeadService = {
     return {
       demoTeachersCount,
       todayCutoffHour,
+      hiddenSlots,
       date: dateQuery || null,
       slots: slotResults,
     };
@@ -108,7 +116,13 @@ export const pilotLeadService = {
 
   async createPilotLead(input: CreatePilotLeadInput) {
     if (input.preferredSlotDate && input.preferredSlotTime) {
-      const { demoTeachersCount } = await this.getDemoSettings();
+      const { demoTeachersCount, hiddenSlots } = await this.getDemoSettings();
+      if (hiddenSlots.includes(input.preferredSlotTime)) {
+        throw new AppError(
+          `The time slot '${input.preferredSlotTime}' is currently unavailable. Please select another time slot.`,
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
       const existingLeads = await (db as any).pilotLead.findMany({
         where: {
           status: { not: 'LOST' },
