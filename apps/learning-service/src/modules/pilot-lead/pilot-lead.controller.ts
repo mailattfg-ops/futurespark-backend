@@ -16,6 +16,16 @@ export const pilotLeadController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(settings, 'Demo settings updated successfully'));
   },
 
+  async getLandingSections(_req: Request, res: Response) {
+    const sections = await pilotLeadService.getLandingSections();
+    return res.status(HTTP_STATUS.OK).json(successResponse(sections, 'Landing sections fetched successfully'));
+  },
+
+  async updateLandingSections(req: Request, res: Response) {
+    const sections = await pilotLeadService.updateLandingSections(req.body);
+    return res.status(HTTP_STATUS.OK).json(successResponse(sections, 'Landing sections updated successfully'));
+  },
+
   async getSlotAvailability(req: Request, res: Response) {
     const dateQuery = req.query.date as string | undefined;
     const availability = await pilotLeadService.getSlotAvailability(dateQuery);

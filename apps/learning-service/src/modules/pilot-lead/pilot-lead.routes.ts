@@ -15,6 +15,9 @@ export const pilotLeadRoutes = Router();
 pilotLeadRoutes.post('/', asyncHandler(pilotLeadController.createPilotLead));
 pilotLeadRoutes.get('/slot-availability', asyncHandler(pilotLeadController.getSlotAvailability));
 pilotLeadRoutes.get('/settings', asyncHandler(pilotLeadController.getDemoSettings));
+pilotLeadRoutes.get('/sections', asyncHandler(pilotLeadController.getLandingSections));
+pilotLeadRoutes.post('/sections', asyncHandler(pilotLeadController.updateLandingSections));
+pilotLeadRoutes.put('/sections', asyncHandler(pilotLeadController.updateLandingSections));
 
 // Administrative routes — gateway-signed identity plus a sales/ops role.
 pilotLeadRoutes.use(requireInternalAuth, requireRoles(['ADMIN', 'SCHEDULER', 'ENROLLMENT_ADVISOR']));
