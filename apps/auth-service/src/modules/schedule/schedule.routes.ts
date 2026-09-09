@@ -75,6 +75,7 @@ router.post('/:id/send-report', asyncHandler(scheduleController.sendClassReport)
 router.get('/:id/report-preview', asyncHandler(scheduleController.previewClassReport));
 router.get('/:id/report-checklist', asyncHandler(scheduleController.classReportChecklist));
 router.post('/:id/rate', asyncHandler(scheduleController.rateClass));
+router.post('/:id/link-enrolled', asyncHandler(scheduleController.linkDemoToStudent));
 // Gated: the student, their parent, or the mentor who taught — and the payload
 // is tiered inside. Only `canSeeAnswerKey` roles get `correctOptionId` on the
 // quiz; the student sitting it and their parent get it stripped.

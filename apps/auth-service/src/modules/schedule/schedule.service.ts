@@ -1066,6 +1066,65 @@ export const scheduleService = {
    * correction path (`updateSchedule`'s `creditsAwarded`) is a separate thing
    * and still writes the column.
    */
+  /**
+   * Turn a finished pilot demo into the enrolled student's Session 1.
+   *
+   * A demo is booked against a lead, not a student, so it never appears in a
+   * student's schedule. Once the family enrols (a student + Enrollment already
+   * exist), this links the SAME completed class to that student as the first
+   * curriculum session — the demo WAS session one, and the programme continues
+   * from session two. The class keeps its status, recording and summary; only
+   * its ownership changes.
+   */
+  async linkDemoToStudent(classId: string, studentId: string, callerRole?: string) {
+    if (!isUnscopedStaffRole(callerRole)) {
+      throw new AppError('Only an admin or scheduler can link a demo to a student', HTTP_STATUS.FORBIDDEN);
+    }
+    const cls = await db.scheduledClass.findUnique({ where: { id: classId } });
+    if (!cls) throw new AppError('Class not found', HTTP_STATUS.NOT_FOUND);
+    if (cls.classType !== 'DEMO') {
+      throw new AppError('Only a demo class can be linked as Session 1', HTTP_STATUS.BAD_REQUEST);
+    }
+    if (!cls.programId) {
+      throw new AppError('This demo has no programme, so it cannot become Session 1', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    const student = await db.student.findUnique({
+      where: { id: studentId },
+      include: { enrollments: { select: { programId: true } } },
+    });
+    if (!student) throw new AppError('Student account not found', HTTP_STATUS.NOT_FOUND);
+
+    // The student must actually be enrolled in this demo's programme — otherwise
+    // the demo would land in the schedule of a child taking something else.
+    const enrolledHere =
+      student.enrollments.some((e) => e.programId === cls.programId) ||
+      (student as any).programId === cls.programId;
+    if (!enrolledHere) {
+      throw new AppError('That student is not enrolled in this demo programme', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    // The programme's first curriculum session — the demo becomes this.
+    const firstSession = await db.session.findFirst({
+      where: { programId: cls.programId },
+      orderBy: { order: 'asc' },
+      select: { id: true, title: true, order: true },
+    });
+
+    const updated = await db.scheduledClass.update({
+      where: { id: classId },
+      data: {
+        studentId,
+        classType: 'REGULAR',
+        // Its first session, when the curriculum has one. Left as-is otherwise —
+        // the class still shows, just without a session label.
+        sessionId: firstSession?.id ?? cls.sessionId,
+        // leadId is kept as provenance: this REGULAR class began life as a demo.
+      },
+    });
+    return { class: updated, linkedSession: firstSession ?? null };
+  },
+
   async completeClass(classId: string, callerId?: string, callerRole?: string) {
     const classSession = await db.scheduledClass.findUnique({
       where: { id: classId },
