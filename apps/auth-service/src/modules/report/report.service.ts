@@ -240,6 +240,34 @@ export const reportService = {
    * The AI-derived facts an admin verifies before a report goes to a family:
    * topics, word cloud, voice balance, summary, quiz. Facts only, no PDF.
    */
+  /**
+   * Send history for a class — the "already sent to X" state the send panel
+   * shows. Only the last successful send is latched on the row (reportSentAt/
+   * reportSentTo); the per-attempt log the old UI imagined was never stored, so
+   * `sends` is a single-entry list built from the latch, or empty.
+   */
+  async reportSends(classId: string) {
+    const cls = await db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        reportSentAt: true,
+        reportSentTo: true,
+        student: {
+          select: {
+            parentAccount: { select: { profiles: { select: { phone: true }, take: 1 } } },
+          },
+        },
+      },
+    });
+    if (!cls) return null;
+    const parentPhone = cls.student?.parentAccount?.profiles?.[0]?.phone ?? null;
+    return {
+      report: cls.reportSentAt ? { sentAt: cls.reportSentAt, sentTo: cls.reportSentTo } : null,
+      sends: cls.reportSentAt ? [{ to: cls.reportSentTo, createdAt: cls.reportSentAt, status: 'sent' }] : [],
+      parentPhone,
+    };
+  },
+
   async classReportChecklist(classId: string) {
     const cls = await db.scheduledClass.findUnique({
       where: { id: classId },

@@ -23,6 +23,8 @@ const router = Router();
 
 // Student Accounts Management (must be defined before /customers/:id catch-all)
 router.get('/customers/students',            requireRole(...STAFF_VIEW), asyncHandler(userController.listAllStudents));
+// Split UI: independent student create posts the parent id in the body.
+router.post('/customers/students',           requireRole(...FAMILY_CREATE), asyncHandler(userController.createStudentFromBody));
 // Students are not in the User table, so GET /users/:id cannot resolve them.
 router.get('/customers/students/:id',        allowSelfOr('id', ...STAFF_VIEW), asyncHandler(userController.getStudentById));
 router.put('/customers/students/:id/reset-password', requireRole(...STAFF_MANAGE), asyncHandler(userController.resetStudentPassword));
