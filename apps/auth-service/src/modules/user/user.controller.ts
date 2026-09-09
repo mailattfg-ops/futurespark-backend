@@ -87,6 +87,19 @@ export const userController = {
     return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Program added'));
   },
 
+  /**
+   * Split UI variant: the customers page posts the student id in the URL
+   * (/customers/:parentId/students/:studentId/enrollments) and the programme
+   * in the body. Same service call as addEnrollment.
+   */
+  async addEnrollmentForStudent(req: Request, res: Response) {
+    const { parentId, studentId } = req.params;
+    const { programId } = req.body;
+    const result = await userService.addEnrollment(parentId, { studentId, programId });
+    logger.info(`[Enrollment] Student ${studentId} enrolled in program ${programId} (parent ${parentId})`);
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Program added'));
+  },
+
   /** Every programme a child is on, with the payment state that governs them. */
   async listEnrollments(req: Request, res: Response) {
     const result = await userService.effectiveEnrollments(req.params.studentId);

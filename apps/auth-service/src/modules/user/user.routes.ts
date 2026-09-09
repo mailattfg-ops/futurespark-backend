@@ -42,6 +42,10 @@ router.delete('/customers/enrollments/:enrollmentId',    requireRole(...STAFF_MA
 // Customer (Parent Account) & Student Creation
 router.get('/customers',                     requireRole(...STAFF_VIEW), asyncHandler(userController.listCustomers));
 router.post('/customers',                    requireRole(...FAMILY_CREATE), asyncHandler(userController.createCustomer));
+// Split scheduler/customers UI: parent creation posts to /customers/parents,
+// and program-add nests the student id in the URL. Same controllers as above.
+router.post('/customers/parents',            requireRole(...FAMILY_CREATE), asyncHandler(userController.createCustomer));
+router.post('/customers/:parentId/students/:studentId/enrollments', requireRole(...FAMILY_CREATE), asyncHandler(userController.addEnrollmentForStudent));
 router.post('/customers/:parentId/students', requireRole(...FAMILY_CREATE), asyncHandler(userController.createStudent));
 // Scoped to the parent so the service can verify the child belongs to them —
 // without that, any student id would be enrollable by anyone who can reach here.
