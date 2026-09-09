@@ -19,6 +19,17 @@ const ffmpegSemaphore = new Semaphore(MAX_CONCURRENT_FFMPEG, 'zoom-ffmpeg');
 const downloadsInFlight = createInFlightMap<string | null>('zoom-download');
 const transcriptionsInFlight = createInFlightMap<any>('zoom-transcribe');
 
+/**
+ * May this path be deleted when the video has been confirmed in S3?
+ *
+ * The one invariant that matters on a delete path: never remove the S3 key
+ * itself, and never remove a relative/remote reference — only a real local
+ * file. objectExists(videoKey) is checked separately at the call site; this is
+ * the pure half, so it can be tested without touching disk or the network.
+ */
+export const canReclaimLocalVideo = (local: string | null | undefined, videoKey: string): boolean =>
+  !!local && local !== videoKey && path.isAbsolute(local);
+
 const DOWNLOADS_BASE = path.resolve(__dirname, '../../../../downloads');
 const VIDEO_DIR = path.join(DOWNLOADS_BASE, 'video');
 const AUDIO_DIR = path.join(DOWNLOADS_BASE, 'audio');
@@ -461,6 +472,42 @@ export class ZoomRecordingService {
         );
 
         logger.info(`[ZoomRecording] Audio extraction complete for ${recordingId}`);
+
+        /* Promote the video to its durable S3 copy and reclaim the local disk.
+         *
+         * The video is uploaded to the bucket at download time, but the DB kept
+         * pointing at the local file: a wiped or replaced instance lost the
+         * video from the app even though S3 still held it, and the local copies
+         * were never cleaned (3.5 GB and climbing). The stream handler already
+         * serves an S3 key by presigned redirect, so once the object is
+         * CONFIRMED in the bucket we repoint the row and delete the local file.
+         *
+         * Done here, after extraction, so the pipeline that needs the local
+         * video (audio extraction, just above) is completely untouched. Audio
+         * is deliberately left local — transcription runs next and still needs
+         * it. Guarded by objectExists: a video that never reached S3 (S3 was off
+         * when it downloaded) keeps its local path, so this only ever deletes a
+         * file proven safe in the bucket. Never throws — extraction has already
+         * succeeded by this point.
+         */
+        if (S3Storage.isS3Enabled()) {
+          try {
+            const videoKey = getS3KeyForRecording(recordingId, recording.fileName, 'video');
+            if (await S3Storage.objectExists(videoKey)) {
+              await withDbRetry(() =>
+                db.meetingRecording.update({ where: { id: recordingId }, data: { videoPath: videoKey } })
+              );
+              for (const local of [recording.videoPath, videoPath]) {
+                if (local && canReclaimLocalVideo(local, videoKey) && fs.existsSync(local)) {
+                  try { fs.unlinkSync(local); } catch { /* best effort */ }
+                }
+              }
+              logger.info(`[ZoomRecording] Video ${recordingId} promoted to S3 (${videoKey}); local copy reclaimed.`);
+            }
+          } catch (err: any) {
+            logger.warn(`[ZoomRecording] Video S3 promotion skipped for ${recordingId}: ${err?.message ?? err}`);
+          }
+        }
 
         logger.info(`[ZoomRecording] Auto-triggering transcription for recording ID: ${recordingId}`);
         ZoomRecordingService.transcribeRecording(recordingId).catch(err => {

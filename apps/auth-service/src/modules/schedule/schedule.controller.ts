@@ -209,6 +209,19 @@ export const scheduleController = {
    * honoured — an older client still posting one gets a completed class and no
    * award, which is the intended outcome.
    */
+  async linkDemoToStudent(req: Request, res: Response) {
+    const { studentId } = req.body ?? {};
+    if (!studentId || typeof studentId !== 'string') {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'studentId is required.' });
+    }
+    const result = await scheduleService.linkDemoToStudent(
+      req.params.id,
+      studentId.trim(),
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Demo linked as the students Session 1'));
+  },
+
   async completeClass(req: Request, res: Response) {
     const classSession = await scheduleService.completeClass(
       req.params.id,
