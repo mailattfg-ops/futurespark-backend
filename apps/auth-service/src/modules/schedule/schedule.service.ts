@@ -1260,6 +1260,29 @@ export const scheduleService = {
     return matches[0];
   },
 
+  /**
+   * One class by id, in the LessonOwner shape — how a recording's FROZEN
+   * binding is resolved. Unlike classInRoomAt this makes no time/room judgement:
+   * the binding already decided, so a later reschedule cannot unlink it.
+   */
+  async classById(classId: string) {
+    if (!classId) return null;
+    return db.scheduledClass.findUnique({
+      where: { id: classId },
+      select: {
+        id: true,
+        studentId: true,
+        mentorId: true,
+        sessionId: true,
+        programId: true,
+        startTime: true,
+        endTime: true,
+        classSummary: true,
+        transcript: true,
+      },
+    });
+  },
+
   /** WhatsApp numbers of the staff who run the timetable. Internal callers only. */
   async staffNotifyNumbers(): Promise<string[]> {
     const staff = await db.user.findMany({
