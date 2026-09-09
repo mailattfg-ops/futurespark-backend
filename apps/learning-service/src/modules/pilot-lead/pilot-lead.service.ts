@@ -50,6 +50,33 @@ export const pilotLeadService = {
     return { demoTeachersCount, todayCutoffHour, hiddenSlots };
   },
 
+  async getLandingSections(): Promise<Record<string, boolean> | null> {
+    try {
+      const row = await (db as any).appSetting.findUnique({ where: { key: 'landing_sections' } });
+      if (row?.value && typeof row.value === 'object' && Object.keys(row.value).length > 0) {
+        return row.value as Record<string, boolean>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
+
+  async updateLandingSections(sectionsInput: Record<string, boolean>): Promise<Record<string, boolean>> {
+    if (!sectionsInput || typeof sectionsInput !== 'object') {
+      throw new AppError('Invalid sections payload', HTTP_STATUS.BAD_REQUEST);
+    }
+    const current = (await this.getLandingSections()) || {};
+    const merged = { ...current, ...sectionsInput };
+
+    await (db as any).appSetting.upsert({
+      where: { key: 'landing_sections' },
+      create: { key: 'landing_sections', value: merged },
+      update: { value: merged },
+    });
+    return merged;
+  },
+
   async getSlotAvailability(dateQuery?: string) {
     const { demoTeachersCount, todayCutoffHour, hiddenSlots } = await this.getDemoSettings();
     const leads = await (db as any).pilotLead.findMany({

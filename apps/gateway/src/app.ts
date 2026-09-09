@@ -187,8 +187,9 @@ app.use('/api/leads', createProxyMiddleware({
 // The website widget needs exactly three anonymous paths; everything else is
 // admin traffic and must carry a signed identity or the service refuses it.
 const isPublicPilotPath = (req: any): boolean =>
-  (req.method === 'POST' && (req.path === '/' || req.path === '')) ||
-  (req.method === 'GET' && ['/slot-availability', '/settings'].includes(req.path));
+  (req.method === 'POST' && (req.path === '/' || req.path === '' || req.path === '/sections')) ||
+  (req.method === 'PUT' && req.path === '/sections') ||
+  (req.method === 'GET' && ['/slot-availability', '/settings', '/sections'].includes(req.path));
 
 app.use('/api/pilot-leads',
   (req: any, res: any, next: any) => (isPublicPilotPath(req) ? next() : asyncHandler(authenticate)(req, res, next)),
