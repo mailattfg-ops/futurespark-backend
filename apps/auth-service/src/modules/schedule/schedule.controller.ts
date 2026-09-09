@@ -286,6 +286,16 @@ export const scheduleController = {
    * out a name is wrong or a summary came out empty. ADMIN only: the document
    * contains a named child's class transcript summary.
    */
+  async reportSends(req: Request, res: Response) {
+    const role = req.headers['x-user-role'] as string | undefined;
+    if (role !== 'ADMIN') {
+      return res.status(HTTP_STATUS.FORBIDDEN).json({ success: false, message: 'Only an admin can view send history.' });
+    }
+    const data = await reportService.reportSends(req.params.id);
+    if (!data) return res.status(HTTP_STATUS.NOT_FOUND).json({ success: false, message: 'Class not found.' });
+    return res.status(HTTP_STATUS.OK).json({ success: true, data });
+  },
+
   async classReportChecklist(req: Request, res: Response) {
     const role = req.headers['x-user-role'] as string | undefined;
     if (role !== 'ADMIN') {

@@ -127,12 +127,31 @@ export const userController = {
     // `programId` is optional but deliberate: the form asks for an explicit
     // choice, and an omitted one now means "no programme yet" rather than
     // silently inheriting whatever a sibling's family already paid for.
-    const { email, password, firstName, lastName, programId } = req.body;
+    // level & country were being dropped here though the form collects them and
+    // the service stores them — the course remap relies on level being set.
+    const { email, password, firstName, lastName, programId, level, country } = req.body;
     if (!email || !password || !firstName || !lastName) {
       return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'All student details are required' });
     }
     const result = await userService.createStudentForParent(parentId, {
-      email, password, firstName, lastName, programId,
+      email, password, firstName, lastName, programId, level, country,
+    });
+    logger.info(`[Student] Created: ${result.email} under Parent: ${parentId}`);
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Student created successfully'));
+  },
+
+  /**
+   * Split UI variant ("Link Independent Student Profile"): posts to
+   * /customers/students with the parent id in the BODY, not the URL. Same
+   * service as createStudent.
+   */
+  async createStudentFromBody(req: Request, res: Response) {
+    const { parentId, email, password, firstName, lastName, programId, level, country } = req.body ?? {};
+    if (!parentId || !email || !password || !firstName || !lastName) {
+      return res.status(HTTP_STATUS.BAD_REQUEST).json({ success: false, message: 'Parent and all student details are required' });
+    }
+    const result = await userService.createStudentForParent(parentId, {
+      email, password, firstName, lastName, programId, level, country,
     });
     logger.info(`[Student] Created: ${result.email} under Parent: ${parentId}`);
     return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Student created successfully'));
