@@ -16,29 +16,29 @@ model IntegrationConfig {
 }
 
 model GoogleAccount {
-  id             String    @id @default(uuid())
-  workspaceEmail String    @unique
+  id             String   @id @default(uuid())
+  workspaceEmail String   @unique
   accessToken    String
   refreshToken   String
   tokenExpiry    DateTime
-  connected      Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  connected      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
 model ZoomAccount {
-  id             String    @id @default(uuid())
-  accountEmail   String    @unique
-  accountType    String    @default("SERVER_TO_SERVER") // "SERVER_TO_SERVER" | "OAUTH"
-  accountId      String?
-  clientId       String?
-  clientSecret   String?
-  accessToken    String?
-  refreshToken   String?
-  tokenExpiry    DateTime?
-  connected      Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id           String    @id @default(uuid())
+  accountEmail String    @unique
+  accountType  String    @default("SERVER_TO_SERVER") // "SERVER_TO_SERVER" | "OAUTH"
+  accountId    String?
+  clientId     String?
+  clientSecret String?
+  accessToken  String?
+  refreshToken String?
+  tokenExpiry  DateTime?
+  connected    Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 /// One purchased Zoom seat, managed from the admin UI.
@@ -53,17 +53,17 @@ model ZoomAccount {
 /// `Meeting.zoomHostEmail` records, so allocation still works for every meeting
 /// booked before this table existed.
 model ZoomHost {
-  id          String   @id @default(uuid())
-  name        String
+  id           String    @id @default(uuid())
+  name         String
   /// Stored lowercased. The unique index is what stops the same seat being
   /// added twice under different capitalisation and appearing to double the
   /// number of concurrent classes the pool can run.
-  email       String   @unique
+  email        String    @unique
   /// "PRO" (licensed, can host a full class) or "BASIC" (40-minute cap).
-  licenseType String   @default("PRO")
+  licenseType  String    @default("PRO")
   /// Inactive seats are skipped by the allocator. Meetings already booked on
   /// them are untouched — the room still works, it just receives nothing new.
-  active      Boolean  @default(true)
+  active       Boolean   @default(true)
   /// Set when Zoom confirmed this address. Null = never checked, which is the
   /// normal state until the account is granted the user-read scope.
   verifiedAt   DateTime?
@@ -74,48 +74,48 @@ model ZoomHost {
   lastError    String?
   /// Which seats were seeded from ZOOM_HOST_EMAILS during the cutover, so the
   /// difference between "an admin added this" and "the migration did" survives.
-  source      String   @default("ADMIN")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  source       String    @default("ADMIN")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  meetings    Meeting[]
+  meetings Meeting[]
 
   @@index([active])
 }
 
 model Meeting {
-  id                 String             @id @default(uuid())
-  provider           String             @default("GOOGLE_MEET") // "GOOGLE_MEET" | "ZOOM"
-  calendarEventId    String?            @unique
-  conferenceId       String?
-  zoomMeetingId      String?            @unique
-  zoomJoinUrl        String?
-  zoomStartUrl       String?
-  zoomPasscode       String?
+  id              String             @id @default(uuid())
+  provider        String             @default("GOOGLE_MEET") // "GOOGLE_MEET" | "ZOOM"
+  calendarEventId String?            @unique
+  conferenceId    String?
+  zoomMeetingId   String?            @unique
+  zoomJoinUrl     String?
+  zoomStartUrl    String?
+  zoomPasscode    String?
   /// The seat this meeting was allocated. `zoomHostEmail` stays the source of
   /// truth for allocation (every historical row has it, and Zoom is called with
   /// it); `zoomHostId` is the join that makes "which host is busy right now"
   /// answerable without matching on strings. Null for meetings booked before
   /// the seat table existed, and for a mentor-hosted meeting whose address is
   /// not a pool seat.
-  zoomHostId         String?
-  zoomHost           ZoomHost?          @relation(fields: [zoomHostId], references: [id], onDelete: SetNull)
-  zoomHostEmail      String?
-  meetUrl            String
-  title              String
-  description        String?
-  organizerEmail     String
-  teacherId          String
-  studentId          String
-  programId          String
-  sessionId          String
-  startTime          DateTime
-  endTime            DateTime
-  timezone           String
-  status             String             @default("SCHEDULED") // "SCHEDULED", "ACTIVE", "COMPLETED", "CANCELLED"
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-  recordings         MeetingRecording[]
+  zoomHostId      String?
+  zoomHost        ZoomHost?          @relation(fields: [zoomHostId], references: [id], onDelete: SetNull)
+  zoomHostEmail   String?
+  meetUrl         String
+  title           String
+  description     String?
+  organizerEmail  String
+  teacherId       String
+  studentId       String
+  programId       String
+  sessionId       String
+  startTime       DateTime
+  endTime         DateTime
+  timezone        String
+  status          String             @default("SCHEDULED") // "SCHEDULED", "ACTIVE", "COMPLETED", "CANCELLED"
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  recordings      MeetingRecording[]
 
   // ── Post-class recording hunt ────────────────────────────────────────────
   // Stamped by auth-service when the MENTOR marks the class complete. The Drive
@@ -137,11 +137,11 @@ model Meeting {
 }
 
 model MeetingRecording {
-  id                   String   @id @default(uuid())
+  id                   String    @id @default(uuid())
   meetingId            String
-  meeting              Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
-  driveFileId          String?  @unique
-  zoomRecordingId      String?  @unique
+  meeting              Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  driveFileId          String?   @unique
+  zoomRecordingId      String?   @unique
   /// When the provider says this recording actually started.
   ///
   /// The meeting row is shared by every session held in a reused room, so its
@@ -151,13 +151,13 @@ model MeetingRecording {
   recordedAt           DateTime?
   fileName             String
   fileSize             Int
-  duration             Int?     // Duration in seconds
+  duration             Int? // Duration in seconds
   downloadUrl          String?
   playUrl              String?
-  videoPath            String?  // Local/storage path for download
-  audioPath            String?  // Local/storage path for extracted audio
-  downloadStatus       String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
-  extractedAudioStatus String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  videoPath            String? // Local/storage path for download
+  audioPath            String? // Local/storage path for extracted audio
+  downloadStatus       String    @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  extractedAudioStatus String    @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
   /// When the audio track was successfully extracted and VERIFIED against the
   /// source video. The status alone said whether it happened, never when — so
   /// the gap between the video landing and the audio being ready (the step
@@ -175,12 +175,29 @@ model MeetingRecording {
   // transcription time the real Drive file is already linked. One 429 meant no
   // summary, ever, and 72 hours later the report cron mislabelled it
   // "[NO_RECORDING]" for a recording that had downloaded perfectly.
-  transcriptionStatus  String   @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
-  transcriptionAttempts Int     @default(0)
-  transcriptionError   String?
+  transcriptionStatus   String    @default("PENDING") // "PENDING", "COMPLETED", "FAILED"
+  transcriptionAttempts Int       @default(0)
+  transcriptionError    String?
   /// Earliest sensible retry. Set an hour out for an hourly cap, tomorrow for a
   /// daily one — retrying a quota failure immediately just burns the quota.
-  transcriptionRetryAt DateTime?
+  transcriptionRetryAt  DateTime?
 
-  createdAt            DateTime @default(now())
+  /// Frozen attribution: the auth-service ScheduledClass this recording was
+  /// matched to, written ONCE — on the first successful room+time match, or by
+  /// a human using the manual attach control.
+  ///
+  /// Match is otherwise recomputed live from the class row every time it is
+  /// read, so editing the class (reschedule, new link) or deleting and
+  /// recreating it retroactively orphaned a video that displayed fine the day
+  /// before. Once this is set it wins over the live match, so a later edit can
+  /// no longer unlink the recording. Null = never matched yet; fall back to
+  /// room+time.
+  boundClassId String?
+  boundAt      DateTime?
+  /// "auto" for a match the pipeline made, or the user id who attached it by hand.
+  boundBy      String?
+
+  createdAt DateTime @default(now())
+
+  @@index([boundClassId])
 }

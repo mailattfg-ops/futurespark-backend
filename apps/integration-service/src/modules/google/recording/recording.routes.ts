@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { bindRecording, unbindRecording } from '../../shared/recording-bind.controller';
 import { GoogleRecordingController } from './recording.controller';
 
 const router = Router();
@@ -16,6 +17,9 @@ router.get('/', GoogleRecordingController.list);
 router.post('/sync', GoogleRecordingController.sync);
 router.post('/link-url', GoogleRecordingController.linkDriveUrl);
 router.get('/:id', GoogleRecordingController.get);
+// Manual attribution — attach/detach a recording to a class (staff only).
+router.post('/:id/bind', bindRecording);
+router.post('/:id/unbind', unbindRecording);
 router.post('/:id/download', GoogleRecordingController.download);
 // Authenticated at the gateway; hands back a short-lived signed link.
 router.get('/:id/media-token', GoogleRecordingController.mediaToken);

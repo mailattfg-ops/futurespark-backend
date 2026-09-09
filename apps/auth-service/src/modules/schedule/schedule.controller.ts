@@ -51,6 +51,62 @@ export const scheduleController = {
     return res.status(HTTP_STATUS.CREATED).json(successResponse(classSession, 'Class scheduled successfully'));
   },
 
+  /**
+   * The scheduler UI was "split" to post regular bookings to /program and demos
+   * to /demo, with fields `durationMin` and `sessionsToBook` — but the backend
+   * only ever had POST / with `durationMinutes` and `sessions`. These two
+   * adapters translate the split payload into the shape the existing, tested
+   * createSchedule already accepts, so no core scheduling logic changes.
+   */
+  async createProgram(req: Request, res: Response) {
+    const b = req.body ?? {};
+    const input = validateCreateSchedule({
+      ...b,
+      classType: 'REGULAR',
+      durationMinutes: b.durationMin ?? b.durationMinutes,
+      sessions: Array.isArray(b.sessionsToBook)
+        ? b.sessionsToBook.map((s: any, i: number) => ({
+            id: s.sessionId ?? s.id,
+            order: typeof s.order === 'number' ? s.order : i,
+            meetingLink: s.meetingLink,
+          }))
+        : b.sessions,
+    });
+    const result = await scheduleService.createSchedule(
+      input,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Program classes scheduled successfully'));
+  },
+
+  async createDemo(req: Request, res: Response) {
+    const b = req.body ?? {};
+    const input = validateCreateSchedule({
+      ...b,
+      classType: 'DEMO',
+      durationMinutes: b.durationMin ?? b.durationMinutes,
+    });
+    const result = await scheduleService.createSchedule(
+      input,
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined
+    );
+    return res.status(HTTP_STATUS.CREATED).json(successResponse(result, 'Demo class scheduled successfully'));
+  },
+
+  /** DELETE /classes/:id/program — the split UI's whole-programme delete. */
+  async deleteClassProgram(req: Request, res: Response) {
+    const result = await scheduleService.deleteSchedule(
+      req.params.id,
+      true, // deleteAll — the programme, not one class
+      req.headers['x-user-id'] as string | undefined,
+      req.headers['x-user-role'] as string | undefined,
+      req.query.completedToo === 'true'
+    );
+    return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Programme classes deleted'));
+  },
+
   async update(req: Request, res: Response) {
     const input = validateUpdateSchedule(req.body);
     // Which fields of `input` actually get written is decided in the service
@@ -504,6 +560,17 @@ export const scheduleController = {
     const link = typeof req.query.link === 'string' ? req.query.link : '';
     const atRaw = typeof req.query.at === 'string' ? req.query.at : '';
     const found = await scheduleService.classInRoomAt(link, new Date(atRaw));
+    return res.status(HTTP_STATUS.OK).json(successResponse(found, 'Class lookup complete'));
+  },
+
+  async classById(req: Request, res: Response) {
+    if (req.headers['x-user-id'] || req.headers['x-user-role']) {
+      return res.status(HTTP_STATUS.FORBIDDEN).json({
+        success: false,
+        message: 'This endpoint is service-to-service only.',
+      });
+    }
+    const found = await scheduleService.classById(String(req.params.id));
     return res.status(HTTP_STATUS.OK).json(successResponse(found, 'Class lookup complete'));
   },
 

@@ -29,6 +29,7 @@ router.get('/internal/staff-numbers', asyncHandler(scheduleController.staffNotif
 // Service-to-service only, same refusal. Tells a finished recording which
 // lesson it belongs to, which the shared meeting row cannot.
 router.get('/internal/class-at', asyncHandler(scheduleController.classInRoomAt));
+router.get('/internal/class-by-id/:id', asyncHandler(scheduleController.classById));
 // Static prefix, so "students" is never matched as a class id by "/:id".
 // Gated: the student, their parent, or a mentor who teaches them.
 router.get('/students/:studentId/overview', asyncHandler(scheduleController.getStudentOverview));
@@ -45,6 +46,20 @@ router.get('/doubts/inbox', asyncHandler(scheduleController.listDoubtInbox));
 router.post('/doubts/:doubtId/answer', asyncHandler(scheduleController.answerDoubt));
 router.get('/',       asyncHandler(scheduleController.list));
 router.post('/',      asyncHandler(scheduleController.create));
+
+// ── "Split" scheduler UI URL scheme ───────────────────────────────────────
+// The admin scheduler posts creations to /program and /demo, and class-level
+// actions under /classes/:id, while this backend historically used POST / and
+// /:id. These routes reconcile the two by reusing the existing controllers, so
+// the deployed frontend works without changing any scheduling logic. The
+// /classes/:id/* entries are placed here, ABOVE the bare /:id routes, so the
+// literal "classes" segment is never swallowed by /:id.
+router.post('/program', asyncHandler(scheduleController.createProgram));
+router.post('/demo', asyncHandler(scheduleController.createDemo));
+router.delete('/classes/:id/program', asyncHandler(scheduleController.deleteClassProgram));
+router.get('/classes/:id/raw-transcript', asyncHandler(scheduleController.getRawTranscript));
+router.put('/classes/:id', asyncHandler(scheduleController.update));
+router.delete('/classes/:id', asyncHandler(scheduleController.delete));
 // Gated: ADMIN, or the mentor who teaches this class. Body-free — it records
 // that the lesson happened and unlocks the quiz, and awards nothing. The points
 // are decided per answer on /:id/reflection/review.

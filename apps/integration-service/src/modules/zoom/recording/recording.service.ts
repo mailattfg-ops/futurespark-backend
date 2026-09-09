@@ -1,5 +1,5 @@
 import { extractVerifiedAudio } from "../../shared/audio";
-import { findLessonForRecording } from '../../shared/recording-owner';
+import { ownerForRecording } from '../../shared/recording-owner';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
@@ -513,10 +513,7 @@ export class ZoomRecordingService {
        * ninety-nine-minute class is still mid-pipeline at that mark, so every
        * attempt died as a bare "fetch failed" until the retry budget was gone
        * — for a recording that was never broken, only long. */
-      const lesson = await findLessonForRecording(
-        recording.meeting.meetUrl,
-        recording.recordedAt ?? recording.createdAt
-      );
+      const lesson = await ownerForRecording(recording);
       if (lesson) {
         logger.info(
           `[Recording] ${recording.id} belongs to class ${lesson.id} ` +

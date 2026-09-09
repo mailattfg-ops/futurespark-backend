@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { findLessonForRecording } from '../../shared/recording-owner';
+import { ownerForRecording } from '../../shared/recording-owner';
 import fs from 'fs';
 import path from 'path';
 import { ZoomRecordingService } from './recording.service';
@@ -165,7 +165,17 @@ export class ZoomRecordingController {
       }
 
       const all = await ZoomRecordingService.listRecordings();
-      const matches = all.filter((r: any) => extractMeetCode(r.meeting?.meetUrl) === grant.meetCode);
+      // The recording FROZEN to this class wins — a reused room otherwise serves
+      // whichever session shares the link (the same mix-up the cockpit had).
+      // Only when nothing is bound do we fall back to the room-code match.
+      const boundToThisClass = all.filter((r: any) => r.boundClassId === grant.classId);
+      const matches =
+        boundToThisClass.length > 0
+          ? boundToThisClass
+          : all.filter(
+              (r: any) =>
+                !r.boundClassId && extractMeetCode(r.meeting?.meetUrl) === grant.meetCode
+            );
 
       const payload = matches.map((r: any) => {
         const { token, expiresAt } = createStreamToken(r.id);
@@ -260,10 +270,7 @@ export class ZoomRecordingController {
            * one's summary and session one's name. `class-at` answers for the
            * moment the recording was actually made, and refuses when two
            * classes could match. */
-          const lesson = await findLessonForRecording(
-            recording.meeting.meetUrl,
-            recording.recordedAt ?? recording.createdAt
-          );
+          const lesson = await ownerForRecording(recording);
           if (lesson && (lesson.classSummary || lesson.transcript)) {
             {
               let summaryContent: string = lesson.classSummary || lesson.transcript || '';
