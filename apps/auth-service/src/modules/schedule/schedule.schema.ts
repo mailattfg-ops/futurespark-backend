@@ -37,6 +37,8 @@ export interface CreateScheduleInput {
    * that overruns the slot it was booked into.
    */
   durationMinutes?: number;
+  /** Re-teaching a session that was cut short — labelled "(Continued)", not counted as new progress. */
+  isContinuation?: boolean;
 }
 
 export const SCHEDULE_CADENCES = ['WEEKLY', 'DAILY', 'SAME_DAY'] as const;
@@ -105,6 +107,7 @@ export const validateCreateSchedule = (data: any): CreateScheduleInput => {
         : 90,
     leadId: data.leadId ? data.leadId.trim() : undefined,
     meetingLink: typeof data.meetingLink === 'string' && data.meetingLink.trim() !== '' ? data.meetingLink.trim() : undefined,
+    isContinuation: data.isContinuation === true || data.isContinuation === 'true',
     sessions: data.sessions
       ? data.sessions.map((s: any) => ({
           id: s.id.trim(),

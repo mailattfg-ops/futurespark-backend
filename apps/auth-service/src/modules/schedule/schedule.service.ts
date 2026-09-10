@@ -442,6 +442,7 @@ export const scheduleService = {
         endTime: classEndTime,
         status: 'SCHEDULED',
         classType: 'REGULAR',
+        isContinuation: input.isContinuation === true,
         meetingLink: session.meetingLink || input.meetingLink || null,
         autoRecording: input.autoRecording !== undefined ? input.autoRecording : true,
       });
