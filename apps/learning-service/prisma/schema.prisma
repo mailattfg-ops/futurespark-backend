@@ -1,8 +1,8 @@
 datasource db {
-  provider          = "postgresql"
-  url               = env("LEARN_DATABASE_URL")
-  directUrl         = env("LEARN_DATABASE_URL")
-  schemas           = ["auth", "learning"]
+  provider  = "postgresql"
+  url       = env("LEARN_DATABASE_URL")
+  directUrl = env("LEARN_DATABASE_URL")
+  schemas   = ["auth", "learning"]
 }
 
 generator client {
@@ -12,41 +12,41 @@ generator client {
 }
 
 model User {
-  id                String            @id @default(uuid())
-  email             String            @unique
-  passwordHash      String            @default("")
-  firstName         String?
-  lastName          String?
-  avatarUrl         String?
+  id                    String           @id @default(uuid())
+  email                 String           @unique
+  passwordHash          String           @default("")
+  firstName             String?
+  lastName              String?
+  avatarUrl             String?
   /// WhatsApp number for internal ops pings (session scheduled/rescheduled).
   /// Mirrored in the sibling schema — see the shared-tables rule.
-  phone            String?
-  roleId            String?
-  role              Role?             @relation(fields: [roleId], references: [id], onDelete: SetNull)
-  isActive          Boolean           @default(true)
-  requiresFtlReset  Boolean           @default(false)
-  lastLoginAt       DateTime?
-  qualifiedPrograms String[]          @default([]) // Program IDs qualified to teach
-  mentorTypes       String[]          @default(["REGULAR"]) // "REGULAR", "DEMO"
-  qualifications    String?
-  experience        String?
-  state             String?
-  country           String?
-  availabilityMode  String            @default("FIXED") // "FIXED" = only the weekly slots below, "FLEXIBLE" = open to any slot, "UNAVAILABLE" = not taking classes
-  availabilityNote  String?           // Free-text caveat shown to schedulers, e.g. "prefer mornings IST"
+  phone                 String?
+  roleId                String?
+  role                  Role?            @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  isActive              Boolean          @default(true)
+  requiresFtlReset      Boolean          @default(false)
+  lastLoginAt           DateTime?
+  qualifiedPrograms     String[]         @default([]) // Program IDs qualified to teach
+  mentorTypes           String[]         @default(["REGULAR"]) // "REGULAR", "DEMO"
+  qualifications        String?
+  experience            String?
+  state                 String?
+  country               String?
+  availabilityMode      String           @default("FIXED") // "FIXED" = only the weekly slots below, "FLEXIBLE" = open to any slot, "UNAVAILABLE" = not taking classes
+  availabilityNote      String? // Free-text caveat shown to schedulers, e.g. "prefer mornings IST"
   availabilityUpdatedAt DateTime?
-  timezone          String            @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @default(now()) @updatedAt
-  refreshTokens     RefreshToken[]
-  mentorSchedules   MentorSchedule[]
-  scheduledClasses  ScheduledClass[]  @relation("MentorClasses")
-  scheduledByClasses ScheduledClass[]  @relation("ScheduledByUser")
-  warningCount      Int               @default(0)
-  warnings          String[]          @default([])
-  schedulerGroupId  String?
-  schedulerGroup    SchedulerGroup?   @relation("GroupMentors", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
-  managedGroups     SchedulerGroup[]  @relation("AssignedScheduler")
+  timezone              String           @default("Asia/Kolkata") // IANA timezone e.g. "America/New_York"
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @default(now()) @updatedAt
+  refreshTokens         RefreshToken[]
+  mentorSchedules       MentorSchedule[]
+  scheduledClasses      ScheduledClass[] @relation("MentorClasses")
+  scheduledByClasses    ScheduledClass[] @relation("ScheduledByUser")
+  warningCount          Int              @default(0)
+  warnings              String[]         @default([])
+  schedulerGroupId      String?
+  schedulerGroup        SchedulerGroup?  @relation("GroupMentors", fields: [schedulerGroupId], references: [id], onDelete: SetNull)
+  managedGroups         SchedulerGroup[] @relation("AssignedScheduler")
 
   @@schema("auth")
 }
@@ -55,9 +55,9 @@ model MentorSchedule {
   id           String   @id @default(uuid())
   mentorId     String
   mentor       User     @relation(fields: [mentorId], references: [id], onDelete: Cascade)
-  weekday      Int      // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
-  startTime    String   // "HH:MM" 24-hr format
-  endTime      String   // auto-calculated: startTime + 90 min
+  weekday      Int // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+  startTime    String // "HH:MM" 24-hr format
+  endTime      String // auto-calculated: startTime + 90 min
   scheduleType String   @default("REGULAR")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -78,39 +78,39 @@ model Role {
 }
 
 model RefreshToken {
-  id               String         @id @default(uuid())
-  token            String         @unique
-  userId           String?
-  user             User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parentAccountId  String?
-  parentAccount    ParentAccount? @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
-  studentId        String?
-  student          Student?       @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  expiresAt        DateTime
-  createdAt        DateTime       @default(now())
+  id              String         @id @default(uuid())
+  token           String         @unique
+  userId          String?
+  user            User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentAccountId String?
+  parentAccount   ParentAccount? @relation(fields: [parentAccountId], references: [id], onDelete: Cascade)
+  studentId       String?
+  student         Student?       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  expiresAt       DateTime
+  createdAt       DateTime       @default(now())
 
   @@schema("auth")
 }
 
 model ParentAccount {
-  id                   String          @id @default(uuid())
-  email                String          @unique
-  passwordHash         String
-  avatarUrl            String?
-  isActive             Boolean         @default(true)
-  requiresFtlReset     Boolean         @default(false)
-  profiles             ParentProfile[]
-  students             Student[]
-  createdAt            DateTime        @default(now())
-  updatedAt            DateTime        @updatedAt
-  refreshTokens        RefreshToken[]
-  programId            String?
-  program              Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
-  paymentApproved      Boolean         @default(false)
-  selectedPlanType     String?         // "FULL" or "INSTALLMENT"
-  paidInstallmentIds   String[]        @default([]) // IDs of paid installments
-  warningCount         Int             @default(0)
-  warnings             String[]        @default([])
+  id                 String          @id @default(uuid())
+  email              String          @unique
+  passwordHash       String
+  avatarUrl          String?
+  isActive           Boolean         @default(true)
+  requiresFtlReset   Boolean         @default(false)
+  profiles           ParentProfile[]
+  students           Student[]
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  refreshTokens      RefreshToken[]
+  programId          String?
+  program            Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+  paymentApproved    Boolean         @default(false)
+  selectedPlanType   String? // "FULL" or "INSTALLMENT"
+  paidInstallmentIds String[]        @default([]) // IDs of paid installments
+  warningCount       Int             @default(0)
+  warnings           String[]        @default([])
 
   @@schema("auth")
 }
@@ -122,7 +122,7 @@ model ParentProfile {
   firstName       String
   lastName        String
   phone           String?
-  relationship    String?       // e.g. "Mother", "Father", "Guardian"
+  relationship    String? // e.g. "Mother", "Father", "Guardian"
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -197,73 +197,79 @@ model Student {
 }
 
 model SchedulerGroup {
-  id           String    @id @default(uuid())
-  name         String    @unique
-  description  String?
-  maxMentors   Int       @default(50)
-  maxStudents  Int       @default(100)
-  schedulerId  String?
-  scheduler    User?     @relation("AssignedScheduler", fields: [schedulerId], references: [id], onDelete: SetNull)
-  mentors      User[]    @relation("GroupMentors")
-  students     Student[] @relation("GroupStudents")
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  maxMentors  Int       @default(50)
+  maxStudents Int       @default(100)
+  schedulerId String?
+  scheduler   User?     @relation("AssignedScheduler", fields: [schedulerId], references: [id], onDelete: SetNull)
+  mentors     User[]    @relation("GroupMentors")
+  students    Student[] @relation("GroupStudents")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@schema("auth")
 }
 
 model ScheduledClass {
-  id              String    @id @default(uuid())
-  studentId       String?
-  student         Student?  @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  mentorId        String?
-  mentor          User?     @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: SetNull)
-  scheduledById   String?   // Staff User ID who created this booking
-  scheduledBy     User?     @relation("ScheduledByUser", fields: [scheduledById], references: [id], onDelete: SetNull)
-  programId       String?   // Program UUID from learning service
-  sessionId       String?   // Session UUID from learning service
-  startTime       DateTime  @default(now())
-  endTime         DateTime  @default(now())
-  status          String    @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
-  classType       String    @default("REGULAR")   // "REGULAR", "DEMO"
-  leadId            String?   // Lead UUID if classType is DEMO
+  id                     String          @id @default(uuid())
+  studentId              String?
+  student                Student?        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  mentorId               String?
+  mentor                 User?           @relation("MentorClasses", fields: [mentorId], references: [id], onDelete: SetNull)
+  scheduledById          String? // Staff User ID who created this booking
+  scheduledBy            User?           @relation("ScheduledByUser", fields: [scheduledById], references: [id], onDelete: SetNull)
+  programId              String? // Program UUID from learning service
+  sessionId              String? // Session UUID from learning service
+  startTime              DateTime        @default(now())
+  endTime                DateTime        @default(now())
+  status                 String          @default("SCHEDULED") // "SCHEDULED", "COMPLETED", "CANCELLED"
+  classType              String          @default("REGULAR") // "REGULAR", "DEMO"
+  leadId                 String? // Lead UUID if classType is DEMO
   /// Which internal reminders (24h / 1h / 10m) have already gone out for this
   /// class, so a restart or a second cron tick cannot re-send one.
   /// Mirrored in the sibling schema — shared tables, see the Student note.
-  internalRemindersSent String[] @default([])
-  meetingLink       String?   // Optional Google Meet / Zoom / video call URL
-  rescheduleReason  String?
-  rescheduleMessage String?
-  qaStatus          String    @default("PENDING")   // "PENDING", "PASSED", "FAILED", "FLAGGED"
-  qaFeedback        String?
-  reports           SessionReport[]
-  creditsAwarded    Int?
-  studentRating     Int?
-  studentFeedback   String?
-  reflectionAnswers     Json?
-  reflectionSubmittedAt DateTime?
-  reflectionScore       Int?
-  reflectionMaxScore    Int?
-  reflectionBadge       String?   // "GOLD" | "SILVER" | "BRONZE"
+  internalRemindersSent  String[]        @default([])
+  /// This class re-teaches a session that was cut short (emergency, tech
+  /// failure), rather than being a new session. Shown as "(Continued)" and
+  /// excluded from progress counts so an 8-session programme stays 8. Its
+  /// report is generated separately, like any other class.
+  /// Mirrored in the sibling schema — shared table.
+  isContinuation         Boolean         @default(false)
+  meetingLink            String? // Optional Google Meet / Zoom / video call URL
+  rescheduleReason       String?
+  rescheduleMessage      String?
+  qaStatus               String          @default("PENDING") // "PENDING", "PASSED", "FAILED", "FLAGGED"
+  qaFeedback             String?
+  reports                SessionReport[]
+  creditsAwarded         Int?
+  studentRating          Int?
+  studentFeedback        String?
+  reflectionAnswers      Json?
+  reflectionSubmittedAt  DateTime?
+  reflectionScore        Int?
+  reflectionMaxScore     Int?
+  reflectionBadge        String? // "GOLD" | "SILVER" | "BRONZE"
   // Mentor sign-off on the submitted quiz. Grading is automatic, but a score
   // alone does not tell a parent whether the mentor actually read the answers —
   // these do, and the note is where the mentor replies to what the student wrote.
   reflectionReviewedAt   DateTime?
   reflectionReviewedById String?
-  reflectionMentorNote   String?   @db.Text
+  reflectionMentorNote   String?         @db.Text
   // Live quiz: stamped when the mentor launches the reflection quiz DURING the
   // session. The student portal polls for it and pops the quiz up so mentor and
   // student can go through it together. Cleared by nothing — relaunching just
   // restamps it.
   quizLaunchedAt         DateTime?
-  rescheduledCount    Int       @default(0)
-  actualEndedAt       DateTime?
-  autoRecording       Boolean   @default(true)
-  recordingUrl        String?
-  transcript          String?   @db.Text
-  classSummary        String?   @db.Text
-  interactionMetrics  Json?
-  transcriptionStatus String    @default("NOT_STARTED")
+  rescheduledCount       Int             @default(0)
+  actualEndedAt          DateTime?
+  autoRecording          Boolean         @default(true)
+  recordingUrl           String?
+  transcript             String?         @db.Text
+  classSummary           String?         @db.Text
+  interactionMetrics     Json?
+  transcriptionStatus    String          @default("NOT_STARTED")
 
   // ── Post-class parent report ──────────────────────────────────────────
   // `completedAt` is the moment the mentor pressed "Completed", and it is the
@@ -271,16 +277,16 @@ model ScheduledClass {
   // and `endTime` is when the slot was *booked* to end rather than when the
   // class was signed off — a mentor who marks a class complete the next
   // morning would otherwise have the search window expire before it ran.
-  completedAt         DateTime?
-  reportPdfPath       String?   // S3 key (or local path) of the rendered PDF
-  reportSentAt        DateTime? // Meta accepted the WhatsApp report — the idempotency latch
-  reportSentTo        String?   // the phone number the successful send actually went to
-  reportAttempts      Int       @default(0)
-  reportLastError     String?   @db.Text
-  doubts              ClassDoubt[]
-  submissions              ClassSubmission[]
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @default(now()) @updatedAt
+  completedAt     DateTime?
+  reportPdfPath   String? // S3 key (or local path) of the rendered PDF
+  reportSentAt    DateTime? // Meta accepted the WhatsApp report — the idempotency latch
+  reportSentTo    String? // the phone number the successful send actually went to
+  reportAttempts  Int               @default(0)
+  reportLastError String?           @db.Text
+  doubts          ClassDoubt[]
+  submissions     ClassSubmission[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @default(now()) @updatedAt
 
   @@schema("auth")
 }
@@ -300,25 +306,25 @@ model ScheduledClass {
 /// Session: after a reschedule "week 2's worksheet" must mean the class the
 /// child actually sat, and the mentor reads it beside the class they taught.
 model ClassSubmission {
-  id           String         @id @default(uuid())
-  classId      String
-  class        ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
-  studentId    String
+  id                String         @id @default(uuid())
+  classId           String
+  class             ScheduledClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  studentId         String
   /// Who pressed upload: the student themselves, or their parent photographing
   /// paper work. Kept so a family can remove their own item and staff can see
   /// who sent what.
-  uploaderId   String
-  uploaderRole String
-  fileUrl      String
-  fileName     String
-  note         String?
+  uploaderId        String
+  uploaderRole      String
+  fileUrl           String
+  fileName          String
+  note              String?
   /// The mentor's feedback on this piece of work — one note, editable, the
   /// same shape as reflectionMentorNote. Written by the class's mentor (or an
   /// admin), read by the family under the file they handed in.
   mentorComment     String?
   mentorCommentAt   DateTime?
   mentorCommentById String?
-  createdAt    DateTime       @default(now())
+  createdAt         DateTime       @default(now())
 
   @@index([classId])
   @@schema("auth")
@@ -367,6 +373,7 @@ model SessionReport {
 enum PlanType {
   FULL
   INSTALLMENT
+
   @@schema("learning")
 }
 
@@ -379,6 +386,7 @@ enum LeadStatus {
   PAYMENT_SUBMITTED
   ENROLLED
   LOST
+
   @@schema("learning")
 }
 
@@ -430,42 +438,42 @@ model Installment {
 }
 
 model Session {
-  id            String       @id @default(uuid())
-  title         String
-  order         Int
-  durationMin   Int          @default(60)
-  slidesUrl     String?
-  guideUrl      String?
-  worksheetUrl  String?
-  programId     String?
-  program       Program?     @relation(fields: [programId], references: [id], onDelete: SetNull)
-  installmentId String?
-  installment   Installment? @relation(fields: [installmentId], references: [id], onDelete: SetNull)
+  id                  String            @id @default(uuid())
+  title               String
+  order               Int
+  durationMin         Int               @default(60)
+  slidesUrl           String?
+  guideUrl            String?
+  worksheetUrl        String?
+  programId           String?
+  program             Program?          @relation(fields: [programId], references: [id], onDelete: SetNull)
+  installmentId       String?
+  installment         Installment?      @relation(fields: [installmentId], references: [id], onDelete: SetNull)
   /// Per-session credit override for the mentor's Complete box. Defaulted
   /// to 10 for years, which silently stamped every session ever created -
   /// nobody chose that number, and it made "no award on completion" a
   /// decision the data always overrode. 0 = no default award.
-  credits       Int          @default(0)
+  credits             Int               @default(0)
   // Post-class reflection prompts the student answers before the next class.
   // Empty means "not customised" — readers fall back to the platform defaults.
-  reflectionQuestions String[] @default([])
+  reflectionQuestions String[]          @default([])
   // The typed quiz that supersedes the plain prompts above. Shape:
   // ReflectionQuestion[] from @futurespark/constants. Null/empty means the
   // session has no custom quiz and readers fall back to the prompts, then to
   // the platform defaults.
-  reflectionQuiz Json?
+  reflectionQuiz      Json?
   /// What this session is meant to leave the child able to do, in the order
   /// they are taught. Fixed per session: these are the curriculum’s outcomes,
   /// not observations about one child, so every family on this session sees
   /// the same five lines. Empty falls back to what the analysis observed.
-  learningOutcomes String[] @default([])
+  learningOutcomes    String[]          @default([])
   /// The session’s activities. Shape: SessionActivities from
   /// @futurespark/constants — { inSession: [...], takeHome: [...] }.
   /// Fixed per session; null means the report omits the Activities block
   /// rather than printing an empty card.
-  activities    Json?
+  activities          Json?
   // Mind map of what this session covers. Shape: SessionTopic[].
-  topics        Json?
+  topics              Json?
   /// The presentation text for this session: slides, key terms, activities,
   /// quiz answers and speaker notes, as plain text.
   ///
@@ -475,10 +483,10 @@ model Session {
   /// which were not. It is never a source of content in its own right: a report
   /// describing what the slides say rather than what the mentor taught would
   /// tell a parent their child learned things they never got to.
-  slideContent  String?      @db.Text
-  resources     SessionResource[]
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  slideContent        String?           @db.Text
+  resources           SessionResource[]
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   @@schema("learning")
 }
@@ -506,13 +514,13 @@ model SessionResource {
 }
 
 model Lead {
-  id                  String     @id @default(uuid())
+  id                String     @id @default(uuid())
   /// The PARENT — the person who fills in the enquiry, takes the calls and
   /// receives the demo report.
-  firstName           String
-  lastName            String
-  email               String
-  phone               String?
+  firstName         String
+  lastName          String
+  email             String
+  phone             String?
   /// The CHILD who will actually attend.
   ///
   /// One name used to stand for both people, so a demo class, the mentor's
@@ -520,27 +528,27 @@ model Lead {
   /// belonged. Nullable because every lead created before this has a single
   /// name and there is no way to tell which of the two it referred to —
   /// readers fall back to the parent name rather than showing a blank.
-  studentFirstName    String?
-  studentLastName     String?
-  source              String     @default("Website")
-  status              LeadStatus @default(NEW)
-  programId           String?
-  program             Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
-  notes               String?
-  demoClass           Boolean    @default(false)
-  assignedAdvisorId   String?
-  preferredDays       String[]   @default([])
-  preferredTime       String?
-  preferredTimezone   String?    @default("Asia/Kolkata")
-  paymentAmount       Float?
-  paymentTxnRef       String?
-  paymentMethod       String?
-  paymentStatus       String?    @default("NONE")
-  paymentVerifiedBy   String?
-  paymentVerifiedAt   DateTime?
-  telecallerNotes     String?
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  studentFirstName  String?
+  studentLastName   String?
+  source            String     @default("Website")
+  status            LeadStatus @default(NEW)
+  programId         String?
+  program           Program?   @relation(fields: [programId], references: [id], onDelete: SetNull)
+  notes             String?
+  demoClass         Boolean    @default(false)
+  assignedAdvisorId String?
+  preferredDays     String[]   @default([])
+  preferredTime     String?
+  preferredTimezone String?    @default("Asia/Kolkata")
+  paymentAmount     Float?
+  paymentTxnRef     String?
+  paymentMethod     String?
+  paymentStatus     String?    @default("NONE")
+  paymentVerifiedBy String?
+  paymentVerifiedAt DateTime?
+  telecallerNotes   String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 
   @@schema("learning")
 }
@@ -593,7 +601,7 @@ model AppSetting {
 /// costUsd comes from the provider's own usage.cost, never recomputed.
 model AiUsage {
   id           String   @id @default(uuid())
-  stage        String   // 'transcription' | 'analysis'
+  stage        String // 'transcription' | 'analysis'
   provider     String?
   model        String?
   inputTokens  Int      @default(0)
@@ -616,8 +624,8 @@ model AiUsage {
 model ErrorLog {
   id          String   @id @default(uuid())
   occurredAt  DateTime @default(now())
-  stage       String   // 'transcription' | 'analysis'
-  kind        String?  // GroqFailureKind, e.g. RATE_LIMITED
+  stage       String // 'transcription' | 'analysis'
+  kind        String? // GroqFailureKind, e.g. RATE_LIMITED
   provider    String?
   model       String?
   message     String   @db.Text
@@ -644,8 +652,8 @@ model ErrorLog {
 /// stopping a class from being analysed.
 model PromptVersion {
   id         String   @id @default(uuid())
-  promptType String   // 'transcription' | 'analysis'
-  version    Int      // 1, 2, 3… rendered as v1, v2, v3
+  promptType String // 'transcription' | 'analysis'
+  version    Int // 1, 2, 3… rendered as v1, v2, v3
   content    String   @db.Text
   status     String   @default("active") // 'active' | 'archived'
   changeWhat String?
@@ -671,21 +679,21 @@ model AuditLog {
   /// Who did it. SYSTEM rows have no actor id.
   actorId    String?
   actorName  String?
-  actorRole  String?  // ADMIN | TEACHER | STUDENT | PARENT | SYSTEM | ...
+  actorRole  String? // ADMIN | TEACHER | STUDENT | PARENT | SYSTEM | ...
   /// Broad grouping for the UI filter: auth | people | classes | curriculum | ai | recordings | other
   category   String   @default("other")
   /// What happened.
-  action     String   // created | updated | deleted | other verbs
-  entityType String   // parent | student | staff | class | session | program | ...
+  action     String // created | updated | deleted | other verbs
+  entityType String // parent | student | staff | class | session | program | ...
   entityId   String?
   entityName String?
   /// The human sentence shown in the feed.
   summary    String   @db.Text
   /// For updates: [{ field, to }] — the fields the request changed.
   changes    Json?
-  service    String?  // which service recorded it
-  method     String?  // HTTP method, for debugging the mapping
-  path       String?  // route path with ids, for debugging the mapping
+  service    String? // which service recorded it
+  method     String? // HTTP method, for debugging the mapping
+  path       String? // route path with ids, for debugging the mapping
 
   @@index([occurredAt])
   @@index([entityType])
@@ -694,25 +702,24 @@ model AuditLog {
 }
 
 model PartialLead {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   studentName       String
   studentGrade      String
-  dialCode          String   @default("+91")
+  dialCode          String    @default("+91")
   phone             String
   email             String
-  hasLaptop         Boolean  @default(true)
+  hasLaptop         Boolean   @default(true)
   preferredSlotDate String?
   preferredSlotTime String?
   parentName        String?
   whoAreYou         String?
   bookingReason     String?
   purchaseTimeline  String?
-  status            String   @default("PARTIAL")
+  status            String    @default("PARTIAL")
   notifiedAt        DateTime?
   completedLeadId   String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@schema("learning")
 }
-
