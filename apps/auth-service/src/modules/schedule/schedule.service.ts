@@ -47,7 +47,7 @@ import { reflectionService } from './schedule.reflection.service';
 import { doubtService } from './schedule.doubt.service';
 import { logger } from '@futurespark/logger';
 import { sendNotification } from '../notification-helper';
-import { rescheduleCalendarEvent, markMeetingClassCompleted } from '../calendar-helper';
+import { rescheduleCalendarEvent, markMeetingClassCompleted, deleteMeetingByLink } from '../calendar-helper';
 
 export const scheduleService = {
   async getMentorsWithSchedules(groupId?: string) {
@@ -849,6 +849,29 @@ export const scheduleService = {
    * Either way the real numbers come back so the caller can say what happened
    * instead of assuming.
    */
+  /**
+   * Cancel the video meeting behind a deleted class — but ONLY when no other
+   * class still points at that room.
+   *
+   * Deleting a class used to leave its Zoom meeting live: the meeting row kept
+   * its host seat and still answered the double-booking check, so a deleted
+   * booking went on blocking the mentor and eating one of the licensed seats
+   * ("all 3 seats busy" with two real classes on the calendar).
+   *
+   * The guard matters because one room is routinely reused for a whole
+   * programme: cancelling on the first delete would kill the room every
+   * remaining session depends on.
+   */
+  async releaseRoomIfUnused(meetingLink: string | null | undefined) {
+    if (!meetingLink) return;
+    const stillUsed = await db.scheduledClass.count({ where: { meetingLink } });
+    if (stillUsed > 0) {
+      logger.info(`[Schedule] Room ${meetingLink} kept — ${stillUsed} other class(es) still use it.`);
+      return;
+    }
+    await deleteMeetingByLink(meetingLink);
+  },
+
   async deleteSchedule(
     id: string,
     deleteAll = false,
@@ -882,9 +905,19 @@ export const scheduleService = {
           where: { ...scope, status: 'COMPLETED' },
         });
 
+        // Rooms of the classes about to go, so they can be released after.
+        const doomed = await db.scheduledClass.findMany({
+          where: includeCompleted ? scope : { ...scope, status: { not: 'COMPLETED' } },
+          select: { meetingLink: true },
+        });
+
         const { count } = await db.scheduledClass.deleteMany({
           where: includeCompleted ? scope : { ...scope, status: { not: 'COMPLETED' } },
         });
+
+        for (const link of new Set(doomed.map((d) => d.meetingLink).filter(Boolean))) {
+          await scheduleService.releaseRoomIfUnused(link);
+        }
 
         const keptCompleted = includeCompleted ? 0 : completed;
         logger.info(
@@ -898,6 +931,7 @@ export const scheduleService = {
     }
 
     await db.scheduledClass.delete({ where: { id: classSession.id } });
+    await scheduleService.releaseRoomIfUnused(classSession.meetingLink);
     return { count: 1, keptCompleted: 0 };
   },
 
