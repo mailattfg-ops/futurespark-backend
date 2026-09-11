@@ -1,6 +1,7 @@
 import { db } from '../../database/datasource';
 import { SavePartialLeadInput } from './partial-lead.schema';
 import { leadService } from '../lead/lead.service';
+import { schedulePartialLeadNudge } from './partial-lead.queue';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
@@ -98,6 +99,23 @@ export const partialLeadService = {
       }).catch((err) => console.error('[Partial Lead Admin Notification Error]', err?.message));
     }
 
+    /* Queue the abandoned-form nurture — never sent inline.
+     *
+     * Sending here messaged people on every save (this runs again for each
+     * section, and completePartialLead calls it too), so one parent could
+     * collect several identical templates. The queue holds it for ten minutes
+     * and the worker checks whether this record still exists before sending —
+     * completing the form deletes it, which is what keeps this path and the
+     * completed-lead reminder independent of each other.
+     */
+    if (fullPhone) {
+      await schedulePartialLeadNudge({
+        partialLeadId: record.id,
+        to: fullPhone,
+        parentName: record.parentName || record.studentName || 'Parent',
+      });
+    }
+
     return record;
   },
 
@@ -130,25 +148,6 @@ export const partialLeadService = {
       preferredDays: input.preferredSlotDate ? [input.preferredSlotDate] : [],
       preferredTime: input.preferredSlotTime,
     });
-
-    // Send WhatsApp Marketing Template (finquo_free_demo_marketing) on 3rd Section Submission
-    if (fullPhone) {
-      const landingUrl = process.env.LANDING_PAGE_URL || 'https://junior.finquo.ai';
-      const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
-
-      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/send-marketing-template`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: fullPhone,
-          parentName: input.parentName || input.studentName || 'Parent',
-          templateName: 'finquo_free_demo_marketing',
-          claimUrl: `${landingUrl.replace(/\/$/, '')}/claim-free-class`,
-        }),
-      }).catch((err) => {
-        console.error('[Claim Free Class WhatsApp Error]', err?.message);
-      });
-    }
 
     // Delete/Remove from partial forms once Section 3 is fully completed
     if (partialRecord?.id) {
