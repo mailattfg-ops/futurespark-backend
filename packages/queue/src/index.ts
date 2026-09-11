@@ -67,6 +67,15 @@ export const enqueue = async (
   data: unknown,
   opts?: JobsOptions
 ): Promise<boolean> => {
+  // BullMQ reserves ':' as its Redis key separator and rejects any custom id
+  // containing one. Caught here, loudly, because the failure is otherwise a
+  // single log line among thousands and the job simply never exists.
+  if (opts?.jobId && opts.jobId.includes(':')) {
+    console.error(
+      `[Queue:${queueName}] Refusing jobId "${opts.jobId}" — BullMQ forbids ':' in custom ids. Use '-'.`
+    );
+    return false;
+  }
   try {
     await getQueue(queueName).add(jobName, data, opts);
     return true;

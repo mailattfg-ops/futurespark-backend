@@ -35,7 +35,11 @@ export const schedulePartialLeadNudge = async (payload: PartialLeadNudge): Promi
     delay: FOLLOW_UP_DELAY_MS,
     // One job per partial record: a second save of the same form is ignored by
     // BullMQ rather than producing a duplicate message.
-    jobId: `nudge:${payload.partialLeadId}`,
+    //
+    // A hyphen, NOT a colon — BullMQ reserves ':' as its Redis key separator and
+    // rejects any custom id containing one ("Custom Id cannot contain :"), which
+    // silently dropped every nudge.
+    jobId: `nudge-${payload.partialLeadId}`,
   });
   if (queued) {
     console.log(
