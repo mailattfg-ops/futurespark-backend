@@ -1,11 +1,17 @@
 import './load-env'; // must stay first — populates process.env before ./app loads
 import app from './app';
 import { logger } from '@futurespark/logger';
+import { startPartialLeadWorker } from './modules/partial-lead/partial-lead.queue';
 
 const PORT = process.env.LEARNING_SERVICE_PORT || 3002;
 
 app.listen(PORT, () => {
   logger.info(`learning-service server listening on port ${PORT}`);
+
+  /* Abandoned claim-form nudges. Safe to start even when Redis is down — the
+   * worker just idles and enqueues are dropped with a log, so a lead form never
+   * fails because a queue is unavailable. */
+  startPartialLeadWorker();
 
   /* AI_PROVIDER_BANNER
    * Which vendor each stage will actually call, printed at boot.
