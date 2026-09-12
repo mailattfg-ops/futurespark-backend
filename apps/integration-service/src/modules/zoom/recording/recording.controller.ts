@@ -8,6 +8,12 @@ import { startTranscriptionJob, isTranscriptionRunning, getTranscriptionState, d
 import { describePipeline } from '../../shared/pipeline-stage';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS, verifyClassMediaGrant, extractMeetCode } from '@futurespark/constants';
+
+/** The numeric Zoom meeting id inside a join URL, ignoring any ?pwd= suffix. */
+const extractZoomMeetingId = (url: string): string | null => {
+  const m = String(url || '').match(/\/j\/(\d+)/);
+  return m?.[1] ?? null;
+};
 import { logger } from '@futurespark/logger';
 import { S3Storage, getS3KeyForRecording } from '@futurespark/storage';
 import { createStreamToken, verifyStreamToken } from './stream-token';
@@ -59,7 +65,46 @@ export class ZoomRecordingController {
 
   static async sync(req: Request, res: Response) {
     try {
-      const { meetingId, zoomMeetingId } = req.body;
+      const { meetingId, zoomMeetingId, joinUrl } = req.body;
+
+      /* joinUrl = the class's own room link, which is what the Recording
+       * Manager actually knows about a class.
+       *
+       * Without this branch the per-class "Sync from Zoom Cloud" button fell
+       * through to the global sweep below: it re-scanned every ended meeting in
+       * the system and told the admin nothing about the class in front of them.
+       * Matched on the Zoom meeting id inside the URL so a `?pwd=` suffix — which
+       * every generated link carries — still finds the room.
+       */
+      if (joinUrl && !meetingId && !zoomMeetingId) {
+        const { db } = await import('../../../database/datasource');
+        const code = extractZoomMeetingId(String(joinUrl));
+        const meeting = code
+          ? await db.meeting.findFirst({
+              where: { provider: 'ZOOM', zoomMeetingId: code },
+              orderBy: { startTime: 'desc' },
+            })
+          : null;
+        if (!meeting) {
+          return res.status(HTTP_STATUS.NOT_FOUND).json(
+            errorResponse(
+              'No Zoom meeting is on file for this class\'s room link, so there is nothing to sync. ' +
+                'If the class was booked with a pasted link rather than a generated one, paste the Zoom Meeting ID below instead.'
+            )
+          );
+        }
+        const recording = await ZoomRecordingService.syncMeetingRecording(meeting.id);
+        return res
+          .status(HTTP_STATUS.OK)
+          .json(
+            successResponse(
+              recording,
+              recording
+                ? 'Zoom meeting recording synced successfully.'
+                : 'Zoom has not published a recording for this class yet.'
+            )
+          );
+      }
 
       // meetingId = our internal DB UUID
       // zoomMeetingId = Zoom's numeric meeting ID (from zoom.us/recording page)
