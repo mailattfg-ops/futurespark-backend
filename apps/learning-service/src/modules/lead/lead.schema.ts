@@ -1,3 +1,4 @@
+import { LEAD_STATUSES } from '../shared/lead-status';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
@@ -32,16 +33,7 @@ export interface CreateLeadInput {
   telecallerNotes?: string;
 }
 
-const VALID_STATUSES = [
-  'NEW',
-  'CONTACTED',
-  'INTERESTED',
-  'DEMO_SCHEDULED',
-  'ADMISSION_PENDING',
-  'PAYMENT_SUBMITTED',
-  'ENROLLED',
-  'LOST',
-];
+const VALID_STATUSES: readonly string[] = LEAD_STATUSES;
 const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 export const validateCreateLead = (data: any): CreateLeadInput => {
