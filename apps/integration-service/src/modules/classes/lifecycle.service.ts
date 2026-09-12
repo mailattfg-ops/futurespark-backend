@@ -16,6 +16,23 @@ import { logger } from '@futurespark/logger';
  * (studentId, sessionId) — the curriculum session a particular child sat — with
  * startTime as the tie-breaker for a session taught twice after a reschedule.
  */
+/** How long after a class starts its room may still be closed on sign-off. */
+export const END_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * May a sign-off end the Zoom room?
+ *
+ * Only for a PROMPT sign-off. One room serves every session of a programme
+ * behind a single Meeting row, so ending it late would kill whichever class is
+ * live in that room now — possibly another child's lesson. Inside the window,
+ * the only thing that can be live there is this class (over-running or left
+ * open), which is exactly what we want to close.
+ *
+ * Exported for end-window.check.ts.
+ */
+export const mayEndRoomOnSignOff = (classStart: Date | null, completedAt: Date): boolean =>
+  !classStart || completedAt.getTime() - classStart.getTime() <= END_WINDOW_MS;
+
 export const ClassLifecycleService = {
   /**
    * Stamp `classCompletedAt` on the meeting behind a class.
@@ -116,6 +133,33 @@ export const ClassLifecycleService = {
           `${completedAt.toISOString()} via ${strategy.label} — the Drive sweep will search once the ` +
           'publish delay has elapsed.'
       );
+
+      /* Sign-off should also close the room — but only a PROMPT sign-off.
+       *
+       * One Zoom room serves every session of a programme, and there is a
+       * single Meeting row behind it, so "end the session" cannot be aimed at
+       * one particular lesson. Ending it hours late would therefore kill
+       * whichever class is live in that room NOW, which could be a different
+       * child's lesson in progress.
+       *
+       * Bounded to the completed class's own sitting: within three hours of its
+       * start, the only thing that can be live in that room is this class
+       * (running over, or left open) — exactly what we want to close. Later
+       * than that, we leave the room alone and the seat is reclaimed by the
+       * buffer/next booking instead of by guessing.
+       */
+      if (mayEndRoomOnSignOff(validStart, completedAt)) {
+        // Awaited so the seat is free before we answer, but it can never fail
+        // the completion itself.
+        await endZoomSessionIfRunning(meeting);
+      } else {
+        logger.info(
+          `[ClassLifecycle] Meeting ${meeting.id} signed off ` +
+            `${Math.round((completedAt.getTime() - validStart!.getTime()) / 3600000)}h after it started — ` +
+            'leaving the Zoom room alone in case another class is using it now.'
+        );
+      }
+
       return { matched: true, meetingId: updated.id, classCompletedAt: updated.classCompletedAt, alreadyMarked: false };
     }
 
@@ -128,6 +172,75 @@ export const ClassLifecycleService = {
     );
     return { matched: false, meetingId: null, classCompletedAt: null, alreadyMarked: false };
   },
+};
+
+/**
+ * End the live Zoom session behind a completed class, freeing its host seat.
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────
+ * A licensed Zoom host can run exactly ONE live meeting. Seats are allocated
+ * against BOOKED windows, but Zoom enforces against reality — so a room left
+ * running holds its seat for hours, regardless of when the class was supposed
+ * to finish. A mentor who clicks "Leave" instead of "End meeting for all", or
+ * simply shuts the lid with the tab open, stays a connected participant and the
+ * room never closes.
+ *
+ * The result was a later class on that same seat failing at JOIN time with
+ * "the host has another meeting in progress", having scheduled perfectly hours
+ * earlier. Marking the class complete used to write a timestamp and nothing
+ * else; now it means what everyone assumed it meant.
+ *
+ * ── Why this is safe for reused rooms ─────────────────────────────────────
+ * `action: "end"` terminates the CURRENT session only. The meeting and its join
+ * URL survive and can be started again, so the shared link every later session
+ * of a programme depends on keeps working.
+ *
+ * Never throws: Zoom answers 400 when the meeting is not live, which is the
+ * common case (the mentor did end it properly) and not a problem.
+ */
+const endZoomSessionIfRunning = async (meeting: {
+  id: string;
+  provider: string;
+  zoomMeetingId: string | null;
+  organizerEmail: string;
+  zoomHostEmail: string | null;
+}): Promise<void> => {
+  if (meeting.provider !== 'ZOOM' || !meeting.zoomMeetingId) return;
+
+  try {
+    const { ZoomAuthService } = await import('../zoom/auth/auth.service');
+    const token = await ZoomAuthService.getAccessToken(meeting.zoomHostEmail || meeting.organizerEmail);
+
+    const res = await fetch(
+      `https://api.zoom.us/v2/meetings/${encodeURIComponent(meeting.zoomMeetingId)}/status`,
+      {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'end' }),
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+
+    if (res.status === 204) {
+      logger.info(
+        `[ClassLifecycle] Ended the live Zoom session for meeting ${meeting.id} — seat ` +
+          `${meeting.zoomHostEmail ?? meeting.organizerEmail} is free again.`
+      );
+      return;
+    }
+
+    // 400 = "Meeting is not live", by far the most common answer and entirely fine.
+    const body = await res.text().catch(() => '');
+    if (res.status === 400) {
+      logger.info(`[ClassLifecycle] Zoom session for meeting ${meeting.id} was already closed.`);
+      return;
+    }
+    logger.warn(
+      `[ClassLifecycle] Could not end the Zoom session for meeting ${meeting.id}: ${res.status} ${body.slice(0, 200)}`
+    );
+  } catch (err: any) {
+    logger.warn(`[ClassLifecycle] Ending the Zoom session for meeting ${meeting.id} failed: ${err?.message ?? err}`);
+  }
 };
 
 /** Reduce a meeting link to the part that survives query strings and protocols. */

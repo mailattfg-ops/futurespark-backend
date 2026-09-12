@@ -396,6 +396,15 @@ enum LeadStatus {
   PAYMENT_SUBMITTED
   ENROLLED
   LOST
+  /// Added for the sales pipeline. Existing values are NEVER removed — rows in
+  /// the database still carry them, and dropping an enum value breaks every
+  /// read of those rows.
+  NOT_INTERESTED
+  PILOT_REGISTERED
+  PILOT_ONGOING
+  DROPPED
+  LOST_NOT_RESPONDING
+  COLD
 
   @@schema("learning")
 }
@@ -570,6 +579,15 @@ enum PilotLeadStatus {
   DEMO_SCHEDULED
   ENROLLED
   LOST
+  /// Added for the sales pipeline. Existing values are NEVER removed — rows in
+  /// the database still carry them, and dropping an enum value breaks every
+  /// read of those rows.
+  NOT_INTERESTED
+  PILOT_REGISTERED
+  PILOT_ONGOING
+  DROPPED
+  LOST_NOT_RESPONDING
+  COLD
 
   @@schema("learning")
 }

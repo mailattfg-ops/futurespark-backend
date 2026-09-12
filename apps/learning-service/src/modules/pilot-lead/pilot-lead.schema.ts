@@ -1,3 +1,4 @@
+import { PILOT_LEAD_STATUSES, LeadStatusValue } from '../shared/lead-status';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
@@ -29,14 +30,14 @@ export interface UpdatePilotLeadInput {
   presentCountry?: string;
   preferredLanguage?: string;
   hearAbout?: string;
-  status?: 'NEW' | 'CONTACTED' | 'INTERESTED' | 'DEMO_SCHEDULED' | 'ENROLLED' | 'LOST';
+  status?: LeadStatusValue;
   preferredSlotDate?: string;
   preferredSlotTime?: string;
   preferredTimezone?: string;
   telecallerNotes?: string;
 }
 
-const VALID_STATUSES = ['NEW', 'CONTACTED', 'INTERESTED', 'DEMO_SCHEDULED', 'ENROLLED', 'LOST'];
+const VALID_STATUSES: readonly string[] = PILOT_LEAD_STATUSES;
 const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 export const validateCreatePilotLead = (data: any): CreatePilotLeadInput => {

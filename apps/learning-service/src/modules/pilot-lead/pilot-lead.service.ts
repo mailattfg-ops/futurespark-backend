@@ -1,3 +1,4 @@
+import { INACTIVE_LEAD_STATUSES } from '../shared/lead-status';
 import { db } from '../../database/datasource';
 import { sendLeadEvent } from '../shared/meta-capi';
 import { CreatePilotLeadInput, UpdatePilotLeadInput } from './pilot-lead.schema';
@@ -80,7 +81,7 @@ export const pilotLeadService = {
   async getSlotAvailability(dateQuery?: string) {
     const { demoTeachersCount, todayCutoffHour, hiddenSlots } = await this.getDemoSettings();
     const leads = await (db as any).pilotLead.findMany({
-      where: { status: { not: 'LOST' } },
+      where: { status: { notIn: [...INACTIVE_LEAD_STATUSES] as any } },
       select: { preferredSlotDate: true, preferredSlotTime: true },
     });
 
@@ -152,7 +153,8 @@ export const pilotLeadService = {
       }
       const existingLeads = await (db as any).pilotLead.findMany({
         where: {
-          status: { not: 'LOST' },
+          // Dead leads do not hold a demo seat — see INACTIVE_LEAD_STATUSES.
+          status: { notIn: [...INACTIVE_LEAD_STATUSES] as any },
           preferredSlotTime: input.preferredSlotTime,
         },
         select: { preferredSlotDate: true },
