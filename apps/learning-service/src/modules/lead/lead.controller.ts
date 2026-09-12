@@ -15,6 +15,15 @@ export const leadController = {
     return res.status(HTTP_STATUS.OK).json(successResponse(lead, 'Lead fetched successfully'));
   },
 
+  /** Public: a family moving their own demo from the portal link. */
+  async requestReschedule(req: Request, res: Response) {
+    const { date, time, timezone, reason } = req.body ?? {};
+    const lead = await leadService.requestReschedule(req.params.id, { date, time, timezone, reason });
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(lead, 'Your reschedule request has been sent to our team.'));
+  },
+
   async create(req: Request, res: Response) {
     const input = validateCreateLead(req.body);
     // A telecaller adding a phone enquiry is not an ad conversion. Admin
