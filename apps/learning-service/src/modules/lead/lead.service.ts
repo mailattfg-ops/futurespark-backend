@@ -3,8 +3,105 @@ import { sendLeadEvent } from '../shared/meta-capi';
 import { CreateLeadInput, UpdateLeadInput } from './lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
+import { pilotLeadService } from '../pilot-lead/pilot-lead.service';
 
 export const leadService = {
+  /**
+   * A family asking to move their own demo, from the portal link they were sent.
+   *
+   * Public on purpose — a parent has no staff credentials, and the alternative
+   * the portal used before was to POST a WHOLE NEW LEAD carrying the request in
+   * its notes. That duplicated the family in the CRM on every click, left the
+   * original booking untouched (so the change vanished on refresh), fired a
+   * "New Demo Class Lead" alert at the team, and sent the parent another
+   * WhatsApp reminder pointing at the duplicate.
+   *
+   * Scoped by the lead id in the URL: it can only ever move the one booking that
+   * id names, and it writes nothing a staff member would not have written.
+   */
+  async requestReschedule(
+    leadId: string,
+    input: { date?: string; time?: string; timezone?: string; reason?: string }
+  ) {
+    const lead = await db.lead.findUnique({ where: { id: leadId } });
+    if (!lead) throw new AppError('Booking not found', HTTP_STATUS.NOT_FOUND);
+
+    const date = String(input.date ?? '').trim();
+    const time = String(input.time ?? '').trim();
+    if (!date || !time) {
+      throw new AppError('A date and a time are both required', HTTP_STATUS.BAD_REQUEST);
+    }
+
+    // A slot the admin has switched off must not be bookable by editing the
+    // request, the same rule createPilotLead enforces for new bookings.
+    const { hiddenSlots } = await pilotLeadService.getDemoSettings();
+    if (hiddenSlots.includes(time)) {
+      throw new AppError(
+        `The time slot '${time}' is currently unavailable. Please choose another time.`,
+        HTTP_STATUS.BAD_REQUEST
+      );
+    }
+
+    const timezone = String(input.timezone ?? '').trim() || lead.preferredTimezone || 'Asia/Kolkata';
+    const reason = String(input.reason ?? '').trim();
+    const stamp = new Date().toISOString();
+
+    const updated = await db.lead.update({
+      where: { id: leadId },
+      data: {
+        preferredDays: [date],
+        preferredTime: time,
+        preferredTimezone: timezone,
+        // Appended, never replaced — the original signup answers stay readable.
+        notes: `${lead.notes ? `${lead.notes}\n` : ''}[Reschedule Requested ${stamp}] ${date} at ${time} (${timezone}).${reason ? ` Reason: ${reason}` : ''}`,
+      },
+    });
+
+    // Tell the team. No new lead, and no WhatsApp to the FAMILY — the slot is a
+    // REQUEST until a scheduler confirms it and moves the class.
+    const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
+    const parentName = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim() || 'A parent';
+    const studentName =
+      [lead.studentFirstName, lead.studentLastName].filter(Boolean).join(' ').trim() ||
+      lead.studentFirstName ||
+      'Student';
+
+    /* On WhatsApp as well as in-app: a reschedule is time-critical — the old
+     * slot may be hours away — and an in-app notification is only seen by
+     * whoever happens to be logged in. DEMO_RESCHEDULED maps to the same
+     * approved internal_demo_scheduled template. */
+    fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/internal-notify-staff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'DEMO_RESCHEDULED',
+        context: {
+          studentName,
+          grade: typeof lead.notes === 'string' ? lead.notes.match(/Grade:\s*([^,\n]+)/i)?.[1]?.trim() || '-' : '-',
+          country: '-',
+          parentContact: lead.phone || '-',
+          date,
+          time,
+          mentorName: 'To be assigned',
+          meetingLink: 'To be created',
+        },
+      }),
+    }).catch((err) => console.error('[Reschedule Internal Notify Error]', err?.message));
+
+    fetch(`${COMMUNICATION_SERVICE_URL}/notifications`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipientId: 'ADMIN',
+        title: 'Demo Reschedule Requested',
+        message: `${parentName} asked to move their demo to ${date} at ${time} (${timezone}).${reason ? ` Reason: ${reason}` : ''} Phone: ${lead.phone || 'N/A'}`,
+        priority: 'HIGH',
+      }),
+    }).catch((err) => console.error('[Reschedule Notification Error]', err?.message));
+
+    return updated;
+  },
+
   async getAllLeads() {
     return db.lead.findMany({
       include: {
@@ -202,6 +299,41 @@ export const leadService = {
     const COMMUNICATION_SERVICE_URL = process.env.COMMUNICATION_SERVICE_URL || 'http://127.0.0.1:3003';
     const parentName = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim() || 'Parent';
     const studentName = [lead.studentFirstName, lead.studentLastName].filter(Boolean).join(' ').trim() || lead.studentFirstName || 'Student';
+
+    /* Tell the TEAM on WhatsApp that a demo needs putting on the calendar.
+     *
+     * Only the pilot "reserve your seat" widget did this, so a booking from the
+     * claim-free-class form reached the team as an in-app notification alone —
+     * which nobody sees unless they happen to be logged in. Same approved
+     * template (internal_demo_scheduled) and the same staff-number lookup the
+     * pilot path uses.
+     *
+     * Scoped to PUBLIC demo bookings: a telecaller entering a lead by hand
+     * already knows about it, and messaging them about their own typing is
+     * noise that trains people to ignore the channel.
+     */
+    if (lead.demoClass && !input.staffEntry) {
+      const gradeFromNotes = typeof lead.notes === 'string' ? lead.notes.match(/Grade:\s*([^,\n]+)/i)?.[1]?.trim() : undefined;
+      fetch(`${COMMUNICATION_SERVICE_URL}/whatsapp/internal-notify-staff`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'DEMO_SCHEDULED',
+          context: {
+            studentName,
+            grade: gradeFromNotes || '-',
+            country: '-',
+            parentContact: lead.phone || '-',
+            date: lead.preferredDays?.[0] || 'to be confirmed',
+            time: lead.preferredTime || 'to be confirmed',
+            // The form only states a preference — a human assigns the mentor
+            // and creates the room, which is what this message asks for.
+            mentorName: 'To be assigned',
+            meetingLink: 'To be created',
+          },
+        }),
+      }).catch((err) => console.error('[Lead Internal Notify Error]', err?.message));
+    }
 
     fetch(`${COMMUNICATION_SERVICE_URL}/notifications`, {
       method: 'POST',
