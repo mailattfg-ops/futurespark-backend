@@ -32,8 +32,9 @@ export interface SeatBooking {
   zoomMeetingId?: string | null;
 }
 
-/** Payload for API errors — UI can render joinUrl on failed creates. */
-export interface ExistingMeetingPayload {
+/** Payload for API errors — UI can render joinUrl on failed creates.
+ * A type alias, not an interface: ZoomServiceError takes `Record<string, unknown>`. */
+export type ExistingMeetingPayload = {
   existingMeetingId: string;
   joinUrl: string | null;
   meetLink: string | null;
@@ -42,7 +43,7 @@ export interface ExistingMeetingPayload {
   title: string;
   startTime: string;
   endTime: string;
-}
+};
 
 export interface HostBufferConflict {
   hostEmail: string;
@@ -60,7 +61,7 @@ export interface HostBufferQueryOptions {
   hostEmail?: string;
 }
 
-const asDate = (value: Date | string): Date => (value instanceof Date ? value : new Date(value));
+const asDate = (value: Date | string | number): Date => (value instanceof Date ? value : new Date(value));
 
 const validWindow = (window: TimeWindow): boolean =>
   !Number.isNaN(window.start.getTime()) &&
@@ -328,7 +329,7 @@ export const isHostAvailableForWindow = async (
 };
 
 /** Normalise caller input before any of the above. */
-export const timeWindowFrom = (start: Date | string, end: Date | string): TimeWindow => ({
+export const timeWindowFrom = (start: Date | string | number, end: Date | string | number): TimeWindow => ({
   start: asDate(start),
   end: asDate(end),
 });
