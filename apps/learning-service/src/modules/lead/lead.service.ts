@@ -1,5 +1,5 @@
 import { db } from '../../database/datasource';
-import { sendLeadEvent } from '../shared/meta-capi';
+import { readLeadAttribution, sendLeadEvent } from '../shared/meta-capi';
 import { CreateLeadInput, UpdateLeadInput } from './lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -287,7 +287,9 @@ export const leadService = {
         email: lead.email,
         phone: lead.phone,
         firstName: lead.firstName,
-        eventId: input.eventId,
+        externalId: lead.id,
+        // eventId, IP, UA, fbp, fbc, source URL — whatever the website proxy attached.
+        ...readLeadAttribution(input),
       })
         .then((capiEventId) => {
           if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${lead.email}`);

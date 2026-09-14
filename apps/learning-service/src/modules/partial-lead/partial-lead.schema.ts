@@ -1,4 +1,7 @@
-export interface SavePartialLeadInput {
+import { LeadAttribution, readLeadAttribution } from '../shared/meta-capi';
+
+/** Meta attribution rides along so the Lead created on completion can carry it. */
+export interface SavePartialLeadInput extends LeadAttribution {
   id?: string;
   studentName: string;
   studentGrade: string;
@@ -55,5 +58,6 @@ export function validateSavePartialLead(body: any): SavePartialLeadInput {
     whoAreYou: body.whoAreYou ? String(body.whoAreYou).trim() : undefined,
     bookingReason: body.bookingReason ? String(body.bookingReason).trim() : undefined,
     purchaseTimeline: body.purchaseTimeline ? String(body.purchaseTimeline).trim() : undefined,
+    ...readLeadAttribution(body),
   };
 }

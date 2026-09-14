@@ -18,22 +18,52 @@ import crypto from 'crypto';
 
 const GRAPH_VERSION = 'v23.0';
 
-export interface LeadEventInput {
+/**
+ * What a public form's proxy can pass along so Meta can match the server
+ * event to the browser that fired the pixel. All optional; the website's
+ * Next route reads them from the visitor's request (the backend only ever
+ * sees the proxy's IP and User-Agent, so it cannot read them itself).
+ */
+export interface LeadAttribution {
+  /** The browser pixel's event id, so Meta deduplicates it against CAPI. */
+  eventId?: string;
+  clientIpAddress?: string;
+  clientUserAgent?: string;
+  /** The pixel's `_fbp` cookie — its browser id. */
+  fbp?: string;
+  /** The pixel's `_fbc` cookie — the click id of the ad that brought them. */
+  fbc?: string;
+  eventSourceUrl?: string;
+}
+
+const optionalString = (value: unknown, maxLength: number): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : undefined;
+
+/** Pull the attribution fields off a request body: strings only, trimmed, length-capped. */
+export const readLeadAttribution = (data: any): LeadAttribution => ({
+  eventId: optionalString(data?.eventId, 100),
+  clientIpAddress: optionalString(data?.clientIpAddress, 45),
+  clientUserAgent: optionalString(data?.clientUserAgent, 512),
+  fbp: optionalString(data?.fbp, 100),
+  fbc: optionalString(data?.fbc, 300),
+  eventSourceUrl: optionalString(data?.eventSourceUrl, 1024),
+});
+
+export interface LeadEventInput extends LeadAttribution {
   email?: string | null;
   phone?: string | null;
   firstName?: string | null;
-  /** The browser pixel's event id, for deduplication. Generated when absent. */
-  eventId?: string | null;
-  /** Optional attribution quality — pass through when a route has them. */
-  clientIpAddress?: string | null;
-  clientUserAgent?: string | null;
-  eventSourceUrl?: string | null;
+  /** Our own id for the person — the lead row's id. Hashed before it leaves. */
+  externalId?: string | null;
 }
 
 interface MetaUserData {
   em?: string[];
   ph?: string[];
   fn?: string[];
+  external_id?: string;
+  fbp?: string;
+  fbc?: string;
   client_ip_address?: string;
   client_user_agent?: string;
 }
@@ -77,6 +107,10 @@ export const sendLeadEvent = async (input: LeadEventInput): Promise<string | nul
   if (input.email?.trim()) userData.em = [hashEmail(input.email)];
   if (input.phone?.trim()) userData.ph = [hashPhone(input.phone)];
   if (input.firstName?.trim()) userData.fn = [hashName(input.firstName)];
+  if (input.externalId) userData.external_id = sha256(input.externalId);
+  // fbp/fbc/IP/UA are matching keys, not identities: Meta wants them raw.
+  if (input.fbp) userData.fbp = input.fbp;
+  if (input.fbc) userData.fbc = input.fbc;
   if (input.clientIpAddress) userData.client_ip_address = input.clientIpAddress;
   if (input.clientUserAgent) userData.client_user_agent = input.clientUserAgent;
 

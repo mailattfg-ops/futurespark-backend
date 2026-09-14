@@ -52,12 +52,40 @@ const run = async () => {
   const ev2 = captured!.body.data[0];
   assert.deepStrictEqual(Object.keys(ev2.user_data), ['em'], 'absent phone/name are omitted, not empty hashes');
 
-  // 4. A Meta refusal throws, so the caller's .catch logs it.
+  // 4. Match-quality keys: external_id is hashed, the browser keys go raw.
+  captured = null;
+  await sendLeadEvent({
+    email: 'x@y.com',
+    externalId: 'lead-row-id',
+    fbp: 'fb.1.1700000000000.123456',
+    fbc: 'fb.1.1700000000000.AbCdEf',
+    clientIpAddress: '203.0.113.9',
+    clientUserAgent: 'Mozilla/5.0 test',
+    eventSourceUrl: 'https://junior.finquo.ai/claim-free-class',
+  });
+  const ev3 = captured!.body.data[0];
+  assert.strictEqual(ev3.user_data.external_id, sha('lead-row-id'), 'external_id is sha256 of the lead id');
+  assert.strictEqual(ev3.user_data.fbp, 'fb.1.1700000000000.123456', 'fbp passes through unhashed');
+  assert.strictEqual(ev3.user_data.fbc, 'fb.1.1700000000000.AbCdEf', 'fbc passes through unhashed');
+  assert.strictEqual(ev3.user_data.client_ip_address, '203.0.113.9');
+  assert.strictEqual(ev3.user_data.client_user_agent, 'Mozilla/5.0 test');
+  assert.strictEqual(ev3.event_source_url, 'https://junior.finquo.ai/claim-free-class');
+
+  // 5. The body parser every lead route shares: strings only, trimmed, capped, nothing invented.
+  const { readLeadAttribution } = await import('./meta-capi');
+  assert.deepStrictEqual(
+    readLeadAttribution({ eventId: ' evt-9 ', fbp: 42, fbc: '', clientIpAddress: null, clientUserAgent: 'x'.repeat(600) }),
+    { eventId: 'evt-9', clientIpAddress: undefined, clientUserAgent: 'x'.repeat(512), fbp: undefined, fbc: undefined, eventSourceUrl: undefined },
+    'non-strings and blanks drop to undefined, long values are capped'
+  );
+  assert.deepStrictEqual(Object.values(readLeadAttribution(undefined)).filter(Boolean), [], 'no body → nothing');
+
+  // 6. A Meta refusal throws, so the caller's .catch logs it.
   globalThis.fetch = (async () => ({ ok: false, status: 400, text: async () => 'bad token' })) as any;
   await assert.rejects(() => sendLeadEvent({ email: 'x@y.com' }), /Meta CAPI 400/, 'non-ok throws');
 
   globalThis.fetch = realFetch;
-  console.log('meta-capi: 12/12 checks passed');
+  console.log('meta-capi: 20/20 checks passed');
 };
 
 run().catch((e) => {
