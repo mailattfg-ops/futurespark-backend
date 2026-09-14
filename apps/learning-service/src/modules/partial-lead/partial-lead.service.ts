@@ -1,6 +1,7 @@
 import { db } from '../../database/datasource';
 import { SavePartialLeadInput } from './partial-lead.schema';
 import { leadService } from '../lead/lead.service';
+import { readLeadAttribution } from '../shared/meta-capi';
 import { schedulePartialLeadNudge } from './partial-lead.queue';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -147,6 +148,8 @@ export const partialLeadService = {
       notes: `[Claim Free Class Form Submission] Grade: ${input.studentGrade}, Role: ${input.whoAreYou || 'Parent'}, Reason: ${input.bookingReason || 'N/A'}, Timeline: ${input.purchaseTimeline || 'N/A'}, Laptop: ${input.hasLaptop ? 'Yes' : 'No'}`,
       preferredDays: input.preferredSlotDate ? [input.preferredSlotDate] : [],
       preferredTime: input.preferredSlotTime,
+      // Meta attribution the website proxy attached — createLead sends it to CAPI.
+      ...readLeadAttribution(input),
     });
 
     // Delete/Remove from partial forms once Section 3 is fully completed

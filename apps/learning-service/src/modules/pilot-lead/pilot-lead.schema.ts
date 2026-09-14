@@ -1,8 +1,10 @@
 import { PILOT_LEAD_STATUSES, LeadStatusValue } from '../shared/lead-status';
+import { LeadAttribution, readLeadAttribution } from '../shared/meta-capi';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
-export interface CreatePilotLeadInput {
+/** Meta attribution (eventId, IP, UA, fbp, fbc) rides along from the website's proxy. */
+export interface CreatePilotLeadInput extends LeadAttribution {
   parentName: string;
   studentName: string;
   studentGrade: string;
@@ -15,8 +17,6 @@ export interface CreatePilotLeadInput {
   preferredSlotTime?: string;
   preferredTimezone?: string;
   telecallerNotes?: string;
-  /** The browser pixel's Lead event id, so Meta deduplicates it against CAPI. */
-  eventId?: string;
   /** Set by the controller, never read from the body: staff keyed this in. */
   staffEntry?: boolean;
 }
@@ -83,7 +83,7 @@ export const validateCreatePilotLead = (data: any): CreatePilotLeadInput => {
     preferredSlotTime: data.preferredSlotTime || data.preferredTime || undefined,
     preferredTimezone: data.preferredTimezone || undefined,
     telecallerNotes: data.telecallerNotes ? String(data.telecallerNotes).trim() : undefined,
-    eventId: typeof data.eventId === 'string' && data.eventId.trim() ? data.eventId.trim() : undefined,
+    ...readLeadAttribution(data),
   };
 };
 

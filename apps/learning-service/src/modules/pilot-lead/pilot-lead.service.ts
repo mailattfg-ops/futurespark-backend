@@ -1,6 +1,6 @@
 import { INACTIVE_LEAD_STATUSES } from '../shared/lead-status';
 import { db } from '../../database/datasource';
-import { sendLeadEvent } from '../shared/meta-capi';
+import { readLeadAttribution, sendLeadEvent } from '../shared/meta-capi';
 import { CreatePilotLeadInput, UpdatePilotLeadInput } from './pilot-lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -197,7 +197,9 @@ export const pilotLeadService = {
         email: input.parentEmail,
         phone: input.parentPhone,
         firstName: input.parentName,
-        eventId: input.eventId,
+        externalId: lead.id,
+        // eventId, IP, UA, fbp, fbc, source URL — whatever the website proxy attached.
+        ...readLeadAttribution(input),
       })
         .then((capiEventId) => {
           if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${input.parentEmail}`);
