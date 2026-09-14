@@ -1,4 +1,5 @@
 import { db, withDbRetry } from '../../database/datasource';
+import { endZoomSession } from '../zoom/shared/zoom-session';
 import { logger } from '@futurespark/logger';
 
 /**
@@ -151,7 +152,7 @@ export const ClassLifecycleService = {
       if (mayEndRoomOnSignOff(validStart, completedAt)) {
         // Awaited so the seat is free before we answer, but it can never fail
         // the completion itself.
-        await endZoomSessionIfRunning(meeting);
+        await endZoomSession(meeting);
       } else {
         logger.info(
           `[ClassLifecycle] Meeting ${meeting.id} signed off ` +
@@ -198,51 +199,6 @@ export const ClassLifecycleService = {
  * Never throws: Zoom answers 400 when the meeting is not live, which is the
  * common case (the mentor did end it properly) and not a problem.
  */
-const endZoomSessionIfRunning = async (meeting: {
-  id: string;
-  provider: string;
-  zoomMeetingId: string | null;
-  organizerEmail: string;
-  zoomHostEmail: string | null;
-}): Promise<void> => {
-  if (meeting.provider !== 'ZOOM' || !meeting.zoomMeetingId) return;
-
-  try {
-    const { ZoomAuthService } = await import('../zoom/auth/auth.service');
-    const token = await ZoomAuthService.getAccessToken(meeting.zoomHostEmail || meeting.organizerEmail);
-
-    const res = await fetch(
-      `https://api.zoom.us/v2/meetings/${encodeURIComponent(meeting.zoomMeetingId)}/status`,
-      {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'end' }),
-        signal: AbortSignal.timeout(10_000),
-      }
-    );
-
-    if (res.status === 204) {
-      logger.info(
-        `[ClassLifecycle] Ended the live Zoom session for meeting ${meeting.id} — seat ` +
-          `${meeting.zoomHostEmail ?? meeting.organizerEmail} is free again.`
-      );
-      return;
-    }
-
-    // 400 = "Meeting is not live", by far the most common answer and entirely fine.
-    const body = await res.text().catch(() => '');
-    if (res.status === 400) {
-      logger.info(`[ClassLifecycle] Zoom session for meeting ${meeting.id} was already closed.`);
-      return;
-    }
-    logger.warn(
-      `[ClassLifecycle] Could not end the Zoom session for meeting ${meeting.id}: ${res.status} ${body.slice(0, 200)}`
-    );
-  } catch (err: any) {
-    logger.warn(`[ClassLifecycle] Ending the Zoom session for meeting ${meeting.id} failed: ${err?.message ?? err}`);
-  }
-};
-
 /** Reduce a meeting link to the part that survives query strings and protocols. */
 const normalizeLink = (link: string): string =>
   link.trim().replace(/^https?:\/\//, '').split('?')[0].split('#')[0];

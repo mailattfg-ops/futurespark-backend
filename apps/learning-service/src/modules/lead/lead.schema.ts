@@ -1,15 +1,15 @@
 import { LEAD_STATUSES } from '../shared/lead-status';
+import { LeadAttribution, readLeadAttribution } from '../shared/meta-capi';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 
-export interface CreateLeadInput {
+/** Meta attribution (eventId, IP, UA, fbp, fbc) rides along from the website's proxy. */
+export interface CreateLeadInput extends LeadAttribution {
   /** The PARENT — the contact who enquired. */
   firstName: string;
   lastName: string;
   email: string;
   phone?: string;
-  /** The browser pixel's Lead event id, so Meta deduplicates it against CAPI. */
-  eventId?: string;
   /** Set by the controller, never read from the body: staff keyed this in. */
   staffEntry?: boolean;
   /** The CHILD who will attend. Optional: a web enquiry may not name them. */
@@ -83,7 +83,7 @@ export const validateCreateLead = (data: any): CreateLeadInput => {
     lastName: data.lastName ? data.lastName.trim() : '',
     email: data.email.trim().toLowerCase(),
     phone: data.phone?.trim() || undefined,
-    eventId: typeof data.eventId === 'string' && data.eventId.trim() ? data.eventId.trim() : undefined,
+    ...readLeadAttribution(data),
     // Empty string collapses to undefined so a blank form field stores NULL
     // rather than '' — readers test for a missing student name, and '' would
     // pass that test and then render as nothing at all.
