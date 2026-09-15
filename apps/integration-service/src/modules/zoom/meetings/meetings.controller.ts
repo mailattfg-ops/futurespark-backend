@@ -5,6 +5,7 @@ import {
   CreateZoomMeetingInput,
   UpdateZoomMeetingInput,
 } from './meetings.service';
+import { prepareJoin } from './prepare-join.service';
 import { zoomConfig } from '../auth/auth.service';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { HTTP_STATUS } from '@futurespark/constants';
@@ -23,7 +24,9 @@ const statusForError = (err: any): number => {
     case 'ZOOM_VALIDATION':
       return HTTP_STATUS.BAD_REQUEST;
     case 'ZOOM_DOUBLE_BOOKING':
+    case 'ZOOM_HOST_ALREADY_BOOKED':
     case 'ZOOM_HOST_POOL_EXHAUSTED':
+    case 'ZOOM_JOIN_HOST_BUSY':
       return HTTP_STATUS.CONFLICT;
     case 'ZOOM_NOT_FOUND':
       return HTTP_STATUS.NOT_FOUND;
@@ -44,6 +47,35 @@ const asOptionalString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
 export class ZoomMeetingsController {
+  /**
+   * Pre-flight before redirecting a user to Zoom.
+   *
+   * Clears a ghost session on the host seat when it is past end+grace and the
+   * room is inactive; otherwise returns 409 with joinUrl so the UI can warn and
+   * still offer "try join anyway".
+   */
+  static async prepareJoin(req: Request, res: Response) {
+    try {
+      const joinUrl =
+        asOptionalString(req.body?.joinUrl) ||
+        asOptionalString(req.body?.zoomUrl) ||
+        asOptionalString(req.query?.joinUrl) ||
+        asOptionalString(req.query?.zoomUrl);
+
+      if (!joinUrl) {
+        return res.status(HTTP_STATUS.BAD_REQUEST).json(
+          errorResponse('joinUrl or zoomUrl is required.', { code: 'ZOOM_VALIDATION' })
+        );
+      }
+
+      const result = await prepareJoin(joinUrl);
+      return res.status(HTTP_STATUS.OK).json(successResponse(result, 'Join link is ready.'));
+    } catch (err: any) {
+      logger.error(`[ZoomMeetingsController] prepareJoin error: ${err.message}`);
+      return res.status(statusForError(err)).json(failureBody(err, 'Could not prepare the Zoom join link.'));
+    }
+  }
+
   static async create(req: Request, res: Response) {
     try {
       const {

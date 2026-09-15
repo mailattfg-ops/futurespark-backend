@@ -9,6 +9,15 @@ import {
   zoomConfig,
 } from '../auth/auth.service';
 import { getActiveHostPool } from '../hosts/hosts.service';
+import {
+  busyHostKeys,
+  expandWindow,
+  existingMeetingPayload,
+  findConflictingBookings,
+  pickPrimaryConflict,
+  resolveHostBufferMs,
+  seatBookingFromMeetingRow,
+} from '../host-buffer/host-buffer';
 import { logger } from '@futurespark/logger';
 
 export interface CreateZoomMeetingInput {
@@ -59,7 +68,9 @@ export type ZoomServiceErrorCode =
   | 'ZOOM_NOT_CONFIGURED'
   | 'ZOOM_VALIDATION'
   | 'ZOOM_DOUBLE_BOOKING'
+  | 'ZOOM_HOST_ALREADY_BOOKED'
   | 'ZOOM_HOST_POOL_EXHAUSTED'
+  | 'ZOOM_JOIN_HOST_BUSY'
   | 'ZOOM_NOT_FOUND'
   | 'ZOOM_API_FAILED';
 
@@ -379,7 +390,10 @@ export class ZoomMeetingsService {
           if (!input.allowConflict) {
             throw new ZoomServiceError(
               'ZOOM_DOUBLE_BOOKING',
-              `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+              `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`,
+              conflict.provider === 'ZOOM'
+                ? existingMeetingPayload(conflict)
+                : { existingMeetingId: conflict.id }
             );
           }
 
@@ -389,32 +403,53 @@ export class ZoomMeetingsService {
           );
         }
 
-        // 4. Seat allocation.
-        //
-        // A seat is BUSY when a non-CANCELLED ZOOM meeting it hosts overlaps
-        // [start, end): existing.startTime < newEnd AND existing.endTime >
-        // newStart. Touching endpoints do not overlap, so back-to-back classes
-        // share a seat.
-        //
-        // The query is not filtered by seat address, so a legacy row whose
-        // host Zoom reported under different capitalisation still counts
-        // against that seat; matching happens case-insensitively below.
+        // 4. Seat allocation — buffered overlap via host-buffer (see
+        // ZOOM_HOST_BUFFER_MINUTES). Touching endpoints alone are not enough:
+        // a reschedule 1 minute later can land while the earlier Zoom session
+        // is still live on the same seat.
+        const proposed = { start, end };
+        const bufferMs = resolveHostBufferMs();
+        const padded = expandWindow(proposed, bufferMs);
         const overlapping = await tx.meeting.findMany({
           where: {
             provider: 'ZOOM',
             status: { not: 'CANCELLED' },
             zoomHostEmail: { not: null },
-            startTime: { lt: end },
-            endTime: { gt: start },
+            startTime: { lt: padded.end },
+            endTime: { gt: padded.start },
           },
-          select: { zoomHostEmail: true },
+          select: {
+            id: true,
+            zoomHostEmail: true,
+            title: true,
+            startTime: true,
+            endTime: true,
+            zoomJoinUrl: true,
+            meetUrl: true,
+            zoomMeetingId: true,
+          },
         });
-        const busyKeys = new Set(
-          overlapping
-            .map((row) => row.zoomHostEmail)
-            .filter((host): host is string => Boolean(host))
-            .map(emailKey)
-        );
+        const bookings = overlapping
+          .map(seatBookingFromMeetingRow)
+          .filter((row): row is NonNullable<ReturnType<typeof seatBookingFromMeetingRow>> => row !== null);
+        const busyKeys = busyHostKeys(proposed, bookings);
+        const hostConflicts = findConflictingBookings(proposed, bookings);
+
+        if (mentorHost && busyKeys.has(emailKey(mentorHost))) {
+          const primary = pickPrimaryConflict(hostConflicts, mentorHost);
+          const row = primary
+            ? overlapping.find((candidate) => candidate.id === primary.existing.meetingId)
+            : overlapping.find((candidate) => emailKey(candidate.zoomHostEmail ?? '') === emailKey(mentorHost));
+          if (row) {
+            const gapMin = Math.round(bufferMs / 60_000);
+            throw new ZoomServiceError(
+              'ZOOM_HOST_ALREADY_BOOKED',
+              `Zoom host ${mentorHost} already has a meeting planned within ${gapMin} minutes of this slot. ` +
+                `Use the existing join link or pick a different time.`,
+              existingMeetingPayload(row)
+            );
+          }
+        }
 
         // Least-recently-used ordering. Bounded by a window so this stays a
         // small aggregate rather than a scan of every Zoom meeting ever, and
@@ -448,6 +483,10 @@ export class ZoomMeetingsService {
 
         if (candidates.length === 0) {
           const window = formatWindow(start, end, timezone);
+          const primary = pickPrimaryConflict(hostConflicts, mentorHost);
+          const blockingRow = primary
+            ? overlapping.find((candidate) => candidate.id === primary.existing.meetingId)
+            : overlapping[0];
           logger.error(
             `[ZoomMeetingsService] Host pool exhausted for session ${input.sessionId}: all ${pool.length} ` +
               `seat(s) busy between ${start.toISOString()} and ${end.toISOString()}. ` +
@@ -459,7 +498,14 @@ export class ZoomMeetingsService {
               `overlaps ${window} (${timezone}). A licensed Zoom host can run only one live meeting at a time, so ` +
               `this session cannot be booked in that window. Move the session, or add another licensed seat to ` +
               `ZOOM_HOST_EMAILS (there ${pool.length === 1 ? 'is' : 'are'} ${pool.length} today).`,
-            { poolSize: pool.length, startTime: start.toISOString(), endTime: end.toISOString(), timezone }
+            {
+              poolSize: pool.length,
+              startTime: start.toISOString(),
+              endTime: end.toISOString(),
+              timezone,
+              bufferMinutes: Math.round(bufferMs / 60_000),
+              ...(blockingRow ? existingMeetingPayload(blockingRow) : {}),
+            }
           );
         }
 

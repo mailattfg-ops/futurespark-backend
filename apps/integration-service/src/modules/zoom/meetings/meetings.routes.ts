@@ -4,6 +4,7 @@ import { ZoomMeetingsController } from './meetings.controller';
 const router = Router();
 
 router.post('/', ZoomMeetingsController.create);
+router.post('/prepare-join', ZoomMeetingsController.prepareJoin);
 router.get('/', ZoomMeetingsController.list);
 router.put('/by-link', ZoomMeetingsController.rescheduleByLink);
 router.get('/:id', ZoomMeetingsController.get);
