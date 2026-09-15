@@ -120,6 +120,18 @@ const loadAudienceSettings = (): WhatsAppAudienceSettings => {
 
 let audienceSettings: WhatsAppAudienceSettings = loadAudienceSettings();
 
+/* Say it once, at boot, when the family-facing audiences are closed.
+ * Both default to false, and the saved file lives inside the deployed app
+ * directory — so a redeploy that loses it silently stops every demo-booking
+ * reminder. That has happened; it must never happen quietly again. */
+if (!audienceSettings.pilotProgramLeads && !audienceSettings.leadsManagement) {
+  logger.warn(
+    '[WhatsApp Config] Parent audiences are OFF (pilotProgramLeads + leadsManagement). ' +
+      'Demo booking reminders WILL BE SKIPPED. Set WHATSAPP_AUDIENCE_PILOT_LEADS=true and ' +
+      'WHATSAPP_AUDIENCE_LEADS=true, or enable them in Admin → Notification Settings.'
+  );
+}
+
 export const getAudienceSettings = (): WhatsAppAudienceSettings => audienceSettings;
 
 export const updateAudienceSettings = (settings: Partial<WhatsAppAudienceSettings>): WhatsAppAudienceSettings => {

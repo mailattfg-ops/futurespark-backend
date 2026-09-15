@@ -1,9 +1,32 @@
 import { db } from '../../database/datasource';
 import { readLeadAttribution, sendLeadEvent } from '../shared/meta-capi';
+
+
 import { CreateLeadInput, UpdateLeadInput } from './lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { pilotLeadService } from '../pilot-lead/pilot-lead.service';
+
+/**
+ * A WhatsApp dispatch is fire-and-forget, but "the service said no" must not be
+ * indistinguishable from "sent". The comm service returns HTTP 200 with
+ * `skipped: true` when an audience toggle or WHATSAPP_OUTBOUND_MODE blocks the
+ * send — read it, and say so.
+ */
+const reportWhatsAppDispatch = (label: string, to: string | null | undefined) =>
+  (res: Response): void => {
+    res
+      .json()
+      .then((body: any) => {
+        const payload = body?.data ?? body;
+        if (payload?.skipped || payload?.success === false) {
+          console.warn(
+            `[${label}] NOT SENT to ${to ?? 'unknown'} — ${body?.message ?? 'blocked by the communication service'}`
+          );
+        }
+      })
+      .catch(() => { /* body already consumed or not JSON — nothing to report */ });
+  };
 
 export const leadService = {
   /**
@@ -384,9 +407,11 @@ export const leadService = {
           timezone,
           joinUrl,
         }),
-      }).catch(() => {
-        // Non-blocking catch
-      });
+      })
+        .then(reportWhatsAppDispatch('Lead WhatsApp', lead.phone))
+        .catch(() => {
+          // Non-blocking catch
+        });
     }
 
     return lead;

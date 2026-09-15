@@ -1,9 +1,32 @@
 import { INACTIVE_LEAD_STATUSES } from '../shared/lead-status';
 import { db } from '../../database/datasource';
 import { readLeadAttribution, sendLeadEvent } from '../shared/meta-capi';
+
+
 import { CreatePilotLeadInput, UpdatePilotLeadInput } from './pilot-lead.schema';
 import { AppError } from '@futurespark/middleware';
 import { HTTP_STATUS } from '@futurespark/constants';
+
+/**
+ * A WhatsApp dispatch is fire-and-forget, but "the service said no" must not be
+ * indistinguishable from "sent". The comm service returns HTTP 200 with
+ * `skipped: true` when an audience toggle or WHATSAPP_OUTBOUND_MODE blocks the
+ * send — read it, and say so.
+ */
+const reportWhatsAppDispatch = (label: string, to: string | null | undefined) =>
+  (res: Response): void => {
+    res
+      .json()
+      .then((body: any) => {
+        const payload = body?.data ?? body;
+        if (payload?.skipped || payload?.success === false) {
+          console.warn(
+            `[${label}] NOT SENT to ${to ?? 'unknown'} — ${body?.message ?? 'blocked by the communication service'}`
+          );
+        }
+      })
+      .catch(() => { /* body already consumed or not JSON — nothing to report */ });
+  };
 
 export const pilotLeadService = {
   isSameDate(storedDate: string, targetDate: string): boolean {
@@ -238,9 +261,11 @@ export const pilotLeadService = {
           timezone: input.preferredTimezone || 'Asia/Kolkata',
           joinUrl: `${baseUrl.replace(/\/$/, '')}/demo-class?leadId=${lead.id}`,
         }),
-      }).catch((err) => {
-        console.error('[Pilot Lead WhatsApp Dispatch Error]', err?.message);
-      });
+      })
+        .then(reportWhatsAppDispatch('Pilot Lead WhatsApp', input.parentPhone))
+        .catch((err) => {
+          console.error('[Pilot Lead WhatsApp Dispatch Error]', err?.message);
+        });
     }
 
     /* Tell the TEAM, on WhatsApp — the website only blocks a slot; a human
