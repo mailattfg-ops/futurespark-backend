@@ -57,10 +57,18 @@ export const leadService = {
 
     // A slot the admin has switched off must not be bookable by editing the
     // request, the same rule createPilotLead enforces for new bookings.
-    const { hiddenSlots } = await pilotLeadService.getDemoSettings();
+    const { demoTeachersCount, hiddenSlots } = await pilotLeadService.getDemoSettings();
     if (hiddenSlots.includes(time)) {
       throw new AppError(
         `The time slot '${time}' is currently unavailable. Please choose another time.`,
+        HTTP_STATUS.BAD_REQUEST
+      );
+    }
+    // A full slot is as unbookable as a hidden one — moving into one would put
+    // a fourth family on three mentors just as a new booking would.
+    if ((await pilotLeadService.seatsTaken(date, time)) >= demoTeachersCount) {
+      throw new AppError(
+        `The time slot '${time}' on ${date} is fully booked. Please choose another time.`,
         HTTP_STATUS.BAD_REQUEST
       );
     }
@@ -267,6 +275,31 @@ export const leadService = {
   },
 
   async createLead(input: CreateLeadInput) {
+    /* A demo booked here occupies a mentor exactly like one booked through the
+     * pilot widget, so it has to pass the same capacity check. It never did:
+     * this path only ever wrote the row, which is why a slot could be booked
+     * well past its limit from the claim-free-class form while still showing
+     * as available. Staff entries skip it — an admin placing a lead by hand is
+     * allowed to overbook deliberately. */
+    const requestedDate = input.preferredDays?.[0];
+    if (input.demoClass && !input.staffEntry && requestedDate && input.preferredTime) {
+      const { demoTeachersCount, hiddenSlots } = await pilotLeadService.getDemoSettings();
+      if (hiddenSlots.includes(input.preferredTime)) {
+        throw new AppError(
+          `The time slot '${input.preferredTime}' is currently unavailable. Please select another time slot.`,
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
+      const taken = await pilotLeadService.seatsTaken(requestedDate, input.preferredTime);
+      if (taken >= demoTeachersCount) {
+        throw new AppError(
+          `The time slot '${input.preferredTime}' on ${requestedDate} is fully booked ` +
+            `(${demoTeachersCount}/${demoTeachersCount} demo teachers booked). Please select another time slot.`,
+          HTTP_STATUS.BAD_REQUEST
+        );
+      }
+    }
+
     const lead = await db.lead.create({
       data: {
         firstName: input.firstName,

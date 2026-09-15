@@ -101,12 +101,48 @@ export const pilotLeadService = {
     return merged;
   },
 
+  /**
+   * Every booking that occupies a demo teacher, from BOTH booking forms.
+   *
+   * A seat is a seat regardless of which table it landed in: the pilot widget
+   * writes PilotLead, while the claim-free-class form writes a demo Lead
+   * (partial-lead → leadService.createLead). Counting only PilotLead meant
+   * claim-free-class bookings consumed a mentor's hour while staying invisible
+   * to the capacity check — so a slot never filled and never blocked.
+   *
+   * Dead leads release their seat; see INACTIVE_LEAD_STATUSES.
+   */
+  async getBookedSlots(): Promise<Array<{ date: string; time: string }>> {
+    const [pilots, demoLeads] = await Promise.all([
+      (db as any).pilotLead.findMany({
+        where: { status: { notIn: [...INACTIVE_LEAD_STATUSES] as any } },
+        select: { preferredSlotDate: true, preferredSlotTime: true },
+      }),
+      db.lead.findMany({
+        where: { demoClass: true, status: { notIn: [...INACTIVE_LEAD_STATUSES] as any } },
+        select: { preferredDays: true, preferredTime: true },
+      }),
+    ]);
+
+    return [
+      ...pilots.map((p: any) => ({ date: p.preferredSlotDate, time: p.preferredSlotTime })),
+      // The claim-free-class form stores its chosen date as preferredDays[0].
+      ...demoLeads.map((l: any) => ({ date: l.preferredDays?.[0], time: l.preferredTime })),
+    ].filter((b): b is { date: string; time: string } => Boolean(b.date && b.time));
+  },
+
+  /** How many of a slot's seats are already taken on that date. */
+  async seatsTaken(date: string, time: string): Promise<number> {
+    const booked = await this.getBookedSlots();
+    return booked.filter((b) => b.time === time && this.isSameDate(b.date, date)).length;
+  },
+
   async getSlotAvailability(dateQuery?: string) {
     const { demoTeachersCount, todayCutoffHour, hiddenSlots } = await this.getDemoSettings();
-    const leads = await (db as any).pilotLead.findMany({
-      where: { status: { notIn: [...INACTIVE_LEAD_STATUSES] as any } },
-      select: { preferredSlotDate: true, preferredSlotTime: true },
-    });
+    const leads = (await this.getBookedSlots()).map((b) => ({
+      preferredSlotDate: b.date,
+      preferredSlotTime: b.time,
+    }));
 
     const allSlots = [
       "12:00 AM", "01:00 AM", "02:00 AM", "03:00 AM", "04:00 AM", "05:00 AM",
@@ -174,18 +210,8 @@ export const pilotLeadService = {
           HTTP_STATUS.BAD_REQUEST
         );
       }
-      const existingLeads = await (db as any).pilotLead.findMany({
-        where: {
-          // Dead leads do not hold a demo seat — see INACTIVE_LEAD_STATUSES.
-          status: { notIn: [...INACTIVE_LEAD_STATUSES] as any },
-          preferredSlotTime: input.preferredSlotTime,
-        },
-        select: { preferredSlotDate: true },
-      });
-
-      const matchingCount = existingLeads.filter((l: any) =>
-        l.preferredSlotDate && this.isSameDate(l.preferredSlotDate, input.preferredSlotDate!)
-      ).length;
+      // Counts BOTH booking forms — see getBookedSlots.
+      const matchingCount = await this.seatsTaken(input.preferredSlotDate!, input.preferredSlotTime);
 
       if (matchingCount >= demoTeachersCount) {
         throw new AppError(
