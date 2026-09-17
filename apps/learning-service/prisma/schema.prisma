@@ -556,6 +556,14 @@ model Lead {
   paymentVerifiedBy String?
   paymentVerifiedAt DateTime?
   telecallerNotes   String?
+  /// Meta attribution captured at submission, kept so the QualifiedLead event
+  /// sent days later still matches the click that produced this lead.
+  metaEventId       String?
+  metaFbp           String?
+  metaFbc           String?
+  /// When we told Meta this lead turned out to be worth having. Set once —
+  /// a status toggled back and forth must not report two conversions.
+  metaQualifiedAt   DateTime?
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 

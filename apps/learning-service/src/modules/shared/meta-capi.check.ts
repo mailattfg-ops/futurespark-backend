@@ -15,7 +15,7 @@ globalThis.fetch = (async (url: any, init: any) => {
 }) as any;
 
 const run = async () => {
-  const { sendLeadEvent } = await import('./meta-capi');
+  const { sendLeadEvent, sendQualifiedLeadEvent } = await import('./meta-capi');
 
   // 1. Unconfigured is a silent no-op, not a throw.
   delete process.env.META_PIXEL_ID;
@@ -84,8 +84,41 @@ const run = async () => {
   globalThis.fetch = (async () => ({ ok: false, status: 400, text: async () => 'bad token' })) as any;
   await assert.rejects(() => sendLeadEvent({ email: 'x@y.com' }), /Meta CAPI 400/, 'non-ok throws');
 
+  /* ── the qualified-lead signal ───────────────────────────────────────────
+   * A second event about the same person, days later. It must NOT reuse the
+   * submission's event id (Meta would drop it as a duplicate) and must NOT be
+   * called "Lead" (that would double-count the conversion the ads optimise on).
+   */
+  captured = null;
+  globalThis.fetch = (async (url: any, init: any) => {
+    captured = { url: String(url), body: JSON.parse(init.body) };
+    return { ok: true, status: 200, text: async () => '{}' } as any;
+  }) as any;
+  const qid = await sendQualifiedLeadEvent({
+    email: 'parent@example.com',
+    phone: '+91 98765 43210',
+    externalId: 'lead-row-id',
+    eventId: 'original-submission-id',
+    fbc: 'fb.1.1700000000000.AbCdEf',
+  });
+  const q = captured!.body.data[0];
+  assert.strictEqual(q.event_name, 'QualifiedLead', 'a custom name, not the standard Lead');
+  assert.strictEqual(q.action_source, 'system_generated', "'crm' is not a value Meta accepts");
+  assert.notStrictEqual(q.event_id, 'original-submission-id', 'a fresh id, or Meta dedupes it away');
+  assert.strictEqual(q.event_id, qid, 'the id it reports is the id it sent');
+  assert.deepStrictEqual(q.user_data.em, [sha('parent@example.com')], 'still matches on hashed email');
+  assert.strictEqual(q.user_data.fbc, 'fb.1.1700000000000.AbCdEf', 'the stored click id still matches the ad');
+
+  // Never throws: an enrolment must not fail because Meta is unreachable.
+  globalThis.fetch = (async () => {
+    throw new Error('network down');
+  }) as any;
+  assert.strictEqual(await sendQualifiedLeadEvent({ email: 'a@b.com' }), null, 'a refusal is swallowed');
+
+
   globalThis.fetch = realFetch;
-  console.log('meta-capi: 20/20 checks passed');
+
+  console.log('meta-capi: 27/27 checks passed');
 };
 
 run().catch((e) => {
