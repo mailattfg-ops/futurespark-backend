@@ -18,6 +18,7 @@ import {
   resolveHostBufferMs,
   seatBookingFromMeetingRow,
 } from '../host-buffer/host-buffer';
+import { endZoomSession, getMeetingZoomStatus, isZoomMeetingOccupyingHost } from '../shared/zoom-session';
 import { logger } from '@futurespark/logger';
 
 export interface CreateZoomMeetingInput {
@@ -481,23 +482,92 @@ export class ZoomMeetingsService {
           candidates.push(seat);
         }
 
+        /* 4b. Every seat busy on paper. Before giving up, reclaim one whose
+         * booking is PAST ITS OWN SCHEDULED END yet still live on Zoom — the
+         * class that ran an hour over and was never ended. No grace: once a
+         * slot has ended, the seat belongs to whoever booked next. Most overrun
+         * first, so a room three hours over is closed before one thirty
+         * seconds over. A session still inside its slot is never touched here. */
+        if (candidates.length === 0) {
+          const nowMs = Date.now();
+          const overrun = overlapping
+            .filter((row) => row.zoomMeetingId && row.zoomHostEmail && row.endTime.getTime() < nowMs)
+            .sort((a, b) => a.endTime.getTime() - b.endTime.getTime());
+          for (const row of overrun) {
+            const host = row.zoomHostEmail!;
+            const overMin = Math.round((nowMs - row.endTime.getTime()) / 60_000);
+
+            // Another booking on this seat that has NOT ended keeps it busy —
+            // clearing one overrun row must not hand out a seat a live class
+            // still holds on paper.
+            const heldByAnother = overlapping.some(
+              (other) =>
+                other.id !== row.id &&
+                emailKey(other.zoomHostEmail ?? '') === emailKey(host) &&
+                other.endTime.getTime() >= nowMs
+            );
+            if (heldByAnother) continue;
+
+            // Token resolved before the transaction: a lookup here would need a
+            // second pooled connection while this one holds the only one.
+            const token = (credentials.byHost.get(emailKey(host)) ?? credentials.fallback).accessToken;
+            const status = await getMeetingZoomStatus(row.zoomMeetingId!, host, workspaceEmail, token);
+            if (isZoomMeetingOccupyingHost(status)) {
+              const ended = await endZoomSession({
+                id: row.id,
+                zoomMeetingId: row.zoomMeetingId,
+                zoomHostEmail: host,
+                organizerEmail: workspaceEmail,
+                token,
+              });
+              if (ended === 'failed') {
+                logger.warn(
+                  `[ZoomMeetingsService] Seat ${host}: could not end "${row.title}" (meeting ${row.id}, ` +
+                    `${overMin} min past its end) — trying the next overrun booking.`
+                );
+                continue;
+              }
+              logger.warn(
+                `[ZoomMeetingsService] Reclaimed seat ${host}: ended "${row.title}" (meeting ${row.id}) ` +
+                  `${overMin} min past its scheduled end, to seat session ${input.sessionId}.`
+              );
+            } else {
+              // Past its end and not live: the booking is over, only the paper
+              // overlap (buffer) was holding the seat. Nothing to end.
+              logger.info(
+                `[ZoomMeetingsService] Seat ${host}: "${row.title}" (meeting ${row.id}) ended ${overMin} min ago ` +
+                  `and is ${status ?? 'unreachable'} on Zoom — seat treated as free for session ${input.sessionId}.`
+              );
+            }
+            busyKeys.delete(emailKey(host));
+            candidates.push(host);
+            break;
+          }
+        }
+
         if (candidates.length === 0) {
           const window = formatWindow(start, end, timezone);
           const primary = pickPrimaryConflict(hostConflicts, mentorHost);
           const blockingRow = primary
             ? overlapping.find((candidate) => candidate.id === primary.existing.meetingId)
             : overlapping[0];
+          const blockers = overlapping
+            .map((r) => `"${r.title}" ${r.startTime.toISOString()}–${r.endTime.toISOString()} on ${r.zoomHostEmail}`)
+            .join(' | ');
           logger.error(
             `[ZoomMeetingsService] Host pool exhausted for session ${input.sessionId}: all ${pool.length} ` +
               `seat(s) busy between ${start.toISOString()} and ${end.toISOString()}. ` +
-              `Busy seats: ${[...busyKeys].join(', ') || 'none matched the pool'}.`
+              `Busy seats: ${[...busyKeys].join(', ') || 'none matched the pool'}. Blocking bookings: ${blockers || 'none'}.`
           );
           throw new ZoomServiceError(
             'ZOOM_HOST_POOL_EXHAUSTED',
             `All ${pool.length} Zoom host seat${pool.length === 1 ? '' : 's'} are already hosting a meeting that ` +
               `overlaps ${window} (${timezone}). A licensed Zoom host can run only one live meeting at a time, so ` +
               `this session cannot be booked in that window. Move the session, or add another licensed seat to ` +
-              `ZOOM_HOST_EMAILS (there ${pool.length === 1 ? 'is' : 'are'} ${pool.length} today).`,
+              `ZOOM_HOST_EMAILS (there ${pool.length === 1 ? 'is' : 'are'} ${pool.length} today).` +
+              (blockingRow
+                ? ` Blocked by "${blockingRow.title}" (${formatWindow(blockingRow.startTime, blockingRow.endTime, timezone)}).`
+                : ''),
             {
               poolSize: pool.length,
               startTime: start.toISOString(),

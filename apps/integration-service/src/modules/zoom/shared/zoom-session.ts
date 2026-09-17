@@ -11,10 +11,12 @@ export type EndZoomSessionResult = 'ended' | 'already_closed' | 'failed';
 export const getMeetingZoomStatus = async (
   zoomMeetingId: string,
   hostEmail: string | null,
-  organizerEmail: string
+  organizerEmail: string,
+  /** Pre-resolved token: callers inside a DB transaction must pass one (connection_limit=1). */
+  token?: string
 ): Promise<ZoomMeetingLiveStatus | null> => {
   try {
-    const token = await ZoomAuthService.getAccessToken(hostEmail || organizerEmail);
+    token ??= await ZoomAuthService.getAccessToken(hostEmail || organizerEmail);
     const res = await fetch(`https://api.zoom.us/v2/meetings/${encodeURIComponent(zoomMeetingId)}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(10_000),
@@ -123,10 +125,18 @@ export const getMeetingLiveParticipantCount = async (
   }
 };
 
-export const listHostLiveZoomMeetingIds = async (
+export interface ZoomLiveMeeting {
+  id: string;
+  topic: string;
+  /** When this live session actually started on Zoom (ISO), if reported. */
+  startTime: string | null;
+}
+
+/** Meetings live on a host seat right now (needs meeting:read:list_meetings:admin). */
+export const listHostLiveZoomMeetings = async (
   hostEmail: string,
   organizerEmail: string
-): Promise<string[]> => {
+): Promise<ZoomLiveMeeting[]> => {
   try {
     const token = await ZoomAuthService.getAccessToken(hostEmail || organizerEmail);
     const res = await fetch(
@@ -137,15 +147,18 @@ export const listHostLiveZoomMeetingIds = async (
       logger.warn(`[ZoomSession] live list for ${hostEmail} returned ${res.status}`);
       return [];
     }
-    const data = (await res.json()) as { meetings?: { id?: number | string }[] };
+    const data = (await res.json()) as { meetings?: { id?: number | string; topic?: string; start_time?: string }[] };
     return (Array.isArray(data.meetings) ? data.meetings : [])
-      .map((m) => String(m.id ?? ''))
-      .filter(Boolean);
+      .filter((m) => m.id !== undefined && m.id !== null)
+      .map((m) => ({ id: String(m.id), topic: m.topic ?? '', startTime: m.start_time ?? null }));
   } catch (err: any) {
     logger.warn(`[ZoomSession] live list for ${hostEmail} failed: ${err.message}`);
     return [];
   }
 };
+
+export const listHostLiveZoomMeetingIds = async (hostEmail: string, organizerEmail: string): Promise<string[]> =>
+  (await listHostLiveZoomMeetings(hostEmail, organizerEmail)).map((m) => m.id);
 
 /**
  * End the current live session for a meeting. The join URL survives.
@@ -157,11 +170,13 @@ export const endZoomSession = async (meeting: {
   zoomMeetingId: string | null;
   zoomHostEmail: string | null;
   organizerEmail: string;
+  /** Pre-resolved token: callers inside a DB transaction must pass one (connection_limit=1). */
+  token?: string;
 }): Promise<EndZoomSessionResult> => {
   if (!meeting.zoomMeetingId) return 'failed';
 
   try {
-    const token = await ZoomAuthService.getAccessToken(meeting.zoomHostEmail || meeting.organizerEmail);
+    const token = meeting.token ?? (await ZoomAuthService.getAccessToken(meeting.zoomHostEmail || meeting.organizerEmail));
     const res = await fetch(
       `https://api.zoom.us/v2/meetings/${encodeURIComponent(meeting.zoomMeetingId)}/status`,
       {
