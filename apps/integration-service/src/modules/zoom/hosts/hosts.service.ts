@@ -1,6 +1,7 @@
 import { logger } from '@futurespark/logger';
 import db from '../../../database/datasource';
 import { callZoom, ZoomApiError, ZoomAuthService, zoomConfig } from '../auth/auth.service';
+import { endZoomSession, listHostLiveZoomMeetings } from '../shared/zoom-session';
 
 /**
  * The Zoom seat register.
@@ -141,35 +142,114 @@ export const seedFromEnvIfEmpty = async (): Promise<void> => {
  * allocator uses means the badge and the scheduler can never disagree.
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/** Minutes a live session may run (from its actual start) before the seat shows RED. */
+export const RED_AFTER_MS =
+  (Number(process.env.ZOOM_HOST_RED_AFTER_MINUTES) > 0 ? Number(process.env.ZOOM_HOST_RED_AFTER_MINUTES) : 90) * 60_000;
+
+export type SeatLight = 'GREEN' | 'YELLOW' | 'RED';
+
+/**
+ * GREEN inside the booked slot, YELLOW once it runs past the slot's end,
+ * RED once it has run RED_AFTER_MS in total (a class nobody ended).
+ */
+export const seatLight = (startedAt: Date, scheduledEnd: Date | null, now: Date): SeatLight => {
+  if (now.getTime() - startedAt.getTime() >= RED_AFTER_MS) return 'RED';
+  if (scheduledEnd && now.getTime() > scheduledEnd.getTime()) return 'YELLOW';
+  return 'GREEN';
+};
+
 export interface HostBusyState {
   busy: boolean;
+  /** True when Zoom reports the session live; false = booked for now but not started. */
+  live: boolean;
+  zoomMeetingId: string | null;
+  meetingId: string | null;
   meetingTitle: string | null;
   meetingStartTime: Date | null;
   meetingEndTime: Date | null;
+  liveSince: Date | null;
+  light: SeatLight | null;
 }
 
-/** Which seats are hosting a meeting right now, keyed by lowercased email. */
-const loadBusyByEmail = async (at: Date): Promise<Map<string, HostBusyState>> => {
-  const live = await db.meeting.findMany({
-    where: {
-      provider: 'ZOOM',
-      status: { not: 'CANCELLED' },
-      zoomHostEmail: { not: null },
-      startTime: { lte: at },
-      endTime: { gt: at },
-    },
-    select: { zoomHostEmail: true, title: true, startTime: true, endTime: true },
-  });
+/**
+ * Which seats are hosting a meeting right now, keyed by lowercased email.
+ * Zoom is the truth for "live"; the Meeting table supplies the booked slot
+ * (and a not-yet-started booking when Zoom shows nothing).
+ */
+const loadBusyByEmail = async (emails: string[], at: Date): Promise<Map<string, HostBusyState>> => {
+  const liveByHost = await Promise.all(
+    emails.map(async (email) => [email, await listHostLiveZoomMeetings(email, email)] as const)
+  );
+  const liveIds = liveByHost.flatMap(([, live]) => live.map((m) => m.id));
+
+  const [liveRows, bookedNow] = await Promise.all([
+    liveIds.length
+      ? db.meeting.findMany({
+          where: { zoomMeetingId: { in: liveIds } },
+          select: { id: true, zoomMeetingId: true, title: true, startTime: true, endTime: true },
+        })
+      : Promise.resolve([]),
+    db.meeting.findMany({
+      where: {
+        provider: 'ZOOM',
+        status: { not: 'CANCELLED' },
+        zoomHostEmail: { not: null },
+        startTime: { lte: at },
+        endTime: { gt: at },
+      },
+      select: { id: true, zoomMeetingId: true, zoomHostEmail: true, title: true, startTime: true, endTime: true },
+    }),
+  ]);
+  const rowByZoom = new Map(liveRows.map((r) => [r.zoomMeetingId ?? '', r]));
 
   const byEmail = new Map<string, HostBusyState>();
-  for (const meeting of live) {
-    if (!meeting.zoomHostEmail) continue;
-    byEmail.set(emailKey(meeting.zoomHostEmail), {
+  for (const [email, live] of liveByHost) {
+    // A seat can only run one meeting; if Zoom lists more, show the oldest.
+    const m = [...live].sort((x, y) => (x.startTime ?? '').localeCompare(y.startTime ?? ''))[0];
+    if (!m) continue;
+    const row = rowByZoom.get(m.id);
+    const startedAt = m.startTime ? new Date(m.startTime) : row?.startTime ?? at;
+    byEmail.set(emailKey(email), {
       busy: true,
-      meetingTitle: meeting.title,
-      meetingStartTime: meeting.startTime,
-      meetingEndTime: meeting.endTime,
+      live: true,
+      zoomMeetingId: m.id,
+      meetingId: row?.id ?? null,
+      meetingTitle: row?.title ?? m.topic ?? null,
+      meetingStartTime: row?.startTime ?? null,
+      meetingEndTime: row?.endTime ?? null,
+      liveSince: startedAt,
+      light: seatLight(startedAt, row?.endTime ?? null, at),
     });
+  }
+  for (const r of bookedNow) {
+    const key = emailKey(r.zoomHostEmail!);
+    if (byEmail.has(key)) continue;
+    byEmail.set(key, {
+      busy: true,
+      live: false,
+      zoomMeetingId: r.zoomMeetingId,
+      meetingId: r.id,
+      meetingTitle: r.title,
+      meetingStartTime: r.startTime,
+      meetingEndTime: r.endTime,
+      liveSince: null,
+      light: null,
+    });
+  }
+  return byEmail;
+};
+
+/** The next booked session on each seat — what an available seat is waiting for. */
+const loadNextByEmail = async (at: Date) => {
+  const rows = await db.meeting.findMany({
+    where: { provider: 'ZOOM', status: { not: 'CANCELLED' }, zoomHostEmail: { not: null }, startTime: { gt: at } },
+    orderBy: { startTime: 'asc' },
+    select: { id: true, zoomHostEmail: true, title: true, startTime: true, endTime: true },
+  });
+  const byEmail = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) {
+    const key = emailKey(r.zoomHostEmail!);
+    if (!byEmail.has(key)) byEmail.set(key, r);
   }
   return byEmail;
 };
@@ -198,15 +278,25 @@ const loadUpcomingByEmail = async (at: Date): Promise<Map<string, number>> => {
 /** Every seat, with its live state — what the admin table renders. */
 export const listHosts = async () => {
   const now = new Date();
-  const [hosts, busyByEmail, upcomingByEmail] = await Promise.all([
-    db.zoomHost.findMany({ orderBy: [{ active: 'desc' }, { createdAt: 'asc' }] }),
-    loadBusyByEmail(now),
+  const hosts = await db.zoomHost.findMany({ orderBy: [{ active: 'desc' }, { createdAt: 'asc' }] });
+  const [busyByEmail, upcomingByEmail, nextByEmail] = await Promise.all([
+    loadBusyByEmail(hosts.filter((h) => h.active).map((h) => h.email), now),
     loadUpcomingByEmail(now),
+    loadNextByEmail(now),
   ]);
 
   const rows = hosts.map((host) => {
     const busy = busyByEmail.get(emailKey(host.email));
+    const next = nextByEmail.get(emailKey(host.email));
     return {
+      nextSession: next
+        ? {
+            title: next.title,
+            startTime: next.startTime.toISOString(),
+            endTime: next.endTime.toISOString(),
+            minutesUntil: Math.ceil((next.startTime.getTime() - now.getTime()) / 60_000),
+          }
+        : null,
       id: host.id,
       name: host.name,
       email: host.email,
@@ -224,6 +314,20 @@ export const listHosts = async () => {
             title: busy.meetingTitle,
             startTime: busy.meetingStartTime?.toISOString() ?? null,
             endTime: busy.meetingEndTime?.toISOString() ?? null,
+            live: busy.live,
+            meetingId: busy.meetingId,
+            zoomMeetingId: busy.zoomMeetingId,
+            liveSince: busy.liveSince?.toISOString() ?? null,
+            light: busy.light,
+            minutesRunning: busy.liveSince ? Math.floor((now.getTime() - busy.liveSince.getTime()) / 60_000) : null,
+            minutesLeft:
+              busy.meetingEndTime && now <= busy.meetingEndTime
+                ? Math.ceil((busy.meetingEndTime.getTime() - now.getTime()) / 60_000)
+                : 0,
+            minutesOver:
+              busy.meetingEndTime && now > busy.meetingEndTime
+                ? Math.floor((now.getTime() - busy.meetingEndTime.getTime()) / 60_000)
+                : 0,
           }
         : null,
       upcomingMeetings: upcomingByEmail.get(emailKey(host.email)) ?? 0,
@@ -445,4 +549,39 @@ export const verifyHost = async (id: string) => {
     logger.warn(`[ZoomHosts] Verification failed for ${host.email}: ${message}`);
     return updated;
   }
+};
+
+/**
+ * Admin frees a seat: ends the live Zoom session if there is one, and closes
+ * the booking (its endTime becomes now) so the seat stops counting as busy.
+ * The join link survives either way — a late joiner still lands in the room.
+ */
+export const endHostSession = async (id: string, input: { zoomMeetingId?: unknown; meetingId?: unknown }) => {
+  const host = await db.zoomHost.findUnique({ where: { id } });
+  if (!host) throw new ZoomHostError('NOT_FOUND', 'Zoom host not found.');
+  const zoomMeetingId = typeof input.zoomMeetingId === 'string' ? input.zoomMeetingId.trim() : '';
+  const meetingId = typeof input.meetingId === 'string' ? input.meetingId.trim() : '';
+  if (!zoomMeetingId && !meetingId) throw new ZoomHostError('VALIDATION', 'zoomMeetingId or meetingId is required.');
+
+  let result: string = 'not_live';
+  if (zoomMeetingId) {
+    result = await endZoomSession({ zoomMeetingId, zoomHostEmail: host.email, organizerEmail: host.email });
+    if (result === 'failed') {
+      throw new ZoomHostError('VALIDATION', `Zoom refused to end meeting ${zoomMeetingId} on ${host.email}.`);
+    }
+  }
+  const now = new Date();
+  const closed = await db.meeting.updateMany({
+    where: {
+      zoomHostEmail: { equals: host.email, mode: 'insensitive' },
+      status: { not: 'CANCELLED' },
+      endTime: { gt: now },
+      ...(meetingId ? { id: meetingId } : { zoomMeetingId }),
+    },
+    data: { endTime: now },
+  });
+  logger.warn(
+    `[ZoomHosts] Admin freed seat ${host.email}: zoom=${zoomMeetingId || '-'} (${result}), bookings closed=${closed.count}.`
+  );
+  return { host: host.email, zoomMeetingId: zoomMeetingId || null, result, bookingsClosed: closed.count };
 };

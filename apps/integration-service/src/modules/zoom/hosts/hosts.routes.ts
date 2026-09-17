@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HTTP_STATUS } from '@futurespark/constants';
 import { successResponse, errorResponse } from '@futurespark/response';
 import { logger } from '@futurespark/logger';
-import { createHost, deleteHost, listHosts, updateHost, verifyHost, ZoomHostError,
+import { createHost, deleteHost, endHostSession, listHosts, updateHost, verifyHost, ZoomHostError,
 } from './hosts.service';
 
 /**
@@ -75,6 +75,19 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
       .json(successResponse(host, host.verifiedAt ? `Zoom confirmed ${host.email} is ${host.verifiedType}.` : 'Zoom could not confirm this seat.'));
   } catch (err: any) {
     return fail(res, err, 'Failed to verify the Zoom host');
+  }
+});
+
+/** End whatever is live on this seat right now — the class that ran over. */
+router.post('/:id/end-session', async (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const data = await endHostSession(req.params.id, req.body ?? {});
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(successResponse(data, data.result === 'not_live' ? `Seat ${data.host} freed.` : `Live session on ${data.host} ended.`));
+  } catch (err: any) {
+    return fail(res, err, 'Failed to end the live session');
   }
 });
 

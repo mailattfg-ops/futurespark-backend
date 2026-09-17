@@ -9,6 +9,16 @@ import {
   zoomConfig,
 } from '../auth/auth.service';
 import { getActiveHostPool } from '../hosts/hosts.service';
+import {
+  busyHostKeys,
+  expandWindow,
+  existingMeetingPayload,
+  findConflictingBookings,
+  pickPrimaryConflict,
+  resolveHostBufferMs,
+  seatBookingFromMeetingRow,
+} from '../host-buffer/host-buffer';
+import { endZoomSession, getMeetingZoomStatus, isZoomMeetingOccupyingHost } from '../shared/zoom-session';
 import { logger } from '@futurespark/logger';
 
 export interface CreateZoomMeetingInput {
@@ -59,7 +69,9 @@ export type ZoomServiceErrorCode =
   | 'ZOOM_NOT_CONFIGURED'
   | 'ZOOM_VALIDATION'
   | 'ZOOM_DOUBLE_BOOKING'
+  | 'ZOOM_HOST_ALREADY_BOOKED'
   | 'ZOOM_HOST_POOL_EXHAUSTED'
+  | 'ZOOM_JOIN_HOST_BUSY'
   | 'ZOOM_NOT_FOUND'
   | 'ZOOM_API_FAILED';
 
@@ -379,7 +391,10 @@ export class ZoomMeetingsService {
           if (!input.allowConflict) {
             throw new ZoomServiceError(
               'ZOOM_DOUBLE_BOOKING',
-              `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`
+              `This ${who} is already booked at ${localTime} for "${conflict.title}". Pick a different time or mentor.`,
+              conflict.provider === 'ZOOM'
+                ? existingMeetingPayload(conflict)
+                : { existingMeetingId: conflict.id }
             );
           }
 
@@ -389,32 +404,53 @@ export class ZoomMeetingsService {
           );
         }
 
-        // 4. Seat allocation.
-        //
-        // A seat is BUSY when a non-CANCELLED ZOOM meeting it hosts overlaps
-        // [start, end): existing.startTime < newEnd AND existing.endTime >
-        // newStart. Touching endpoints do not overlap, so back-to-back classes
-        // share a seat.
-        //
-        // The query is not filtered by seat address, so a legacy row whose
-        // host Zoom reported under different capitalisation still counts
-        // against that seat; matching happens case-insensitively below.
+        // 4. Seat allocation — buffered overlap via host-buffer (see
+        // ZOOM_HOST_BUFFER_MINUTES). Touching endpoints alone are not enough:
+        // a reschedule 1 minute later can land while the earlier Zoom session
+        // is still live on the same seat.
+        const proposed = { start, end };
+        const bufferMs = resolveHostBufferMs();
+        const padded = expandWindow(proposed, bufferMs);
         const overlapping = await tx.meeting.findMany({
           where: {
             provider: 'ZOOM',
             status: { not: 'CANCELLED' },
             zoomHostEmail: { not: null },
-            startTime: { lt: end },
-            endTime: { gt: start },
+            startTime: { lt: padded.end },
+            endTime: { gt: padded.start },
           },
-          select: { zoomHostEmail: true },
+          select: {
+            id: true,
+            zoomHostEmail: true,
+            title: true,
+            startTime: true,
+            endTime: true,
+            zoomJoinUrl: true,
+            meetUrl: true,
+            zoomMeetingId: true,
+          },
         });
-        const busyKeys = new Set(
-          overlapping
-            .map((row) => row.zoomHostEmail)
-            .filter((host): host is string => Boolean(host))
-            .map(emailKey)
-        );
+        const bookings = overlapping
+          .map(seatBookingFromMeetingRow)
+          .filter((row): row is NonNullable<ReturnType<typeof seatBookingFromMeetingRow>> => row !== null);
+        const busyKeys = busyHostKeys(proposed, bookings);
+        const hostConflicts = findConflictingBookings(proposed, bookings);
+
+        if (mentorHost && busyKeys.has(emailKey(mentorHost))) {
+          const primary = pickPrimaryConflict(hostConflicts, mentorHost);
+          const row = primary
+            ? overlapping.find((candidate) => candidate.id === primary.existing.meetingId)
+            : overlapping.find((candidate) => emailKey(candidate.zoomHostEmail ?? '') === emailKey(mentorHost));
+          if (row) {
+            const gapMin = Math.round(bufferMs / 60_000);
+            throw new ZoomServiceError(
+              'ZOOM_HOST_ALREADY_BOOKED',
+              `Zoom host ${mentorHost} already has a meeting planned within ${gapMin} minutes of this slot. ` +
+                `Use the existing join link or pick a different time.`,
+              existingMeetingPayload(row)
+            );
+          }
+        }
 
         // Least-recently-used ordering. Bounded by a window so this stays a
         // small aggregate rather than a scan of every Zoom meeting ever, and
@@ -446,20 +482,100 @@ export class ZoomMeetingsService {
           candidates.push(seat);
         }
 
+        /* 4b. Every seat busy on paper. Before giving up, reclaim one whose
+         * booking is PAST ITS OWN SCHEDULED END yet still live on Zoom — the
+         * class that ran an hour over and was never ended. No grace: once a
+         * slot has ended, the seat belongs to whoever booked next. Most overrun
+         * first, so a room three hours over is closed before one thirty
+         * seconds over. A session still inside its slot is never touched here. */
+        if (candidates.length === 0) {
+          const nowMs = Date.now();
+          const overrun = overlapping
+            .filter((row) => row.zoomMeetingId && row.zoomHostEmail && row.endTime.getTime() < nowMs)
+            .sort((a, b) => a.endTime.getTime() - b.endTime.getTime());
+          for (const row of overrun) {
+            const host = row.zoomHostEmail!;
+            const overMin = Math.round((nowMs - row.endTime.getTime()) / 60_000);
+
+            // Another booking on this seat that has NOT ended keeps it busy —
+            // clearing one overrun row must not hand out a seat a live class
+            // still holds on paper.
+            const heldByAnother = overlapping.some(
+              (other) =>
+                other.id !== row.id &&
+                emailKey(other.zoomHostEmail ?? '') === emailKey(host) &&
+                other.endTime.getTime() >= nowMs
+            );
+            if (heldByAnother) continue;
+
+            // Token resolved before the transaction: a lookup here would need a
+            // second pooled connection while this one holds the only one.
+            const token = (credentials.byHost.get(emailKey(host)) ?? credentials.fallback).accessToken;
+            const status = await getMeetingZoomStatus(row.zoomMeetingId!, host, workspaceEmail, token);
+            if (isZoomMeetingOccupyingHost(status)) {
+              const ended = await endZoomSession({
+                id: row.id,
+                zoomMeetingId: row.zoomMeetingId,
+                zoomHostEmail: host,
+                organizerEmail: workspaceEmail,
+                token,
+              });
+              if (ended === 'failed') {
+                logger.warn(
+                  `[ZoomMeetingsService] Seat ${host}: could not end "${row.title}" (meeting ${row.id}, ` +
+                    `${overMin} min past its end) — trying the next overrun booking.`
+                );
+                continue;
+              }
+              logger.warn(
+                `[ZoomMeetingsService] Reclaimed seat ${host}: ended "${row.title}" (meeting ${row.id}) ` +
+                  `${overMin} min past its scheduled end, to seat session ${input.sessionId}.`
+              );
+            } else {
+              // Past its end and not live: the booking is over, only the paper
+              // overlap (buffer) was holding the seat. Nothing to end.
+              logger.info(
+                `[ZoomMeetingsService] Seat ${host}: "${row.title}" (meeting ${row.id}) ended ${overMin} min ago ` +
+                  `and is ${status ?? 'unreachable'} on Zoom — seat treated as free for session ${input.sessionId}.`
+              );
+            }
+            busyKeys.delete(emailKey(host));
+            candidates.push(host);
+            break;
+          }
+        }
+
         if (candidates.length === 0) {
           const window = formatWindow(start, end, timezone);
+          const primary = pickPrimaryConflict(hostConflicts, mentorHost);
+          const blockingRow = primary
+            ? overlapping.find((candidate) => candidate.id === primary.existing.meetingId)
+            : overlapping[0];
+          const blockers = overlapping
+            .map((r) => `"${r.title}" ${r.startTime.toISOString()}–${r.endTime.toISOString()} on ${r.zoomHostEmail}`)
+            .join(' | ');
           logger.error(
             `[ZoomMeetingsService] Host pool exhausted for session ${input.sessionId}: all ${pool.length} ` +
               `seat(s) busy between ${start.toISOString()} and ${end.toISOString()}. ` +
-              `Busy seats: ${[...busyKeys].join(', ') || 'none matched the pool'}.`
+              `Busy seats: ${[...busyKeys].join(', ') || 'none matched the pool'}. Blocking bookings: ${blockers || 'none'}.`
           );
           throw new ZoomServiceError(
             'ZOOM_HOST_POOL_EXHAUSTED',
             `All ${pool.length} Zoom host seat${pool.length === 1 ? '' : 's'} are already hosting a meeting that ` +
               `overlaps ${window} (${timezone}). A licensed Zoom host can run only one live meeting at a time, so ` +
               `this session cannot be booked in that window. Move the session, or add another licensed seat to ` +
-              `ZOOM_HOST_EMAILS (there ${pool.length === 1 ? 'is' : 'are'} ${pool.length} today).`,
-            { poolSize: pool.length, startTime: start.toISOString(), endTime: end.toISOString(), timezone }
+              `ZOOM_HOST_EMAILS (there ${pool.length === 1 ? 'is' : 'are'} ${pool.length} today).` +
+              (blockingRow
+                ? ` Blocked by "${blockingRow.title}" (${formatWindow(blockingRow.startTime, blockingRow.endTime, timezone)}).`
+                : ''),
+            {
+              poolSize: pool.length,
+              startTime: start.toISOString(),
+              endTime: end.toISOString(),
+              timezone,
+              bufferMinutes: Math.round(bufferMs / 60_000),
+              ...(blockingRow ? existingMeetingPayload(blockingRow) : {}),
+            }
           );
         }
 
