@@ -15,6 +15,8 @@ import { notificationRoutes } from './modules/notification/notification.routes';
 import { metricsRoutes } from './modules/metrics/metrics.routes';
 import { whatsappWebhookRoutes } from './modules/whatsapp/whatsapp.routes';
 import { whatsappReportRoutes } from './modules/whatsapp/report.routes';
+import { mediaRouter, whatsappConversationRoutes } from './modules/whatsapp/conversations.routes';
+import { sweepOldMedia } from './modules/whatsapp/media';
 import { assertWhatsAppStartupConfig } from './modules/whatsapp/whatsapp.service';
 
 
@@ -94,9 +96,16 @@ app.get('/health', (req, res) => {
   );
 });
 
+app.use('/whatsapp/conversations', whatsappConversationRoutes);
+app.use('/whatsapp/media', mediaRouter);
+
 app.use('/notifications', notificationRoutes);
 
 app.use('/metrics', metricsRoutes);
+
+// Inbound voice notes live on disk; without this the folder only ever grows.
+void sweepOldMedia();
+setInterval(() => void sweepOldMedia(), 24 * 60 * 60 * 1000).unref();
 
 app.use((req, res) => {
   res.status(HTTP_STATUS.NOT_FOUND).json(errorResponse('Route not found'));

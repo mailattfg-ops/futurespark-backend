@@ -668,6 +668,38 @@ app.use('/api/whatsapp/webhook',
   })
 );
 
+app.use('/api/whatsapp/conversations',
+  // The inbox carries families' phone numbers and everything they wrote, so it
+  // is staff-only — same bar as the leads it is read alongside.
+  asyncHandler(authenticate),
+  authorize(['ADMIN', 'SCHEDULER', 'ENROLLMENT_ADVISOR']),
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/conversations/' },
+    on: {
+      error: (err, _req, res: any) => {
+        logger.error(`[Gateway] Communication service unreachable for the WhatsApp inbox: ${err.message}`);
+        res.status(HTTP_STATUS.SERVICE_UNAVAILABLE).json({
+          success: false,
+          message: 'WhatsApp inbox unavailable.',
+          timestamp: new Date().toISOString(),
+        });
+      },
+    },
+  })
+);
+
+app.use('/api/whatsapp/media',
+  asyncHandler(authenticate),
+  authorize(['ADMIN', 'SCHEDULER', 'ENROLLMENT_ADVISOR']),
+  createProxyMiddleware({
+    target: COMMUNICATION_SERVICE_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/': '/whatsapp/media/' },
+  })
+);
+
 app.use('/api/whatsapp/auto-reply',
   // These had NO auth at all — anyone on the internet could read and rewrite
   // the WhatsApp audience and auto-reply configuration.

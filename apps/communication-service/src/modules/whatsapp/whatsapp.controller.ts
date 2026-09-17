@@ -3,6 +3,7 @@ import { NextFunction, Request, Response } from 'express';
 import { logger } from '@futurespark/logger';
 import { HTTP_STATUS } from '@futurespark/constants';
 import db from '../../database/datasource';
+import { downloadInboundMedia, isMediaType } from './media';
 import { formatWelcomeReply, getAudienceSettings, getAutoReplyTemplate, inboundCreatedAt, maskPhone, setAutoReplyTemplate, setRuntimeAutoReply, updateAudienceSettings, whatsappConfig, whatsappService } from './whatsapp.service';
 
 /**
@@ -365,6 +366,7 @@ const handleInboundMessage = async (message: any, value: any): Promise<void> => 
 
   let bodyContent = '';
   let userText = '';
+  let media: { id: string; file: string | null; mime: string | null } | null = null;
 
   if (msgType === 'text') {
     userText = message.text?.body || '';
@@ -372,6 +374,18 @@ const handleInboundMessage = async (message: any, value: any): Promise<void> => 
   } else if (msgType === 'button') {
     userText = message.button?.text || '';
     bodyContent = message.button?.payload || '';
+  } else if (isMediaType(msgType)) {
+    // Meta sends an id, not the file, and the download url it maps to lives
+    // for about five minutes — so the voice note has to be pulled down now or
+    // never. A failed download still leaves a readable message row.
+    const payload = message[msgType] ?? {};
+    const mediaId = payload.id ? String(payload.id) : '';
+    bodyContent = payload.caption?.trim() || (msgType === 'audio' ? '[Voice note]' : `[${msgType}]`);
+    if (mediaId) {
+      const stored = await downloadInboundMedia(mediaId);
+      media = { id: mediaId, file: stored?.file ?? null, mime: stored?.mime ?? payload.mime_type ?? null };
+      if (!stored) bodyContent += ' (attachment could not be downloaded)';
+    }
   } else {
     bodyContent = `[Non-text type: ${msgType}]`;
   }
@@ -412,6 +426,9 @@ const handleInboundMessage = async (message: any, value: any): Promise<void> => 
       type: msgType,
       body: bodyContent,
       status: 'received',
+      mediaId: media?.id ?? null,
+      mediaFile: media?.file ?? null,
+      mediaMime: media?.mime ?? null,
       ...inboundCreatedAt(message?.timestamp),
     },
   });
