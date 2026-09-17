@@ -566,6 +566,14 @@ model Lead {
   paymentVerifiedBy String?
   paymentVerifiedAt DateTime?
   telecallerNotes   String?
+  /// Meta attribution — declared here as well as in learning-service because
+  /// both datasources span the learning schema, and `db push` from EITHER makes
+  /// the table match ITS file. A column missing from one copy is a column the
+  /// other service's push silently drops.
+  metaEventId       String?
+  metaFbp           String?
+  metaFbc           String?
+  metaQualifiedAt   DateTime?
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
