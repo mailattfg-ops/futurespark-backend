@@ -30,6 +30,9 @@ model WhatsAppMessage {
   body        String   // Message body/content or button payload
   status      String   // "sent", "delivered", "read", "received", "failed"
   error       String?  // Error message if failed
+  mediaId     String?  // Meta media id of an inbound voice note / image / document
+  mediaFile   String?  // File name under WHATSAPP_MEDIA_DIR once downloaded
+  mediaMime   String?  // e.g. "audio/ogg" — decides how the player treats it
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
