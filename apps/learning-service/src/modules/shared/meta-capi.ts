@@ -68,11 +68,18 @@ interface MetaUserData {
   client_user_agent?: string;
 }
 
+/**
+ * `website` is a person acting in a browser. `system_generated` is us telling
+ * Meta something we concluded on our own — a lead our team later qualified.
+ * Meta rejects any other value, including the plausible-looking 'crm'.
+ */
+type ActionSource = 'website' | 'system_generated';
+
 interface CapiEvent {
-  event_name: 'Lead';
+  event_name: string;
   event_time: number;
   event_id: string;
-  action_source: 'website';
+  action_source: ActionSource;
   event_source_url?: string;
   user_data: MetaUserData;
 }
@@ -96,11 +103,16 @@ const hashName = (name: string): string => sha256(name.trim().toLowerCase());
  * without this for months). Throws on a real Meta refusal so the CALLER's
  * try/catch can log it; callers must never let that throw reach the client.
  */
-export const sendLeadEvent = async (input: LeadEventInput): Promise<string | null> => {
+export const sendLeadEvent = async (
+  input: LeadEventInput,
+  options: { eventName?: string; actionSource?: ActionSource } = {}
+): Promise<string | null> => {
   const pixelId = process.env.META_PIXEL_ID;
   const accessToken = process.env.META_ACCESS_TOKEN;
   if (!pixelId || !accessToken || accessToken === 'YOUR_META_ACCESS_TOKEN') return null;
 
+  const eventName = options.eventName ?? 'Lead';
+  const actionSource = options.actionSource ?? 'website';
   const eventId = input.eventId?.trim() || crypto.randomUUID();
 
   const userData: MetaUserData = {};
@@ -117,10 +129,10 @@ export const sendLeadEvent = async (input: LeadEventInput): Promise<string | nul
   const body: CapiRequestBody = {
     data: [
       {
-        event_name: 'Lead',
+        event_name: eventName,
         event_time: Math.floor(Date.now() / 1000),
         event_id: eventId,
-        action_source: 'website',
+        action_source: actionSource,
         ...(input.eventSourceUrl ? { event_source_url: input.eventSourceUrl } : {}),
         user_data: userData,
       },
@@ -147,3 +159,35 @@ export const sendLeadEvent = async (input: LeadEventInput): Promise<string | nul
   }
   return eventId;
 };
+
+/**
+ * The signal that a lead turned out to be worth having.
+ *
+ * Sent when our team verifies a payment and the family enrols — days after the
+ * form submission Meta already knows about. Without it Meta optimises for
+ * people who fill forms; with it, for people who enrol.
+ *
+ * A CUSTOM event name, deliberately. Sending a second "Lead" would either be
+ * discarded as a duplicate (same event_id) or double-count the conversion the
+ * campaigns already optimise on (new event_id). `QualifiedLead` is a separate
+ * signal, and the ad account points a custom conversion at it.
+ *
+ * Matching leans on what survives the days in between: hashed email, hashed
+ * phone, our own lead id, and the click/browser ids captured at submission.
+ * Never throws — an enrolment must not fail because Meta is unreachable.
+ */
+export const sendQualifiedLeadEvent = async (input: LeadEventInput): Promise<string | null> => {
+  try {
+    return await sendLeadEvent(
+      // A fresh id: this is a different event from the submission, not a retry.
+      { ...input, eventId: undefined },
+      { eventName: QUALIFIED_LEAD_EVENT, actionSource: 'system_generated' }
+    );
+  } catch (err: any) {
+    console.error('[Meta CAPI] QualifiedLead failed:', err?.message ?? err);
+    return null;
+  }
+};
+
+/** The custom conversion to create in Events Manager and optimise against. */
+export const QUALIFIED_LEAD_EVENT = 'QualifiedLead';

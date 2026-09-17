@@ -1,5 +1,5 @@
 import { db } from '../../database/datasource';
-import { readLeadAttribution, sendLeadEvent } from '../shared/meta-capi';
+import { readLeadAttribution, sendLeadEvent, sendQualifiedLeadEvent } from '../shared/meta-capi';
 
 
 import { CreateLeadInput, UpdateLeadInput } from './lead.schema';
@@ -274,7 +274,47 @@ export const leadService = {
     };
   },
 
+  /**
+   * Tell Meta this lead turned out to be worth having.
+   *
+   * Enrolment is a manual judgement here — an advisor verifies the payment and
+   * moves the lead to ENROLLED — so this is the only moment the system learns
+   * which of its leads were real. Both routes into that state come through
+   * here, and the stamp makes it once-only: a status toggled off and back on
+   * must not report a second conversion to the ad account.
+   */
+  async markLeadQualified(lead: {
+    id: string;
+    email: string;
+    phone: string | null;
+    firstName: string;
+    metaFbp: string | null;
+    metaFbc: string | null;
+    metaQualifiedAt: Date | null;
+  }) {
+    if (lead.metaQualifiedAt) return;
+
+    // Stamped before sending: two advisors clicking at once would otherwise
+    // both see a null stamp and both report the conversion.
+    await db.lead.update({ where: { id: lead.id }, data: { metaQualifiedAt: new Date() } });
+
+    void sendQualifiedLeadEvent({
+      email: lead.email,
+      phone: lead.phone,
+      firstName: lead.firstName,
+      externalId: lead.id,
+      fbp: lead.metaFbp ?? undefined,
+      fbc: lead.metaFbc ?? undefined,
+    }).then((eventId) => {
+      if (eventId) console.log(`[Meta CAPI] QualifiedLead ${eventId} sent for lead ${lead.id}`);
+    });
+  },
+
   async createLead(input: CreateLeadInput) {
+    // Read once: the row keeps the click ids, and the CAPI call below uses the
+    // same values. They arrive on the request body from the website proxy.
+    const attribution = readLeadAttribution(input);
+
     /* A demo booked here occupies a mentor exactly like one booked through the
      * pilot widget, so it has to pass the same capacity check. It never did:
      * this path only ever wrote the row, which is why a slot could be booked
@@ -322,6 +362,11 @@ export const leadService = {
         paymentMethod: input.paymentMethod,
         paymentStatus: input.paymentStatus || 'NONE',
         telecallerNotes: input.telecallerNotes,
+        // Kept for the QualifiedLead event, which fires long after the request
+        // that carried these cookies is gone.
+        metaEventId: attribution.eventId ?? null,
+        metaFbp: attribution.fbp ?? null,
+        metaFbc: attribution.fbc ?? null,
       },
       include: {
         program: {
@@ -345,7 +390,7 @@ export const leadService = {
         firstName: lead.firstName,
         externalId: lead.id,
         // eventId, IP, UA, fbp, fbc, source URL — whatever the website proxy attached.
-        ...readLeadAttribution(input),
+        ...attribution,
       })
         .then((capiEventId) => {
           if (capiEventId) console.log(`[Meta CAPI] Lead event ${capiEventId} sent for ${lead.email}`);
@@ -452,7 +497,7 @@ export const leadService = {
 
   async updateLead(id: string, input: UpdateLeadInput) {
     await this.assertLeadExists(id);
-    return db.lead.update({
+    const updated = await db.lead.update({
       where: { id },
       data: {
         firstName: input.firstName !== undefined ? input.firstName : undefined,
@@ -493,6 +538,16 @@ export const leadService = {
         },
       },
     });
+
+    /* ── Meta: this lead was worth having ──────────────────────────────────
+     * ENROLLED is set by an advisor from the leads screen, not by any payment
+     * gateway — this is a manual business, and that click is the signal.
+     */
+    if (updated.status === 'ENROLLED' || updated.paymentStatus === 'VERIFIED') {
+      await this.markLeadQualified(updated);
+    }
+
+    return updated;
   },
 
   async collectPayment(id: string, payload: {
@@ -531,7 +586,7 @@ export const leadService = {
 
   async verifyPayment(id: string, adminUserId: string) {
     await this.assertLeadExists(id);
-    return db.lead.update({
+    const lead = await db.lead.update({
       where: { id },
       data: {
         paymentStatus: 'VERIFIED',
@@ -548,6 +603,9 @@ export const leadService = {
         },
       },
     });
+
+    await this.markLeadQualified(lead);
+    return lead;
   },
 
   async deleteLead(id: string) {
