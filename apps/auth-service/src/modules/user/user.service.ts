@@ -346,42 +346,16 @@ export const userService = {
       return student.enrollments.map((e) => ({ ...unlockFree(e, free), source: 'ENROLLMENT' as const }));
     }
 
-    const legacyProgramId = student.parentAccount?.programId;
-    if (!legacyProgramId) return [];
-
-    /* The legacy columns describe ONE child, so only one may inherit them.
+    /* No parent-account fallback any more.
      *
-     * `ParentAccount.programId` and `.paymentApproved` were written when a
-     * family could hold exactly one programme, which by definition was the
-     * child who was enrolled at the time — the eldest record. Letting every
-     * sibling fall back to them meant a second child added to a paying family
-     * appeared enrolled AND paid the moment they were created, with nobody
-     * having chosen a programme or taken any money for them.
-     *
-     * The eldest keeps the access the family paid for; a later sibling gets
-     * nothing until someone enrols them explicitly. */
-    const eldest = await db.student.findFirst({
-      where: { parentAccountId: student.parentAccountId },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true },
-    });
-    if (eldest && eldest.id !== student.id) return [];
-
-    return [
-      {
-        id: `legacy:${student.id}:${legacyProgramId}`,
-        programId: legacyProgramId,
-        // Either tier could hold the approval before enrolments: the parent on a
-        // FULL plan, the student individually on instalments.
-        paymentApproved:
-          free.has(legacyProgramId) ||
-          Boolean(student.parentAccount?.paymentApproved || student.paymentApproved),
-        selectedPlanType: student.parentAccount?.selectedPlanType ?? null,
-        paidInstallmentIds: student.parentAccount?.paidInstallmentIds ?? [],
-        createdAt: new Date(0),
-        source: 'LEGACY' as const,
-      },
-    ];
+     * Programme and payment used to live on ParentAccount, and a child with no
+     * enrolment inherited them. That works for one child and fails for two —
+     * one programme field between siblings on different levels — and it is how
+     * a child ended up booked into a sibling's programme. Every child now has
+     * their own Enrollment row (scripts/backfill-child-enrolments.js), so an
+     * empty list here means genuinely not enrolled, not "look at the parent".
+     */
+    return [];
   },
 
   /**
@@ -486,7 +460,10 @@ export const userService = {
       where: { id },
       include: {
         profiles: true,
-        students: true,
+        // Enrolments come with the children: a parent's subscriptions are the
+        // sum of their children's, now that a programme is never held on the
+        // parent account itself.
+        students: { include: { enrollments: true } },
       },
     });
     if (!parent) throw new AppError('Customer not found', HTTP_STATUS.NOT_FOUND);
@@ -514,7 +491,10 @@ export const userService = {
       data: {
         email: input.email,
         passwordHash,
-        programId: input.programId || null,
+        // No programme on the parent. A programme belongs to a CHILD, as an
+        // Enrollment — one per child per programme, approved in Finance — so a
+        // family with two children on different levels can be represented at
+        // all. The column survives for history and is no longer written.
         requiresFtlReset: false,
         profiles: {
           createMany: {
@@ -566,14 +546,6 @@ export const userService = {
     const passwordHash = hashPassword(input.password);
     const normalizedEmail = input.email.toLowerCase().trim();
 
-    // Check if this is the first student profile for this parent
-    const studentCount = await db.student.count({
-      where: { parentAccountId: parentId }
-    });
-
-    const isFirstStudent = studentCount === 0;
-    const isParentPaid = !!parent.paymentApproved;
-
     // Generate unique 4-digit student code (e.g. STU-0001)
     const totalCount = await db.student.count();
     let nextNum = totalCount + 1;
@@ -593,11 +565,11 @@ export const userService = {
         lastName: input.lastName,
         level: typeof input.level === 'string' && input.level.trim() ? input.level.trim() : undefined,
         country: typeof input.country === 'string' && input.country.trim() ? input.country.trim() : undefined,
-        // Only the first child can inherit the family's legacy approval — the
-        // old columns describe one enrolment. A sibling starts unpaid and is
-        // approved per programme in Finance.
-        paymentApproved:
-          (isParentPaid && isFirstStudent) || (await isProgramFree(parent.programId)),
+        // Every child is approved on their own enrolment in Finance. Nothing is
+        // inherited from the family any more: the parent-level columns described
+        // one paid seat, so inheriting them gave a sibling classes nobody had
+        // paid for. A free programme still unlocks itself, below.
+        paymentApproved: false,
         requiresFtlReset: false,
       },
     });
@@ -694,17 +666,14 @@ export const userService = {
     // A free programme unlocks on read, so a child enrolled before this rule
     // existed is not left locked out of classes nobody has to pay for.
     const free = await freeProgramIds();
-    const unlocked = students.map((st) => {
-      const legacyFree = !!st.parentAccount?.programId && free.has(st.parentAccount.programId);
-      return {
-        ...st,
-        paymentApproved: legacyFree ? true : st.paymentApproved,
-        parentAccount: st.parentAccount
-          ? { ...st.parentAccount, paymentApproved: legacyFree ? true : st.parentAccount.paymentApproved }
-          : st.parentAccount,
-        enrollments: st.enrollments.map((e) => unlockFree(e, free)),
-      };
-    });
+    const unlocked = students.map((st) => ({
+      ...st,
+      // Keyed off the child's own enrolments. It used to read the parent's
+      // programme, which unlocked every sibling whenever the FAMILY's
+      // programme happened to be free.
+      paymentApproved: st.enrollments.some((e) => free.has(e.programId)) ? true : st.paymentApproved,
+      enrollments: st.enrollments.map((e) => unlockFree(e, free)),
+    }));
 
     // Sort descending by createdAt for display
     return unlocked.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -766,50 +735,32 @@ export const userService = {
     // The old behaviour silently reset `paymentApproved` to false on a programme
     // change, which stranded the family: their classes were already scheduled
     // against the programme they had paid for, and the student portal went to
-    // "Sessions locked — no payment approved" with nothing they could do about
-    // it. The edit looked harmless and revoked access to something already
-    // bought.
-    //
-    // The programme is what was purchased. Moving to another one is a refund and
-    // re-enrolment decision, not a field edit — so it is refused here rather
-    // than quietly voiding the payment. An admin who genuinely needs to switch a
-    // family withdraws the payment approval first, which makes that the
-    // deliberate act it should be.
-    const programChanging =
-      input.programId !== undefined && (input.programId || null) !== (parent.programId || null);
-
-    if (programChanging) {
-      // Either tier can hold the approval: the parent pays for a FULL plan, but a
-      // student can be approved individually on an instalment plan.
-      const paidStudents = await db.student.count({
-        where: { parentAccountId: parentId, paymentApproved: true },
-      });
-
-      if (parent.paymentApproved || paidStudents > 0) {
-        throw new AppError(
-          'This family has already paid for their current programme, so it cannot be changed. ' +
-            'Withdraw the payment approval first if they are genuinely moving to another programme.',
-          HTTP_STATUS.CONFLICT
-        );
-      }
+    /* The programme is not a parent field any more.
+     *
+     * It used to be, and changing it silently re-pointed whatever the family had
+     * bought — so this path grew a guard refusing the change once anyone had
+     * paid. Now a programme is only ever attached to a child, as an Enrollment,
+     * which makes the guard unnecessary and the field meaningless: a caller
+     * passing it is working from the old model and should be told so rather than
+     * have it quietly ignored.
+     */
+    if (input.programId !== undefined) {
+      throw new AppError(
+        'A programme belongs to a student, not to the parent account. ' +
+          'Add or remove it on the child (Customers → Add Program).',
+        HTTP_STATUS.BAD_REQUEST
+      );
     }
 
     const dataToUpdate: any = {
       email: input.email || undefined,
       isActive: input.isActive !== undefined ? input.isActive : undefined,
-      programId: input.programId !== undefined ? input.programId : undefined,
       paymentApproved: input.paymentApproved !== undefined ? input.paymentApproved : undefined,
       selectedPlanType: input.selectedPlanType !== undefined ? input.selectedPlanType : undefined,
       paidInstallmentIds: input.paidInstallmentIds !== undefined ? input.paidInstallmentIds : undefined,
       // Empty string clears the photo; undefined leaves it untouched.
       avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl || null : undefined,
     };
-
-    // Unpaid families can still be moved — nothing has been bought yet — but the
-    // approval flag is cleared so the new programme starts from a clean state.
-    if (programChanging && input.paymentApproved === undefined) {
-      dataToUpdate.paymentApproved = await isProgramFree(input.programId);
-    }
 
     return await db.parentAccount.update({
       where: { id: parentId },
