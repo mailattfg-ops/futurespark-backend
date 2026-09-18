@@ -26,7 +26,15 @@
  *
  *   node scripts/backfill-child-enrolments.js
  *   node scripts/backfill-child-enrolments.js --parent parent1@gmail.com
+ *   node scripts/backfill-child-enrolments.js --skip-student moved@child.com
  *   node scripts/backfill-child-enrolments.js --apply
+ *
+ * Flags:
+ *   --parent <email|id>          only this family
+ *   --skip-student <emails|ids>  comma-separated children to leave alone, for a
+ *                                child who has moved out of the family's
+ *                                programme and whose classes were re-pointed
+ *   --apply                      actually write
  */
 const path = require('path');
 const fs = require('fs');
@@ -50,6 +58,14 @@ const value = (name) => {
 };
 const apply = flag('--apply');
 const parentFilter = value('--parent');
+// A child who is not actually in the family's programme — usually because they
+// moved level and their classes were re-pointed. Comma-separated emails or ids.
+const skipStudents = new Set(
+  (value('--skip-student') ?? '')
+    .split(',')
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 const { PrismaClient } = require(path.join(AUTH_DIR, 'prisma', 'client'));
 const db = new PrismaClient();
@@ -97,17 +113,32 @@ const db = new PrismaClient();
       continue;
     }
 
-    // Who may inherit the family's single approval: a child with their own
-    // flag, else the earliest-created child, and only if the parent was paid.
+    /* Who may inherit the family's single approval.
+     *
+     * Nobody, if a sibling ALREADY holds a paid enrolment for this programme:
+     * the parent's flag describes that one seat, and handing it out again would
+     * create a second paid enrolment the family never bought. Otherwise a child
+     * with their own approval, else the earliest-created child.
+     */
+    const seatAlreadyHeld = parent.students.some((s) =>
+      s.enrollments.some((e) => e.programId === programId && e.paymentApproved)
+    );
     let inheritedBy = null;
-    if (parent.paymentApproved) {
+    if (parent.paymentApproved && !seatAlreadyHeld) {
       const own = parent.students.find((s) => s.paymentApproved);
       inheritedBy = own ? own.id : parent.students[0].id;
     }
 
-    console.log(`  ${parent.email}   programme "${title}"   family paid: ${parent.paymentApproved ? 'yes' : 'no'}`);
+    console.log(
+      `  ${parent.email}   programme "${title}"   family paid: ${parent.paymentApproved ? 'yes' : 'no'}` +
+        (seatAlreadyHeld && parent.paymentApproved ? '   (seat already held by a sibling)' : '')
+    );
 
     for (const student of parent.students) {
+      if (skipStudents.has(student.email.toLowerCase()) || skipStudents.has(student.id.toLowerCase())) {
+        console.log(`      ${student.email} — SKIPPED by --skip-student`);
+        continue;
+      }
       const has = student.enrollments.find((e) => e.programId === programId);
       if (has) {
         alreadyFine++;
